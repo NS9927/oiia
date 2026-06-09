@@ -11,6 +11,7 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.scale.JBUIScale
 import com.intellij.util.ui.JBFont
 import net.posdaca.OiiaBundle
+import net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteInfo
 import net.posdaca.oiia.core.PreviewImageLoader
 import java.awt.BasicStroke
 import java.awt.BorderLayout
@@ -23,10 +24,12 @@ import java.awt.Graphics2D
 import java.awt.Point
 import java.awt.Rectangle
 import java.awt.RenderingHints
+import java.awt.Shape
 import java.awt.Toolkit
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.event.MouseWheelEvent
+import java.awt.geom.Arc2D
 import java.awt.image.BufferedImage
 import javax.swing.BorderFactory
 import javax.swing.DefaultListCellRenderer
@@ -131,7 +134,9 @@ class GuiPreviewPanel(
 
         private val padding = JBUIScale.scale(48)
         private val imageCache = mutableMapOf<String, BufferedImage>()
+        private val processedImageCache = mutableMapOf<SpriteRenderKey, BufferedImage>()
         private val spritePathCache = mutableMapOf<String, String?>()
+        private val spriteInfoCache = mutableMapOf<String, SpriteInfo?>()
         private val localisationCache = mutableMapOf<String, String?>()
         private var root: GuiElement? = null
         private var nodes = emptyList<GuiLayoutNode>()
@@ -148,6 +153,25 @@ class GuiPreviewPanel(
             get() = (SwingUtilities.getAncestorOfClass(JBScrollPane::class.java, this) as? JBScrollPane)?.horizontalScrollBar
         private val scrollableVsb: javax.swing.JScrollBar?
             get() = (SwingUtilities.getAncestorOfClass(JBScrollPane::class.java, this) as? JBScrollPane)?.verticalScrollBar
+
+        private data class SpriteRenderKey(
+            val name: String,
+            val subtype: String?,
+            val primaryPath: String?,
+            val path1: String?,
+            val path2: String?,
+            val width: Int,
+            val height: Int,
+            val frame: Int?,
+            val noOfFrames: Int?,
+            val defaultFrame: Int?,
+            val border: String?,
+            val tilingCenter: Boolean,
+            val horizontal: Boolean?,
+            val progressRatio: Int,
+            val rotation: Int?,
+            val amount: Int?
+        )
 
         init {
             isOpaque = true
@@ -375,15 +399,18 @@ class GuiPreviewPanel(
             val bounds = node.bounds
             val element = node.element
             val hasIssue = node.issues.any { it.severity != GuiIssueSeverity.INFO }
-            val image = spritePath(element)?.let { PreviewImageLoader.load(it, imageCache) }
-            val paintBounds = if (image != null && element.size == null && element.type == "iconType") {
-                Rectangle(bounds.x, bounds.y, image.width, image.height)
+            val spriteInfo = spriteInfo(element)
+            val sourceImage = spriteInfo?.primaryImagePath?.let { PreviewImageLoader.load(it, imageCache) }
+            val paintBounds = if (sourceImage != null && element.size == null && element.type == "iconType") {
+                val nativeSize = nativeSpriteSize(sourceImage, spriteInfo)
+                Rectangle(bounds.x, bounds.y, nativeSize.width, nativeSize.height)
             } else {
                 bounds
             }
+            val image = spriteInfo?.let { preprocessedSpriteImage(element, it, paintBounds.width, paintBounds.height) }
 
             if (image != null) {
-                g.drawImage(image, paintBounds.x, paintBounds.y, paintBounds.width, paintBounds.height, null)
+                g.drawImage(image, paintBounds.x, paintBounds.y, null)
             } else {
                 g.color = backgroundFor(element.type)
                 g.fillRect(bounds.x, bounds.y, bounds.width, bounds.height)
@@ -391,15 +418,25 @@ class GuiPreviewPanel(
 
             g.color = if (hasIssue) JBColor.RED else borderFor(element.type)
             g.stroke = BasicStroke(if (node.depth == 0) 2f else 1f)
-            g.drawRect(bounds.x, bounds.y, bounds.width, bounds.height)
+            g.drawRect(paintBounds.x, paintBounds.y, paintBounds.width, paintBounds.height)
 
             val label = labelFor(element)
-            if (label.isNotBlank()) paintLabel(g, label, bounds, element.type)
+            if (label.isNotBlank()) paintLabel(g, label, paintBounds, element.type)
 
             if (hasIssue) {
                 g.color = JBColor.RED
-                g.fillOval(bounds.x + bounds.width - JBUIScale.scale(10), bounds.y + JBUIScale.scale(4), JBUIScale.scale(6), JBUIScale.scale(6))
+                g.fillOval(paintBounds.x + paintBounds.width - JBUIScale.scale(10), paintBounds.y + JBUIScale.scale(4), JBUIScale.scale(6), JBUIScale.scale(6))
             }
+        }
+
+        private fun nativeSpriteSize(image: BufferedImage, spriteInfo: SpriteInfo): Dimension {
+            val frames = spriteInfo.noOfFrames?.coerceAtLeast(1) ?: 1
+            val width = if (spriteInfo.subtype == "frame_animated_sprite" && frames > 1) {
+                (image.width / frames).coerceAtLeast(1)
+            } else {
+                image.width
+            }
+            return Dimension(width, image.height)
         }
 
         private fun paintLabel(g: Graphics2D, label: String, bounds: Rectangle, type: String) {
@@ -411,6 +448,276 @@ class GuiPreviewPanel(
             }
             g.color = JBColor.foreground()
             g.drawString(text, bounds.x + inset, y.coerceAtMost(bounds.y + bounds.height - inset))
+        }
+
+        private fun preprocessedSpriteImage(
+            element: GuiElement,
+            spriteInfo: SpriteInfo,
+            width: Int,
+            height: Int
+        ): BufferedImage? {
+            val targetWidth = width.coerceAtLeast(1)
+            val targetHeight = height.coerceAtLeast(1)
+            val sourceImage = spriteInfo.primaryImagePath?.let { PreviewImageLoader.load(it, imageCache) } ?: return null
+            val key = spriteRenderKey(element, spriteInfo, targetWidth, targetHeight)
+            processedImageCache[key]?.let { return it }
+
+            val output = BufferedImage(targetWidth, targetHeight, BufferedImage.TYPE_INT_ARGB)
+            val g = output.createGraphics()
+            try {
+                g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR)
+                g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
+                g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                paintSpriteImage(g, sourceImage, Rectangle(0, 0, targetWidth, targetHeight), element, spriteInfo)
+            } finally {
+                g.dispose()
+            }
+            processedImageCache[key] = output
+            return output
+        }
+
+        private fun spriteRenderKey(
+            element: GuiElement,
+            spriteInfo: SpriteInfo,
+            width: Int,
+            height: Int
+        ): SpriteRenderKey {
+            val border = spriteInfo.borderSize?.let { "${it.left},${it.top},${it.right},${it.bottom}" }
+            return SpriteRenderKey(
+                name = spriteInfo.name,
+                subtype = spriteInfo.subtype,
+                primaryPath = spriteInfo.primaryImagePath,
+                path1 = spriteInfo.imagePath1,
+                path2 = spriteInfo.imagePath2,
+                width = width,
+                height = height,
+                frame = element.frame,
+                noOfFrames = spriteInfo.noOfFrames,
+                defaultFrame = spriteInfo.defaultFrame,
+                border = border,
+                tilingCenter = spriteInfo.tilingCenter,
+                horizontal = element.horizontal ?: spriteInfo.horizontal,
+                progressRatio = (progressRatio(element) * 10_000).roundToInt(),
+                rotation = spriteInfo.rotation,
+                amount = spriteInfo.amount
+            )
+        }
+
+        private fun paintSpriteImage(
+            g: Graphics2D,
+            image: BufferedImage,
+            bounds: Rectangle,
+            element: GuiElement,
+            spriteInfo: SpriteInfo
+        ) {
+            when {
+                spriteInfo.subtype == "progressbar" -> paintProgressBar(g, image, bounds, element, spriteInfo)
+                spriteInfo.subtype == "circular_progressbar" -> paintCircularProgressBar(g, image, bounds, spriteInfo)
+                spriteInfo.subtype == "masked_shield" -> paintLayeredSprite(g, image, bounds, spriteInfo)
+                spriteInfo.subtype == "frame_animated_sprite" -> paintFrameSprite(g, image, bounds, element, spriteInfo)
+                element.quadTextureSprite != null || spriteInfo.subtype == "quad_texture" -> tileImage(g, image, bounds)
+                spriteInfo.subtype == "cornered_tile_sprite" && spriteInfo.borderSize != null -> {
+                    paintNinePatch(g, image, bounds, spriteInfo.borderSize, spriteInfo.tilingCenter)
+                }
+                else -> g.drawImage(image, bounds.x, bounds.y, bounds.width, bounds.height, null)
+            }
+        }
+
+        private fun paintFrameSprite(
+            g: Graphics2D,
+            image: BufferedImage,
+            bounds: Rectangle,
+            element: GuiElement,
+            spriteInfo: SpriteInfo
+        ) {
+            val frames = spriteInfo.noOfFrames?.coerceAtLeast(1) ?: 1
+            if (frames <= 1) {
+                g.drawImage(image, bounds.x, bounds.y, bounds.width, bounds.height, null)
+                return
+            }
+            val frameWidth = (image.width / frames).coerceAtLeast(1)
+            val frame = (element.frame ?: spriteInfo.defaultFrame ?: 0).coerceIn(0, frames - 1)
+            val sx1 = frame * frameWidth
+            val sx2 = if (frame == frames - 1) image.width else (sx1 + frameWidth).coerceAtMost(image.width)
+            g.drawImage(image, bounds.x, bounds.y, bounds.x + bounds.width, bounds.y + bounds.height, sx1, 0, sx2, image.height, null)
+        }
+
+        private fun paintProgressBar(
+            g: Graphics2D,
+            fallbackImage: BufferedImage,
+            bounds: Rectangle,
+            element: GuiElement,
+            spriteInfo: SpriteInfo
+        ) {
+            val background = spriteInfo.imagePath1?.let { PreviewImageLoader.load(it, imageCache) } ?: fallbackImage
+            val foreground = spriteInfo.imagePath2?.let { PreviewImageLoader.load(it, imageCache) }
+            g.drawImage(background, bounds.x, bounds.y, bounds.width, bounds.height, null)
+            if (foreground == null) return
+
+            val ratio = progressRatio(element).coerceIn(0.0, 1.0)
+            val horizontal = element.horizontal ?: spriteInfo.horizontal ?: true
+            val oldClip = g.clip
+            val clip = if (horizontal) {
+                val width = (bounds.width * ratio).roundToInt()
+                if (width <= 0) return
+                Rectangle(bounds.x, bounds.y, width, bounds.height)
+            } else {
+                val height = (bounds.height * ratio).roundToInt()
+                if (height <= 0) return
+                Rectangle(bounds.x, bounds.y + bounds.height - height, bounds.width, height)
+            }
+            try {
+                g.clip = intersectClip(oldClip, clip)
+                g.drawImage(foreground, bounds.x, bounds.y, bounds.width, bounds.height, null)
+            } finally {
+                g.clip = oldClip
+            }
+        }
+
+        private fun paintCircularProgressBar(
+            g: Graphics2D,
+            fallbackImage: BufferedImage,
+            bounds: Rectangle,
+            spriteInfo: SpriteInfo
+        ) {
+            val background = spriteInfo.imagePath1?.let { PreviewImageLoader.load(it, imageCache) } ?: fallbackImage
+            val foreground = spriteInfo.imagePath2?.let { PreviewImageLoader.load(it, imageCache) }
+            g.drawImage(background, bounds.x, bounds.y, bounds.width, bounds.height, null)
+            if (foreground == null) return
+
+            val ratio = ((spriteInfo.amount ?: 50).toDouble() / 100.0).coerceIn(0.0, 1.0)
+            if (ratio <= 0.0) return
+            val start = (spriteInfo.rotation ?: -90).toDouble()
+            val oldClip = g.clip
+            val arc = Arc2D.Double(
+                bounds.x.toDouble(),
+                bounds.y.toDouble(),
+                bounds.width.toDouble(),
+                bounds.height.toDouble(),
+                start,
+                -360.0 * ratio,
+                Arc2D.PIE
+            )
+            try {
+                g.clip = intersectClip(oldClip, arc)
+                g.drawImage(foreground, bounds.x, bounds.y, bounds.width, bounds.height, null)
+            } finally {
+                g.clip = oldClip
+            }
+        }
+
+        private fun paintLayeredSprite(
+            g: Graphics2D,
+            fallbackImage: BufferedImage,
+            bounds: Rectangle,
+            spriteInfo: SpriteInfo
+        ) {
+            val base = spriteInfo.imagePath1?.let { PreviewImageLoader.load(it, imageCache) } ?: fallbackImage
+            val overlay = spriteInfo.imagePath2?.let { PreviewImageLoader.load(it, imageCache) }
+            g.drawImage(base, bounds.x, bounds.y, bounds.width, bounds.height, null)
+            if (overlay != null) g.drawImage(overlay, bounds.x, bounds.y, bounds.width, bounds.height, null)
+        }
+
+        private fun tileImage(g: Graphics2D, image: BufferedImage, bounds: Rectangle) {
+            var y = bounds.y
+            while (y < bounds.y + bounds.height) {
+                var x = bounds.x
+                val drawHeight = (bounds.y + bounds.height - y).coerceAtMost(image.height)
+                while (x < bounds.x + bounds.width) {
+                    val drawWidth = (bounds.x + bounds.width - x).coerceAtMost(image.width)
+                    g.drawImage(
+                        image,
+                        x,
+                        y,
+                        x + drawWidth,
+                        y + drawHeight,
+                        0,
+                        0,
+                        drawWidth,
+                        drawHeight,
+                        null
+                    )
+                    x += image.width
+                }
+                y += image.height
+            }
+        }
+
+        private fun progressRatio(element: GuiElement): Double {
+            val start = element.startValue ?: return 0.5
+            val min = element.minValue ?: 0.0
+            val max = element.maxValue ?: 100.0
+            if (max <= min) return 0.5
+            return (start - min) / (max - min)
+        }
+
+        private fun intersectClip(oldClip: Shape?, newClip: Shape): Shape {
+            if (oldClip == null) return newClip
+            return java.awt.geom.Area(oldClip).apply {
+                intersect(java.awt.geom.Area(newClip))
+            }
+        }
+
+        private fun paintNinePatch(
+            g: Graphics2D,
+            image: BufferedImage,
+            bounds: Rectangle,
+            insets: net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteInsets,
+            tileCenter: Boolean
+        ) {
+            val left = insets.left.coerceIn(0, image.width / 2)
+            val right = insets.right.coerceIn(0, image.width - left)
+            val top = insets.top.coerceIn(0, image.height / 2)
+            val bottom = insets.bottom.coerceIn(0, image.height - top)
+            val centerSourceWidth = (image.width - left - right).coerceAtLeast(1)
+            val centerSourceHeight = (image.height - top - bottom).coerceAtLeast(1)
+            val (destLeft, destRight) = fitInsetsToSize(left, right, bounds.width)
+            val (destTop, destBottom) = fitInsetsToSize(top, bottom, bounds.height)
+            val centerDestWidth = (bounds.width - destLeft - destRight).coerceAtLeast(0)
+            val centerDestHeight = (bounds.height - destTop - destBottom).coerceAtLeast(0)
+
+            drawPatch(g, image, bounds.x, bounds.y, destLeft, destTop, 0, 0, left, top)
+            drawPatch(g, image, bounds.x + bounds.width - destRight, bounds.y, destRight, destTop, image.width - right, 0, image.width, top)
+            drawPatch(g, image, bounds.x, bounds.y + bounds.height - destBottom, destLeft, destBottom, 0, image.height - bottom, left, image.height)
+            drawPatch(g, image, bounds.x + bounds.width - destRight, bounds.y + bounds.height - destBottom, destRight, destBottom, image.width - right, image.height - bottom, image.width, image.height)
+
+            drawPatch(g, image, bounds.x + destLeft, bounds.y, centerDestWidth, destTop, left, 0, image.width - right, top)
+            drawPatch(g, image, bounds.x + destLeft, bounds.y + bounds.height - destBottom, centerDestWidth, destBottom, left, image.height - bottom, image.width - right, image.height)
+            drawPatch(g, image, bounds.x, bounds.y + destTop, destLeft, centerDestHeight, 0, top, left, image.height - bottom)
+            drawPatch(g, image, bounds.x + bounds.width - destRight, bounds.y + destTop, destRight, centerDestHeight, image.width - right, top, image.width, image.height - bottom)
+
+            val centerBounds = Rectangle(bounds.x + destLeft, bounds.y + destTop, centerDestWidth, centerDestHeight)
+            if (centerBounds.width > 0 && centerBounds.height > 0 && tileCenter) {
+                val centerImage = image.getSubimage(left, top, centerSourceWidth, centerSourceHeight)
+                tileImage(g, centerImage, centerBounds)
+            } else if (centerBounds.width > 0 && centerBounds.height > 0) {
+                drawPatch(g, image, centerBounds.x, centerBounds.y, centerBounds.width, centerBounds.height, left, top, image.width - right, image.height - bottom)
+            }
+        }
+
+        private fun fitInsetsToSize(start: Int, end: Int, total: Int): Pair<Int, Int> {
+            if (total <= 0) return 0 to 0
+            val sum = start + end
+            if (sum <= total) return start to end
+            if (sum <= 0) return 0 to 0
+            val fittedStart = (total.toDouble() * start / sum).roundToInt().coerceIn(0, total)
+            return fittedStart to (total - fittedStart)
+        }
+
+        private fun drawPatch(
+            g: Graphics2D,
+            image: BufferedImage,
+            dx: Int,
+            dy: Int,
+            dw: Int,
+            dh: Int,
+            sx1: Int,
+            sy1: Int,
+            sx2: Int,
+            sy2: Int
+        ) {
+            if (dw <= 0 || dh <= 0 || sx2 <= sx1 || sy2 <= sy1) return
+            g.drawImage(image, dx, dy, dx + dw, dy + dh, sx1, sy1, sx2, sy2, null)
         }
 
         private fun paintSelection(g: Graphics2D, node: GuiLayoutNode, color: Color) {
@@ -446,10 +753,17 @@ class GuiPreviewPanel(
         }
 
         private fun spritePath(element: GuiElement): String? {
+            return spriteInfo(element)?.primaryImagePath
+        }
+
+        private fun spriteInfo(element: GuiElement): SpriteInfo? {
             val candidates = (element.spriteCandidates + listOfNotNull(element.primarySprite)).distinct()
             for (sprite in candidates) {
-                val path = spritePathCache.getOrPut(sprite) { service.resolveSpritePath(sprite) }
-                if (path != null) return path
+                val info = spriteInfoCache.getOrPut(sprite) { service.resolveSpriteInfo(sprite) }
+                if (info?.primaryImagePath != null) {
+                    spritePathCache[sprite] = info.primaryImagePath
+                    return info
+                }
             }
             return null
         }
@@ -486,7 +800,16 @@ class GuiPreviewPanel(
             appendRow(sb, "Position", "${element.position.x}, ${element.position.y}")
             appendRow(sb, "Size", "${node.bounds.width} x ${node.bounds.height}")
             appendRow(sb, "Sprite", element.primarySprite)
-            appendRow(sb, "Sprite URL", spritePath(element))
+            val info = spriteInfo(element)
+            appendRow(sb, "Subtype", info?.subtype)
+            appendRow(sb, "Frame", element.frame?.toString() ?: info?.defaultFrame?.toString())
+            appendRow(sb, "Sprite URL", info?.primaryImagePath)
+            appendRow(sb, "Texture", info?.textureFile)
+            appendRow(sb, "Texture 1", info?.textureFile1)
+            appendRow(sb, "Texture 1 URL", info?.imagePath1)
+            appendRow(sb, "Texture 2", info?.textureFile2)
+            appendRow(sb, "Texture 2 URL", info?.imagePath2)
+            appendRow(sb, "Border", info?.borderSize?.let { "${it.left}, ${it.top}, ${it.right}, ${it.bottom}" })
             appendRow(sb, "Text", text)
             appendRow(sb, "Line", element.sourceLine.takeIf { it > 0 }?.toString())
             for (issue in node.issues) appendRow(sb, issue.severity.name, issue.message)

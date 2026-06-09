@@ -10,6 +10,7 @@ import icu.windea.pls.script.psi.ParadoxScriptFile
 import icu.windea.pls.script.psi.ParadoxScriptProperty
 import icu.windea.pls.script.psi.ParadoxScriptValue
 import net.posdaca.oiia.core.ParadoxSpriteResolver
+import net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteInfo
 
 class GuiPreviewService(private val project: Project) {
 
@@ -41,6 +42,10 @@ class GuiPreviewService(private val project: Project) {
 
     fun resolveSpritePath(spriteName: String?): String? {
         return spriteResolver.resolveSprite(spriteName)
+    }
+
+    fun resolveSpriteInfo(spriteName: String?): SpriteInfo? {
+        return spriteResolver.resolveSpriteInfo(spriteName)
     }
 
     private fun parseFromPlsPsi(psiFile: ParadoxScriptFile): List<GuiElement> {
@@ -102,6 +107,11 @@ class GuiPreviewService(private val project: Project) {
         var hoverSprite: String? = null
         var disabledSprite: String? = null
         var orientation: String? = null
+        var frame: Int? = null
+        var horizontal: Boolean? = null
+        var startValue: Double? = null
+        var maxValue: Double? = null
+        var minValue: Double? = null
         val properties = linkedMapOf<String, String>()
         val spriteCandidates = mutableListOf<String>()
         val children = mutableListOf<GuiElement>()
@@ -129,6 +139,11 @@ class GuiPreviewService(private val project: Project) {
                 "disabledSprite" -> disabledSprite = scalarValue(field).also { it?.let(spriteCandidates::add) }
                 "Orientation" -> orientation = scalarValue(field)
                 "orientation" -> orientation = scalarValue(field)
+                "frame" -> frame = scalarValue(field)?.parseGuiNumber()
+                "horizontal" -> horizontal = scalarValue(field).parseGuiBoolean()
+                "startValue" -> startValue = scalarValue(field)?.parseGuiDouble()
+                "maxValue" -> maxValue = scalarValue(field)?.parseGuiDouble()
+                "minValue" -> minValue = scalarValue(field)?.parseGuiDouble()
                 in GUI_ELEMENT_TYPES -> parseElement(field)?.let { children.add(it) }
                 else -> scalarValue(field)?.let { properties[key] = it }
             }
@@ -151,6 +166,11 @@ class GuiPreviewService(private val project: Project) {
             hoverSprite = hoverSprite,
             disabledSprite = disabledSprite,
             orientation = orientation,
+            frame = frame,
+            horizontal = horizontal,
+            startValue = startValue,
+            maxValue = maxValue,
+            minValue = minValue,
             sourceFilePath = vf?.path,
             sourceLine = line,
             properties = properties,
@@ -204,6 +224,19 @@ class GuiPreviewService(private val project: Project) {
     private fun String.parseGuiNumber(): Int? {
         val clean = trim().trim('"').removeSuffix("%")
         return clean.toDoubleOrNull()?.toInt()
+    }
+
+    private fun String?.parseGuiDouble(): Double? {
+        val clean = this?.trim()?.trim('"')?.removeSuffix("%") ?: return null
+        return clean.toDoubleOrNull()
+    }
+
+    private fun String?.parseGuiBoolean(): Boolean? {
+        return when (this?.trim()?.trim('"')?.lowercase()) {
+            "yes", "true", "1" -> true
+            "no", "false", "0" -> false
+            else -> null
+        }
     }
 
     private fun blockValues(block: ParadoxScriptBlock?): List<String> {
