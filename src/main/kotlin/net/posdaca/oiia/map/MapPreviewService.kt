@@ -44,27 +44,19 @@ class MapPreviewService(private val project: Project) {
             val countryHistories = loadCountryHistories(roots)
             val countries = buildCountries(states, countryDefinitions, countryHistories, localisations)
             onProgress(MapLoadStep.INDEX)
-            val pixelIndex = buildPixelIndex(image, provinces, stateByProvinceId, strategicRegionByProvinceId)
             onProgress(MapLoadStep.IMAGES)
-            val stateImage = buildModeImage(image, provinces, stateByProvinceId) { state ->
-                colorForId(state.id)
-            }
-            val countryImage = buildModeImage(image, provinces, stateByProvinceId) { state ->
-                renderCountryMapColor(countryDefinitions[state.owner?.uppercase()]?.color ?: colorForKey(state.owner))
-            }
-            val strategicRegionImage = buildStrategicRegionImage(image, provinces, strategicRegionByProvinceId)
-            val borderImages = buildBorderImages(pixelIndex, image.width, image.height)
+            val renderData = buildRenderData(image, provinces, stateByProvinceId, strategicRegionByProvinceId, countryDefinitions)
             val statePaths = states.map { it.path }.distinct()
             val countryPaths = findCountryFiles(roots, countryDefinitions)
             val strategicRegionPaths = strategicRegions.map { it.path }.distinct()
             MapLoadResult.Loaded(
                 LoadedMapData(
                     provincesImage = image,
-                    stateImage = stateImage,
-                    countryImage = countryImage,
-                    strategicRegionImage = strategicRegionImage,
-                    borderImages = borderImages,
-                    pixelIndex = pixelIndex,
+                    stateImage = renderData.stateImage,
+                    countryImage = renderData.countryImage,
+                    strategicRegionImage = renderData.strategicRegionImage,
+                    borderImages = renderData.borderImages,
+                    pixelIndex = renderData.pixelIndex,
                     provinceByColor = provinces,
                     provinceById = provinceById,
                     stateById = states.associateBy { it.id },
@@ -475,12 +467,21 @@ class MapPreviewService(private val project: Project) {
         }.distinctBy { HoI4ResourceRoots.normalizedKey(it) }
     }
 
-    private fun buildPixelIndex(
+    private data class MapRenderData(
+        val pixelIndex: MapPixelIndex,
+        val stateImage: BufferedImage?,
+        val countryImage: BufferedImage?,
+        val strategicRegionImage: BufferedImage?,
+        val borderImages: Map<MapPreviewMode, BufferedImage>
+    )
+
+    private fun buildRenderData(
         provincesImage: BufferedImage,
         provinceByColor: Map<Int, ProvinceInfo>,
         stateByProvinceId: Map<Int, StateInfo>,
-        strategicRegionByProvinceId: Map<Int, StrategicRegionInfo>
-    ): MapPixelIndex {
+        strategicRegionByProvinceId: Map<Int, StrategicRegionInfo>,
+        countryDefinitions: Map<String, CountryDefinition>
+    ): MapRenderData {
         val width = provincesImage.width
         val height = provincesImage.height
         val size = width * height
@@ -492,17 +493,41 @@ class MapPreviewService(private val project: Project) {
         val stateBounds = mutableMapOf<Int, MutablePixelBounds>()
         val countryBounds = mutableMapOf<Int, MutablePixelBounds>()
         val strategicRegionBounds = mutableMapOf<Int, MutablePixelBounds>()
+        val stateImage = if (stateByProvinceId.isEmpty()) null else ImageUtil.createImage(width, height, BufferedImage.TYPE_INT_RGB)
+        val countryImage = if (stateByProvinceId.isEmpty()) null else ImageUtil.createImage(width, height, BufferedImage.TYPE_INT_RGB)
+        val strategicRegionImage = if (strategicRegionByProvinceId.isEmpty()) {
+            null
+        } else {
+            ImageUtil.createImage(width, height, BufferedImage.TYPE_INT_RGB)
+        }
+        val states = stateByProvinceId.values.distinctBy { it.id }
+        val stateColorById = states.associate { it.id to colorForId(it.id) }
+        val countryColorByStateId = states.associate { state ->
+            val countryColor = countryDefinitions[state.owner?.uppercase()]?.color ?: colorForKey(state.owner)
+            state.id to renderCountryMapColor(countryColor)
+        }
+        val strategicRegionColorById = strategicRegionByProvinceId.values
+            .distinctBy { it.id }
+            .associate { it.id to colorForId(it.id) }
 
         for (y in 0 until height) {
+            val rowOffset = y * width
             for (x in 0 until width) {
-                val index = y * width + x
+                val index = rowOffset + x
                 val rgb = provincesImage.getRGB(x, y) and RGB_MASK
-                val province = provinceByColor[rgb] ?: continue
+                val province = provinceByColor[rgb]
+                val state = province?.let { stateByProvinceId[it.id] }
+                val strategicRegion = province?.let { strategicRegionByProvinceId[it.id] }
+
+                stateImage?.setRGB(x, y, state?.let { stateColorById[it.id] } ?: rgb)
+                countryImage?.setRGB(x, y, state?.let { countryColorByStateId[it.id] } ?: rgb)
+                strategicRegionImage?.setRGB(x, y, strategicRegion?.let { strategicRegionColorById[it.id] } ?: rgb)
+                if (province == null) continue
+
                 val provinceKey = province.id
-                val state = stateByProvinceId[province.id]
                 val stateKey = state?.id ?: UNKNOWN_KEY
                 val countryKey = state?.owner?.let { mapCountryKey(it) } ?: UNKNOWN_KEY
-                val strategicRegionKey = strategicRegionByProvinceId[province.id]?.id ?: UNKNOWN_KEY
+                val strategicRegionKey = strategicRegion?.id ?: UNKNOWN_KEY
 
                 provinceKeys[index] = provinceKey
                 stateKeys[index] = stateKey
@@ -517,7 +542,7 @@ class MapPreviewService(private val project: Project) {
             }
         }
 
-        return MapPixelIndex(
+        val pixelIndex = MapPixelIndex(
             width = width,
             provinceKeys = provinceKeys,
             stateKeys = stateKeys,
@@ -527,6 +552,13 @@ class MapPreviewService(private val project: Project) {
             stateBounds = stateBounds.mapValues { it.value.toBounds() },
             countryBounds = countryBounds.mapValues { it.value.toBounds() },
             strategicRegionBounds = strategicRegionBounds.mapValues { it.value.toBounds() }
+        )
+        return MapRenderData(
+            pixelIndex = pixelIndex,
+            stateImage = stateImage,
+            countryImage = countryImage,
+            strategicRegionImage = strategicRegionImage,
+            borderImages = buildBorderImages(pixelIndex, width, height)
         )
     }
 
@@ -546,78 +578,65 @@ class MapPreviewService(private val project: Project) {
         fun toBounds(): PixelBounds = PixelBounds(minX, minY, maxX, maxY)
     }
 
-    private fun buildModeImage(
-        provincesImage: BufferedImage,
-        provinceByColor: Map<Int, ProvinceInfo>,
-        stateByProvinceId: Map<Int, StateInfo>,
-        colorProvider: (StateInfo) -> Int
-    ): BufferedImage? {
-        if (stateByProvinceId.isEmpty()) return null
-        val image = ImageUtil.createImage(provincesImage.width, provincesImage.height, BufferedImage.TYPE_INT_RGB)
-        for (y in 0 until provincesImage.height) {
-            for (x in 0 until provincesImage.width) {
-                val sourceRgb = provincesImage.getRGB(x, y) and RGB_MASK
-                val province = provinceByColor[sourceRgb]
-                val state = province?.let { stateByProvinceId[it.id] }
-                val rgb = state?.let(colorProvider) ?: sourceRgb
-                image.setRGB(x, y, rgb)
-            }
-        }
-        return image
-    }
-
-    private fun buildStrategicRegionImage(
-        provincesImage: BufferedImage,
-        provinceByColor: Map<Int, ProvinceInfo>,
-        strategicRegionByProvinceId: Map<Int, StrategicRegionInfo>
-    ): BufferedImage? {
-        if (strategicRegionByProvinceId.isEmpty()) return null
-        val image = ImageUtil.createImage(provincesImage.width, provincesImage.height, BufferedImage.TYPE_INT_RGB)
-        for (y in 0 until provincesImage.height) {
-            for (x in 0 until provincesImage.width) {
-                val sourceRgb = provincesImage.getRGB(x, y) and RGB_MASK
-                val province = provinceByColor[sourceRgb]
-                val region = province?.let { strategicRegionByProvinceId[it.id] }
-                val rgb = region?.let { colorForId(it.id) } ?: sourceRgb
-                image.setRGB(x, y, rgb)
-            }
-        }
-        return image
-    }
-
-    private fun buildBorderImages(
-        pixelIndex: MapPixelIndex,
-        width: Int,
-        height: Int
-    ): Map<MapPreviewMode, BufferedImage> {
-        return mapOf(
-            MapPreviewMode.PROVINCE to buildBorderImage(width, height, pixelIndex.provinceKeys),
-            MapPreviewMode.STATE to buildBorderImage(width, height, pixelIndex.stateKeys),
-            MapPreviewMode.COUNTRY to buildBorderImage(width, height, pixelIndex.countryKeys),
-            MapPreviewMode.STRATEGIC_REGION to buildBorderImage(width, height, pixelIndex.strategicRegionKeys)
-        )
-    }
-
-    private fun buildBorderImage(width: Int, height: Int, keys: IntArray): BufferedImage {
-        val image = ImageUtil.createImage(width, height, BufferedImage.TYPE_INT_ARGB)
+    private fun buildBorderImages(pixelIndex: MapPixelIndex, width: Int, height: Int): Map<MapPreviewMode, BufferedImage> {
+        val provinceImage = ImageUtil.createImage(width, height, BufferedImage.TYPE_INT_ARGB)
+        val stateImage = ImageUtil.createImage(width, height, BufferedImage.TYPE_INT_ARGB)
+        val countryImage = ImageUtil.createImage(width, height, BufferedImage.TYPE_INT_ARGB)
+        val strategicRegionImage = ImageUtil.createImage(width, height, BufferedImage.TYPE_INT_ARGB)
         val border = 0xAA000000.toInt()
         for (y in 0 until height) {
             val rowOffset = y * width
             for (x in 0 until width) {
-                val key = keys[rowOffset + x]
-                if (key == UNKNOWN_KEY) continue
                 val leftIndex = rowOffset + if (x == 0) width - 1 else x - 1
                 val rightIndex = rowOffset + if (x + 1 == width) 0 else x + 1
-                if (keys[leftIndex] != key ||
-                    y > 0 && keys[rowOffset - width + x] != key ||
-                    keys[rightIndex] != key ||
-                    y + 1 < height && keys[rowOffset + width + x] != key
-                ) {
-                    image.setRGB(x, y, border)
-                }
+                val upIndex = if (y > 0) rowOffset - width + x else -1
+                val downIndex = if (y + 1 < height) rowOffset + width + x else -1
+                setBorderPixel(pixelIndex.provinceKeys, provinceImage, rowOffset + x, x, y, leftIndex, rightIndex, upIndex, downIndex, border)
+                setBorderPixel(pixelIndex.stateKeys, stateImage, rowOffset + x, x, y, leftIndex, rightIndex, upIndex, downIndex, border)
+                setBorderPixel(pixelIndex.countryKeys, countryImage, rowOffset + x, x, y, leftIndex, rightIndex, upIndex, downIndex, border)
+                setBorderPixel(
+                    pixelIndex.strategicRegionKeys,
+                    strategicRegionImage,
+                    rowOffset + x,
+                    x,
+                    y,
+                    leftIndex,
+                    rightIndex,
+                    upIndex,
+                    downIndex,
+                    border
+                )
             }
         }
-        return image
+        return mapOf(
+            MapPreviewMode.PROVINCE to provinceImage,
+            MapPreviewMode.STATE to stateImage,
+            MapPreviewMode.COUNTRY to countryImage,
+            MapPreviewMode.STRATEGIC_REGION to strategicRegionImage
+        )
+    }
+
+    private fun setBorderPixel(
+        keys: IntArray,
+        image: BufferedImage,
+        index: Int,
+        x: Int,
+        y: Int,
+        leftIndex: Int,
+        rightIndex: Int,
+        upIndex: Int,
+        downIndex: Int,
+        border: Int
+    ) {
+        val key = keys[index]
+        if (key == UNKNOWN_KEY) return
+        if (keys[leftIndex] != key ||
+            keys[rightIndex] != key ||
+            upIndex >= 0 && keys[upIndex] != key ||
+            downIndex >= 0 && keys[downIndex] != key
+        ) {
+            image.setRGB(x, y, border)
+        }
     }
 
     private fun colorForId(id: Int): Int {

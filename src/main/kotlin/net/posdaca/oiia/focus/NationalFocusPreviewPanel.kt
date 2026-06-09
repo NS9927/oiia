@@ -16,6 +16,7 @@ import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.event.MouseWheelEvent
 import java.awt.geom.AffineTransform
+import java.awt.geom.Area
 import java.awt.geom.Path2D
 import java.awt.geom.RoundRectangle2D
 import java.awt.image.BufferedImage
@@ -595,7 +596,7 @@ class NationalFocusPreviewPanel(
                 val img = focus.iconImagePath?.let { loadIcon(it) }
                 if (img != null) {
                     val oldClip = g2d.clip
-                    g2d.setClip(iconRR)
+                    g2d.clip = intersectClip(oldClip, iconRR)
                     g2d.drawImage(img, iconX, iconY, iconSz, iconSz, null)
                     g2d.clip = oldClip
                     g2d.color = borderColor
@@ -654,6 +655,13 @@ class NationalFocusPreviewPanel(
                 )
                 drawCenteredTitle(g2d, name, titleRect)
             }
+        }
+
+        private fun intersectClip(currentClip: Shape?, shape: Shape): Shape {
+            if (currentClip == null) return shape
+            val area = Area(currentClip)
+            area.intersect(Area(shape))
+            return area
         }
 
         private fun focusTitleFont(): Font = JBFont.label().deriveFont(Font.BOLD, 12f)

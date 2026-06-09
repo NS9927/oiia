@@ -11,6 +11,10 @@ import java.nio.file.Path
 import kotlin.io.path.isDirectory
 
 internal object HoI4ResourceRoots {
+    private const val CACHE_TTL_MS = 1000L
+    private val cacheLock = Any()
+    private val resourceRootsCache = mutableMapOf<ResourceRootCacheKey, CachedRoots>()
+
     fun plsRoots(gameFirst: Boolean = true): List<Path> {
         val state = PlsProfilesSettings.getInstance().state
         val modSettings = state.modSettings.values.filter { it.isHoi4Mod() }
@@ -29,14 +33,19 @@ internal object HoI4ResourceRoots {
         gameFirst: Boolean = true
     ): List<Path> {
         val projectRoot = directoryPath(project.basePath)
+        val projectKey = projectRoot?.let { normalizedKey(it) } ?: project.basePath.orEmpty()
+        val cacheKey = ResourceRootCacheKey(projectKey, projectFirst, gameFirst)
+        cachedResourceRoots(cacheKey)?.let { return it }
         val state = PlsProfilesSettings.getInstance().state
         val modRootPlan = orderedModRootPlan(state.modSettings.values, projectRoot)
         val gameRoots = gameRoots(modRootPlan.settings)
         val modRoots = modRootPlan.roots
         val plsRoots = if (gameFirst) gameRoots + modRoots else modRoots + gameRoots
-        return distinctNormalized(
+        val roots = distinctNormalized(
             if (projectFirst) listOfNotNull(projectRoot) + plsRoots else plsRoots + listOfNotNull(projectRoot)
         )
+        cacheResourceRoots(cacheKey, roots)
+        return roots
     }
 
     fun normalizedKey(path: Path): String = path.toAbsolutePath().normalize().toString().lowercase()
@@ -119,6 +128,24 @@ internal object HoI4ResourceRoots {
         return paths.distinctBy { normalizedKey(it) }
     }
 
+    private fun cachedResourceRoots(key: ResourceRootCacheKey): List<Path>? {
+        val now = System.currentTimeMillis()
+        return synchronized(cacheLock) {
+            val cached = resourceRootsCache[key] ?: return@synchronized null
+            if (now - cached.createdAtMs <= CACHE_TTL_MS) cached.roots else null
+        }
+    }
+
+    private fun cacheResourceRoots(key: ResourceRootCacheKey, roots: List<Path>) {
+        synchronized(cacheLock) {
+            resourceRootsCache[key] = CachedRoots(roots, System.currentTimeMillis())
+            if (resourceRootsCache.size > 16) {
+                val oldestKey = resourceRootsCache.minByOrNull { it.value.createdAtMs }?.key
+                if (oldestKey != null) resourceRootsCache.remove(oldestKey)
+            }
+        }
+    }
+
     private fun findPrioritySettings(
         byDirectory: Map<String, ParadoxModSettingsState>,
         priorityRoot: Path
@@ -168,5 +195,16 @@ internal object HoI4ResourceRoots {
     private data class ModRootPlan(
         val roots: List<Path>,
         val settings: List<ParadoxModSettingsState>
+    )
+
+    private data class ResourceRootCacheKey(
+        val projectKey: String,
+        val projectFirst: Boolean,
+        val gameFirst: Boolean
+    )
+
+    private data class CachedRoots(
+        val roots: List<Path>,
+        val createdAtMs: Long
     )
 }
