@@ -1,0 +1,36 @@
+<!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
+<idea-plugin>
+    <id>net.posdaca.oiia</id>
+
+    <name>%plugin.name</name>
+
+    <vendor url="https://github.com/DragonKnightOfBreeze/Paradox-Language-Support">Oiia Team</vendor>
+
+    <description>%plugin.description</description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>icu.windea.pls</depends>
+
+    <resource-bundle>messages.OiiaBundle</resource-bundle>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow id="NationalFocusPreview" factoryClass="net.posdaca.oiia.focus.NationalFocusPreviewToolWindowFactory"
+                    icon="AllIcons.Toolwindows.ToolWindowPalette"
+                    anchor="right"
+                    secondary="true"/>
+        <toolWindow id="TechnologyPreview" factoryClass="net.posdaca.oiia.technology.TechnologyPreviewToolWindowFactory"
+                    icon="AllIcons.Toolwindows.ToolWindowPalette"
+                    anchor="right"
+                    secondary="true"/>
+        <toolWindow id="MapPreview" factoryClass="net.posdaca.oiia.map.MapPreviewToolWindowFactory"
+                    icon="AllIcons.Toolwindows.ToolWindowPalette"
+                    anchor="right"
+                    secondary="true"/>
+    </extensions>
+
+    <extensions defaultExtensionNs="icu.windea.pls">
+        <inferredGameTypeProvider implementation="net.posdaca.oiia.core.HoI4GameTypeProvider"/>
+        <quickDocTextProvider implementation="net.posdaca.oiia.focus.NationalFocusQuickDocTextProvider"/>
+    </extensions>
+
+</idea-plugin>
