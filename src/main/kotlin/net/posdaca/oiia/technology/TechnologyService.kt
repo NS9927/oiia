@@ -9,13 +9,13 @@ import com.intellij.psi.search.FileTypeIndex
 import com.intellij.psi.search.GlobalSearchScope
 import icu.windea.pls.lang.resolve.ParadoxLocalisationService
 import icu.windea.pls.lang.util.ParadoxDefinitionManager
-import icu.windea.pls.lang.util.ParadoxImageManager
 import icu.windea.pls.localisation.ParadoxLocalisationFileType
 import icu.windea.pls.localisation.psi.ParadoxLocalisationFile
 import icu.windea.pls.script.psi.ParadoxScriptBlock
 import icu.windea.pls.script.psi.ParadoxScriptFile
 import icu.windea.pls.script.psi.ParadoxScriptProperty
 import net.posdaca.oiia.core.HoI4ResourceRoots
+import net.posdaca.oiia.core.ParadoxSpriteResolver
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
@@ -33,6 +33,7 @@ class TechnologyService(private val project: Project) {
     private val cachedRoots = mutableListOf<Path>()
     private val cachedIconFiles = mutableMapOf<String, String>()
     private val cachedSpriteIconFiles = mutableMapOf<String, String>()
+    private val spriteResolver = ParadoxSpriteResolver(project)
     private var cachesValid = false
 
     fun parseTechnologyTreesFromFile(psiFile: PsiFile): List<TechnologyTreeData> {
@@ -136,14 +137,7 @@ class TechnologyService(private val project: Project) {
     }
 
     private fun resolvePrimaryImagePath(prop: ParadoxScriptProperty): String? {
-        return try {
-            ParadoxImageManager.resolveUrlByDefinition(prop)
-                ?: ParadoxDefinitionManager.getPrimaryImages(prop).firstOrNull()?.virtualFile?.let { vf ->
-                    ParadoxImageManager.resolveUrlByFile(vf, project) ?: vf.path
-                }
-        } catch (_: Exception) {
-            null
-        }
+        return spriteResolver.resolveDefinitionImage(prop)
     }
 
     private fun resolvePrimaryLocalisations(prop: ParadoxScriptProperty): List<String> {
@@ -201,7 +195,12 @@ class TechnologyService(private val project: Project) {
 
                 if (version != resolutionVersion.get()) return@executeOnPooledThread
 
-                val iconMap = searchIconsCached(buildIconNames(allTechnologies))
+                val iconNamesById = buildIconNames(allTechnologies)
+                val iconMap = spriteResolver.resolveForCandidates(iconNamesById).toMutableMap()
+                val missingIconNamesById = iconNamesById.filterKeys { it !in iconMap }
+                if (missingIconNamesById.isNotEmpty()) {
+                    iconMap.putAll(searchIconsCached(missingIconNamesById))
+                }
 
                 if (version != resolutionVersion.get()) return@executeOnPooledThread
 

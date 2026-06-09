@@ -22,6 +22,10 @@
                     icon="AllIcons.Toolwindows.ToolWindowPalette"
                     anchor="right"
                     secondary="true"/>
+        <toolWindow id="GuiPreview" factoryClass="net.posdaca.oiia.gui.GuiPreviewToolWindowFactory"
+                    icon="AllIcons.Toolwindows.ToolWindowPalette"
+                    anchor="right"
+                    secondary="true"/>
         <toolWindow id="MapPreview" factoryClass="net.posdaca.oiia.map.MapPreviewToolWindowFactory"
                     icon="AllIcons.Toolwindows.ToolWindowPalette"
                     anchor="right"

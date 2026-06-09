@@ -7,14 +7,13 @@ import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
 import com.intellij.psi.search.FileTypeIndex
 import com.intellij.psi.search.GlobalSearchScope
-import icu.windea.pls.lang.util.ParadoxDefinitionManager
-import icu.windea.pls.lang.util.ParadoxImageManager
 import icu.windea.pls.localisation.ParadoxLocalisationFileType
 import icu.windea.pls.localisation.psi.ParadoxLocalisationFile
 import icu.windea.pls.script.psi.ParadoxScriptBlock
 import icu.windea.pls.script.psi.ParadoxScriptFile
 import icu.windea.pls.script.psi.ParadoxScriptProperty
 import net.posdaca.oiia.core.HoI4ResourceRoots
+import net.posdaca.oiia.core.ParadoxSpriteResolver
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
@@ -43,6 +42,7 @@ class NationalFocusService(private val project: Project) {
     private val cachedRoots = mutableListOf<Path>()
     private val cachedIconFiles = mutableMapOf<String, String>()
     private val cachedSpriteIconFiles = mutableMapOf<String, String>()
+    private val spriteResolver = ParadoxSpriteResolver(project)
     private var cachesValid = false
 
     fun parseFocusTreeFromFile(psiFile: PsiFile): List<NationalFocusTreeData> {
@@ -372,15 +372,7 @@ class NationalFocusService(private val project: Project) {
     }
 
     private fun resolvePlsPrimaryImagePath(focusProperty: ParadoxScriptProperty): String? {
-        return try {
-            ParadoxImageManager.resolveUrlByDefinition(focusProperty)
-                ?: ParadoxDefinitionManager.getPrimaryImages(focusProperty)
-                    .firstOrNull()
-                    ?.virtualFile
-                    ?.let { vf -> ParadoxImageManager.resolveUrlByFile(vf, project) ?: vf.path }
-        } catch (_: Exception) {
-            null
-        }
+        return spriteResolver.resolveDefinitionImage(focusProperty)
     }
 
     fun resolveFocusData(focus: FocusData): FocusData = resolvedData[focus.id] ?: focus
@@ -432,7 +424,11 @@ class NationalFocusService(private val project: Project) {
                 LOG.info("Loaded ${locMap.size} loc entries")
 
                 val iconNamesById = buildIconNames(allFocuses)
-                val iconMap = searchIconsCached(iconNamesById)
+                val iconMap = spriteResolver.resolveForCandidates(iconNamesById).toMutableMap()
+                val missingIconNamesById = iconNamesById.filterKeys { it !in iconMap }
+                if (missingIconNamesById.isNotEmpty()) {
+                    iconMap.putAll(searchIconsCached(missingIconNamesById))
+                }
 
                 if (version != resolutionVersion.get()) return@executeOnPooledThread
 

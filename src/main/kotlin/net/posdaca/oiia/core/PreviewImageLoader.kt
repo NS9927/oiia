@@ -3,6 +3,10 @@ package net.posdaca.oiia.core
 import icu.windea.pls.images.ImageService
 import java.awt.image.BufferedImage
 import java.net.URI
+import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+import java.nio.file.Path
 import java.nio.file.Paths
 import javax.imageio.ImageIO
 
@@ -37,17 +41,26 @@ internal object PreviewImageLoader {
     private fun readImage(pathOrUrl: String): BufferedImage? {
         return try {
             val value = pathOrUrl.trim()
-            if (value.startsWith("file:", ignoreCase = true) ||
-                value.startsWith("http:", ignoreCase = true) ||
-                value.startsWith("https:", ignoreCase = true)
-            ) {
-                ImageIO.read(URI(value).toURL())
-            } else {
-                val file = Paths.get(value).toFile()
-                if (!file.exists()) null else ImageIO.read(file)
+            when {
+                value.startsWith("file:", ignoreCase = true) -> readLocalFileUrl(value)
+                value.startsWith("http:", ignoreCase = true) || value.startsWith("https:", ignoreCase = true) -> {
+                    ImageIO.read(URI(value).toURL())
+                }
+                else -> readPath(Paths.get(value))
             }
         } catch (_: Exception) {
             null
         }
+    }
+
+    private fun readLocalFileUrl(value: String): BufferedImage? {
+        val uriPath = runCatching { Paths.get(URI(value)) }.getOrNull()
+        if (uriPath != null) return readPath(uriPath)
+        val decoded = URLDecoder.decode(value.removePrefix("file:").removePrefix("//"), StandardCharsets.UTF_8)
+        return readPath(Paths.get(decoded))
+    }
+
+    private fun readPath(path: Path): BufferedImage? {
+        return if (!Files.isRegularFile(path)) null else ImageIO.read(path.toFile())
     }
 }
