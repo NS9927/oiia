@@ -1,10 +1,14 @@
 package net.posdaca.oiia.gui
 
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.codeInsight.hint.HintUtil
 import com.intellij.ui.JBColor
+import com.intellij.ui.HintHint
+import com.intellij.ui.LightweightHint
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPanel
 import com.intellij.ui.components.JBScrollPane
@@ -12,13 +16,14 @@ import com.intellij.ui.scale.JBUIScale
 import com.intellij.util.ui.JBFont
 import net.posdaca.OiiaBundle
 import net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteInfo
+import net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteInsets
 import net.posdaca.oiia.core.PreviewImageLoader
 import java.awt.BasicStroke
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Cursor
 import java.awt.Dimension
-import java.awt.FontMetrics
+import java.awt.Font
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.Point
@@ -39,6 +44,7 @@ import javax.swing.JPanel
 import javax.swing.Scrollable
 import javax.swing.SwingUtilities
 import javax.swing.ToolTipManager
+import javax.swing.Timer
 import kotlin.math.max
 import kotlin.math.pow
 import kotlin.math.roundToInt
@@ -144,15 +150,24 @@ class GuiPreviewPanel(
         private var zoomFactor = 1.0
         private var hovered: GuiLayoutNode? = null
         private var selected: GuiLayoutNode? = null
+        private var lockedNode: GuiLayoutNode? = null
+        private var lockedHint: LightweightHint? = null
         private var dragPressScreenPoint: Point? = null
         private var dragScrollStart: Point? = null
         private var pressedNode: GuiLayoutNode? = null
         private var draggingView = false
+        private var singleClickTimer: Timer? = null
 
         private val scrollableHsb: javax.swing.JScrollBar?
             get() = (SwingUtilities.getAncestorOfClass(JBScrollPane::class.java, this) as? JBScrollPane)?.horizontalScrollBar
         private val scrollableVsb: javax.swing.JScrollBar?
             get() = (SwingUtilities.getAncestorOfClass(JBScrollPane::class.java, this) as? JBScrollPane)?.verticalScrollBar
+
+        companion object {
+            private const val PREVIEW_SCREEN_WIDTH = 1920
+            private const val PREVIEW_SCREEN_HEIGHT = 1080
+            private val LOG = Logger.getInstance(GuiCanvas::class.java)
+        }
 
         private data class SpriteRenderKey(
             val name: String,
@@ -166,12 +181,34 @@ class GuiPreviewPanel(
             val noOfFrames: Int?,
             val defaultFrame: Int?,
             val border: String?,
+            val spriteSize: String?,
             val tilingCenter: Boolean,
             val horizontal: Boolean?,
             val progressRatio: Int,
             val rotation: Int?,
-            val amount: Int?
+            val amount: Int?,
+            val steps: Int?,
+            val alwaysTransparent: Boolean?
         )
+
+        private enum class FrameDirection {
+            HORIZONTAL,
+            VERTICAL
+        }
+
+        private data class GuiAnchor(val xFactor: Double, val yFactor: Double) {
+            companion object {
+                val UPPER_LEFT = GuiAnchor(0.0, 0.0)
+                val UP = GuiAnchor(0.5, 0.0)
+                val UPPER_RIGHT = GuiAnchor(1.0, 0.0)
+                val LEFT = GuiAnchor(0.0, 0.5)
+                val CENTER = GuiAnchor(0.5, 0.5)
+                val RIGHT = GuiAnchor(1.0, 0.5)
+                val LOWER_LEFT = GuiAnchor(0.0, 1.0)
+                val DOWN = GuiAnchor(0.5, 1.0)
+                val LOWER_RIGHT = GuiAnchor(1.0, 1.0)
+            }
+        }
 
         init {
             isOpaque = true
@@ -199,9 +236,17 @@ class GuiPreviewPanel(
                         val clicked = findNodeAt(screenToLogical(e.point))
                         if (clicked != null && clicked.element == pressedNode?.element) {
                             selected = clicked
-                            if (e.clickCount >= 2) navigateTo(clicked.element)
+                            if (e.clickCount >= 2) {
+                                cancelPendingSingleClick()
+                                hideNodeHint(clearLocked = true)
+                                navigateTo(clicked.element)
+                            } else {
+                                scheduleNodeHint(clicked, e.point)
+                            }
                         } else if (clicked == null) {
+                            cancelPendingSingleClick()
                             selected = null
+                            hideNodeHint(clearLocked = true)
                         }
                         repaint()
                     }
@@ -232,6 +277,7 @@ class GuiPreviewPanel(
                     val dy = e.locationOnScreen.y - pressPoint.y
                     val threshold = JBUIScale.scale(4)
                     if (!draggingView && dx * dx + dy * dy < threshold * threshold) return
+                    if (!draggingView) cancelPendingSingleClick()
                     draggingView = true
                     cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
                     setScrollBarValue(scrollableHsb, scrollStart.x - dx)
@@ -258,6 +304,8 @@ class GuiPreviewPanel(
         }
 
         fun setRoot(nextRoot: GuiElement) {
+            cancelPendingSingleClick()
+            hideNodeHint(clearLocked = true)
             root = nextRoot
             nodes = layout(nextRoot)
             logicalSize = computeLogicalSize(nodes)
@@ -298,8 +346,9 @@ class GuiPreviewPanel(
         override fun getScrollableTracksViewportHeight(): Boolean = false
 
         override fun getToolTipText(event: MouseEvent?): String? {
+            if (lockedNode != null) return null
             val node = event?.point?.let { findNodeAt(screenToLogical(it)) } ?: return null
-            return buildTooltip(node)
+            return buildTooltipText(node)
         }
 
         override fun paintComponent(g: Graphics) {
@@ -318,13 +367,25 @@ class GuiPreviewPanel(
             }
         }
 
+        override fun removeNotify() {
+            ToolTipManager.sharedInstance().unregisterComponent(this)
+            cancelPendingSingleClick()
+            hideNodeHint(clearLocked = true)
+            super.removeNotify()
+            imageCache.clear()
+            processedImageCache.clear()
+        }
+
         private fun layout(root: GuiElement): List<GuiLayoutNode> {
             val result = mutableListOf<GuiLayoutNode>()
-            val rootSize = root.preferredSize
+            val viewport = Rectangle(padding, padding, PREVIEW_SCREEN_WIDTH, PREVIEW_SCREEN_HEIGHT)
+            val rootSize = resolveElementSize(root, viewport, null)
+            val rootBounds = Rectangle(padding, padding, rootSize.width.coerceAtLeast(1), rootSize.height.coerceAtLeast(1))
             collectLayout(
                 element = root,
                 parentBounds = null,
-                bounds = Rectangle(padding, padding, rootSize.width.coerceAtLeast(1), rootSize.height.coerceAtLeast(1)),
+                bounds = rootBounds,
+                inheritedClip = rootBounds,
                 depth = 0,
                 result = result
             )
@@ -335,20 +396,136 @@ class GuiPreviewPanel(
             element: GuiElement,
             parentBounds: Rectangle?,
             bounds: Rectangle,
+            inheritedClip: Rectangle?,
             depth: Int,
             result: MutableList<GuiLayoutNode>
         ) {
             val issues = buildIssues(element, parentBounds, bounds)
-            result.add(GuiLayoutNode(element, bounds, depth, issues))
+            val paintClip = intersectRect(inheritedClip, bounds)
+            val childClip = if (element.clipping) paintClip else inheritedClip
+            result.add(GuiLayoutNode(element, bounds, paintClip, depth, issues))
             for (child in element.children) {
-                val childSize = child.preferredSize
-                val childBounds = Rectangle(
-                    bounds.x + child.position.x,
-                    bounds.y + child.position.y,
-                    childSize.width.coerceAtLeast(1),
-                    childSize.height.coerceAtLeast(1)
-                )
-                collectLayout(child, bounds, childBounds, depth + 1, result)
+                val childSize = resolveElementSize(child, bounds, element)
+                val childBounds = resolveElementBounds(child, bounds, childSize)
+                collectLayout(child, bounds, childBounds, childClip, depth + 1, result)
+            }
+        }
+
+        private fun intersectRect(a: Rectangle?, b: Rectangle): Rectangle? {
+            if (a == null) return Rectangle(b)
+            val intersection = a.intersection(b)
+            return if (intersection.width <= 0 || intersection.height <= 0) null else intersection
+        }
+
+        private fun resolveElementSize(
+            element: GuiElement,
+            parentBounds: Rectangle,
+            parentElement: GuiElement?
+        ): Dimension {
+            if (element.fullscreen) return Dimension(parentBounds.width.coerceAtLeast(1), parentBounds.height.coerceAtLeast(1))
+            if (element.type.equals("background", ignoreCase = true) && element.size == null) {
+                return Dimension(parentBounds.width.coerceAtLeast(1), parentBounds.height.coerceAtLeast(1))
+            }
+            val declared = element.size
+            val spriteSize = spriteInfo(element)?.let { info ->
+                info.primaryImagePath?.let { PreviewImageLoader.load(it, imageCache) }?.let { nativeSpriteSize(it, info) }
+            }
+            val textSize = textSizeFallback(element, parentBounds)
+            val baseWidth = declared?.resolveWidth(parentBounds.width)
+                ?: textSize?.width
+                ?: spriteSize?.width
+                ?: element.preferredSize.width
+            val baseHeight = declared?.resolveHeight(parentBounds.height)
+                ?: textSize?.height
+                ?: spriteSize?.height
+                ?: element.preferredSize.height
+            val scale = element.scale?.takeIf { it > 0.0 } ?: 1.0
+            var width = (baseWidth * scale).roundToInt().coerceAtLeast(1)
+            var height = (baseHeight * scale).roundToInt().coerceAtLeast(1)
+
+            if (element.preserveAspectRatio && declared != null && spriteSize != null && spriteSize.width > 0 && spriteSize.height > 0) {
+                val ratio = spriteSize.width.toDouble() / spriteSize.height.toDouble()
+                if (declared.widthValue.percent && !declared.heightValue.percent) {
+                    height = (width / ratio).roundToInt().coerceAtLeast(1)
+                } else if (declared.heightValue.percent && !declared.widthValue.percent) {
+                    width = (height * ratio).roundToInt().coerceAtLeast(1)
+                } else {
+                    val fitted = fitAspectRatio(width, height, ratio)
+                    width = fitted.width
+                    height = fitted.height
+                }
+            }
+
+            if (parentElement?.type == "extendedScrollbarType" && element.size == null && element.type in setOf("slider", "track", "increaseButton", "decreaseButton")) {
+                val native = spriteSize
+                if (native != null) return Dimension(native.width.coerceAtLeast(1), native.height.coerceAtLeast(1))
+            }
+            return Dimension(width, height)
+        }
+
+        private fun textSizeFallback(element: GuiElement, parentBounds: Rectangle): Dimension? {
+            if (!isTextElement(element)) return null
+            val width = element.maxWidth?.resolveSize(parentBounds.width)
+            val height = element.maxHeight?.resolveSize(parentBounds.height)
+            if (width == null && height == null) return null
+            val fallback = element.preferredSize
+            return Dimension(
+                (width ?: fallback.width).coerceAtLeast(1),
+                (height ?: fallback.height).coerceAtLeast(1)
+            )
+        }
+
+        private fun isTextElement(element: GuiElement): Boolean {
+            return element.type.equals("instantTextBoxType", ignoreCase = true) ||
+                    element.type.equals("instantTextboxType", ignoreCase = true)
+        }
+
+        private fun fitAspectRatio(width: Int, height: Int, ratio: Double): Dimension {
+            val widthFromHeight = (height * ratio).roundToInt().coerceAtLeast(1)
+            if (widthFromHeight <= width) return Dimension(widthFromHeight, height)
+            val heightFromWidth = (width / ratio).roundToInt().coerceAtLeast(1)
+            return Dimension(width, heightFromWidth)
+        }
+
+        private fun resolveElementBounds(
+            element: GuiElement,
+            parentBounds: Rectangle,
+            size: Dimension
+        ): Rectangle {
+            val anchor = orientationAnchor(element.orientation, parentBounds)
+            val offsetX = element.position.resolveX(parentBounds.width)
+            val offsetY = element.position.resolveY(parentBounds.height)
+            val origo = if (element.centerPosition) GuiAnchor.CENTER else origoAnchor(element.origo)
+            val x = anchor.x + offsetX - (size.width * origo.xFactor).roundToInt()
+            val y = anchor.y + offsetY - (size.height * origo.yFactor).roundToInt()
+            return Rectangle(x, y, size.width.coerceAtLeast(1), size.height.coerceAtLeast(1))
+        }
+
+        private fun orientationAnchor(value: String?, parentBounds: Rectangle): Point {
+            val anchor = anchorFromGuiValue(value) ?: GuiAnchor.UPPER_LEFT
+            return Point(
+                parentBounds.x + (parentBounds.width * anchor.xFactor).roundToInt(),
+                parentBounds.y + (parentBounds.height * anchor.yFactor).roundToInt()
+            )
+        }
+
+        private fun origoAnchor(value: String?): GuiAnchor {
+            return anchorFromGuiValue(value) ?: GuiAnchor.UPPER_LEFT
+        }
+
+        private fun anchorFromGuiValue(value: String?): GuiAnchor? {
+            val normalized = value?.trim()?.trim('"')?.lowercase()?.replace('-', '_') ?: return null
+            return when (normalized) {
+                "upper_left" -> GuiAnchor.UPPER_LEFT
+                "up", "upper", "center_up", "center_upper", "upper_center" -> GuiAnchor.UP
+                "upper_right" -> GuiAnchor.UPPER_RIGHT
+                "left", "center_left" -> GuiAnchor.LEFT
+                "center", "centre" -> GuiAnchor.CENTER
+                "right", "center_right" -> GuiAnchor.RIGHT
+                "lower_left" -> GuiAnchor.LOWER_LEFT
+                "down", "lower", "center_down", "center_lower", "lower_center" -> GuiAnchor.DOWN
+                "lower_right" -> GuiAnchor.LOWER_RIGHT
+                else -> null
             }
         }
 
@@ -359,8 +536,8 @@ class GuiPreviewPanel(
         ): List<GuiPreviewIssue> {
             val issues = mutableListOf<GuiPreviewIssue>()
             val declaredSize = element.size
-            if (declaredSize != null && (declaredSize.width <= 0 || declaredSize.height <= 0)) {
-                issues.add(GuiPreviewIssue(GuiIssueSeverity.ERROR, "size is ${declaredSize.width} x ${declaredSize.height}"))
+            if (declaredSize != null && declaredSize.width == 0 && declaredSize.height == 0) {
+                issues.add(GuiPreviewIssue(GuiIssueSeverity.WARNING, "size is 0 x 0"))
             }
             if (element.primarySprite != null && spritePath(element) == null) {
                 issues.add(GuiPreviewIssue(GuiIssueSeverity.WARNING, "sprite not resolved: ${element.primarySprite}"))
@@ -396,58 +573,127 @@ class GuiPreviewPanel(
         }
 
         private fun paintNode(g: Graphics2D, node: GuiLayoutNode) {
+            val clipBounds = node.clipBounds ?: return
+            val oldClip = g.clip
+            g.clip = intersectClip(oldClip, clipBounds)
             val bounds = node.bounds
             val element = node.element
             val hasIssue = node.issues.any { it.severity != GuiIssueSeverity.INFO }
-            val spriteInfo = spriteInfo(element)
-            val sourceImage = spriteInfo?.primaryImagePath?.let { PreviewImageLoader.load(it, imageCache) }
-            val paintBounds = if (sourceImage != null && element.size == null && element.type == "iconType") {
-                val nativeSize = nativeSpriteSize(sourceImage, spriteInfo)
-                Rectangle(bounds.x, bounds.y, nativeSize.width, nativeSize.height)
-            } else {
-                bounds
+            try {
+                val spriteInfo = spriteInfo(element)
+                val sourceImage = spriteInfo?.primaryImagePath?.let { PreviewImageLoader.load(it, imageCache) }
+                val paintBounds = if (sourceImage != null && element.size == null && element.type == "iconType") {
+                    val nativeSize = nativeSpriteSize(sourceImage, spriteInfo)
+                    Rectangle(bounds.x, bounds.y, nativeSize.width, nativeSize.height)
+                } else {
+                    bounds
+                }
+                val image = spriteInfo?.let { preprocessedSpriteImage(element, it, paintBounds.width, paintBounds.height) }
+
+                if (image != null) {
+                    g.drawImage(image, paintBounds.x, paintBounds.y, null)
+                }
+                paintElementText(g, element, bounds)
+
+                if (hasIssue) {
+                    g.color = JBColor.RED
+                    g.fillOval(paintBounds.x + paintBounds.width - JBUIScale.scale(10), paintBounds.y + JBUIScale.scale(4), JBUIScale.scale(6), JBUIScale.scale(6))
+                }
+            } finally {
+                g.clip = oldClip
             }
-            val image = spriteInfo?.let { preprocessedSpriteImage(element, it, paintBounds.width, paintBounds.height) }
+        }
 
-            if (image != null) {
-                g.drawImage(image, paintBounds.x, paintBounds.y, null)
-            } else {
-                g.color = backgroundFor(element.type)
-                g.fillRect(bounds.x, bounds.y, bounds.width, bounds.height)
+        private fun paintElementText(g: Graphics2D, element: GuiElement, bounds: Rectangle) {
+            val value = localizedText(element.text) ?: element.text?.trim()?.trim('"') ?: return
+            if (value.isBlank()) return
+            val oldClip = g.clip
+            try {
+                g.clip = intersectClip(oldClip, bounds)
+                g.font = textFont(element)
+                g.color = JBColor.foreground()
+                val metrics = g.fontMetrics
+                val lines = wrapText(metrics, value, bounds.width - JBUIScale.scale(8))
+                if (lines.isEmpty()) return
+                val lineHeight = metrics.height
+                val textHeight = lineHeight * lines.size
+                var y = when (normalized(element.verticalAlignment)) {
+                    "center", "centre" -> bounds.y + ((bounds.height - textHeight) / 2).coerceAtLeast(0) + metrics.ascent
+                    "bottom", "lower" -> bounds.y + (bounds.height - textHeight).coerceAtLeast(0) + metrics.ascent
+                    else -> bounds.y + JBUIScale.scale(3) + metrics.ascent
+                }
+                for (line in lines) {
+                    val textWidth = metrics.stringWidth(line)
+                    val x = when (normalized(element.format)) {
+                        "right" -> bounds.x + bounds.width - textWidth - JBUIScale.scale(4)
+                        "center", "centre" -> bounds.x + (bounds.width - textWidth) / 2
+                        else -> bounds.x + JBUIScale.scale(4)
+                    }
+                    g.drawString(line, x, y)
+                    y += lineHeight
+                    if (y - metrics.ascent > bounds.y + bounds.height) break
+                }
+            } finally {
+                g.clip = oldClip
             }
+        }
 
-            g.color = if (hasIssue) JBColor.RED else borderFor(element.type)
-            g.stroke = BasicStroke(if (node.depth == 0) 2f else 1f)
-            g.drawRect(paintBounds.x, paintBounds.y, paintBounds.width, paintBounds.height)
-
-            val label = labelFor(element)
-            if (label.isNotBlank()) paintLabel(g, label, paintBounds, element.type)
-
-            if (hasIssue) {
-                g.color = JBColor.RED
-                g.fillOval(paintBounds.x + paintBounds.width - JBUIScale.scale(10), paintBounds.y + JBUIScale.scale(4), JBUIScale.scale(6), JBUIScale.scale(6))
+        private fun textFont(element: GuiElement): Font {
+            val size = when {
+                (element.buttonFont ?: element.font)?.contains("18") == true -> 13f
+                (element.buttonFont ?: element.font)?.contains("22") == true -> 16f
+                else -> 12f
             }
+            return JBFont.label().deriveFont(size)
+        }
+
+        private fun wrapText(metrics: java.awt.FontMetrics, text: String, maxWidth: Int): List<String> {
+            val width = maxWidth.coerceAtLeast(JBUIScale.scale(12))
+            val words = text.replace("\\n", "\n").lines().flatMapIndexed { index, line ->
+                val tokens = line.split(Regex("""\s+""")).filter { it.isNotBlank() }
+                if (index == 0) tokens else listOf("\n") + tokens
+            }
+            if (words.isEmpty()) return emptyList()
+            val result = mutableListOf<String>()
+            var current = ""
+            for (word in words) {
+                if (word == "\n") {
+                    if (current.isNotBlank()) result.add(current)
+                    current = ""
+                    continue
+                }
+                val candidate = if (current.isBlank()) word else "$current $word"
+                if (metrics.stringWidth(candidate) <= width) {
+                    current = candidate
+                } else {
+                    if (current.isNotBlank()) result.add(current)
+                    current = fitText(metrics, word, width)
+                }
+            }
+            if (current.isNotBlank()) result.add(current)
+            return result
+        }
+
+        private fun fitText(metrics: java.awt.FontMetrics, value: String, width: Int): String {
+            if (metrics.stringWidth(value) <= width) return value
+            var text = value
+            while (text.length > 1 && metrics.stringWidth("$text...") > width) {
+                text = text.dropLast(1)
+            }
+            return if (text.length <= 1) text else "$text..."
+        }
+
+        private fun normalized(value: String?): String? {
+            return value?.trim()?.trim('"')?.lowercase()?.replace('-', '_')
         }
 
         private fun nativeSpriteSize(image: BufferedImage, spriteInfo: SpriteInfo): Dimension {
             val frames = spriteInfo.noOfFrames?.coerceAtLeast(1) ?: 1
-            val width = if (spriteInfo.subtype == "frame_animated_sprite" && frames > 1) {
-                (image.width / frames).coerceAtLeast(1)
-            } else {
-                image.width
+            if (frames <= 1) return Dimension(image.width, image.height)
+            return when (frameDirection(image, frames)) {
+                FrameDirection.HORIZONTAL -> Dimension((image.width / frames).coerceAtLeast(1), image.height)
+                FrameDirection.VERTICAL -> Dimension(image.width, (image.height / frames).coerceAtLeast(1))
             }
-            return Dimension(width, image.height)
-        }
-
-        private fun paintLabel(g: Graphics2D, label: String, bounds: Rectangle, type: String) {
-            val inset = JBUIScale.scale(5)
-            val text = fitText(g.fontMetrics, label, (bounds.width - inset * 2).coerceAtLeast(8))
-            val y = when (type) {
-                "instantTextBoxType", "buttonType", "editBoxType" -> bounds.y + (bounds.height + g.fontMetrics.ascent) / 2 - JBUIScale.scale(3)
-                else -> bounds.y + inset + g.fontMetrics.ascent
-            }
-            g.color = JBColor.foreground()
-            g.drawString(text, bounds.x + inset, y.coerceAtMost(bounds.y + bounds.height - inset))
         }
 
         private fun preprocessedSpriteImage(
@@ -458,7 +704,8 @@ class GuiPreviewPanel(
         ): BufferedImage? {
             val targetWidth = width.coerceAtLeast(1)
             val targetHeight = height.coerceAtLeast(1)
-            val sourceImage = spriteInfo.primaryImagePath?.let { PreviewImageLoader.load(it, imageCache) } ?: return null
+            val rawImage = spriteInfo.primaryImagePath?.let { PreviewImageLoader.load(it, imageCache) } ?: return null
+            val sourceImage = if (spriteInfo.usesCompositeTextures) rawImage else frameImage(rawImage, element, spriteInfo)
             val key = spriteRenderKey(element, spriteInfo, targetWidth, targetHeight)
             processedImageCache[key]?.let { return it }
 
@@ -468,12 +715,76 @@ class GuiPreviewPanel(
                 g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR)
                 g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
                 g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                paintSpriteImage(g, sourceImage, Rectangle(0, 0, targetWidth, targetHeight), element, spriteInfo)
+                val spriteBounds = if (element.preserveAspectRatio) {
+                    aspectFitBounds(sourceImage, targetWidth, targetHeight)
+                } else {
+                    Rectangle(0, 0, targetWidth, targetHeight)
+                }
+                paintSpriteImage(g, sourceImage, spriteBounds, element, spriteInfo)
             } finally {
                 g.dispose()
             }
             processedImageCache[key] = output
             return output
+        }
+
+        private fun frameImage(
+            image: BufferedImage,
+            element: GuiElement,
+            spriteInfo: SpriteInfo
+        ): BufferedImage {
+            val frames = spriteInfo.noOfFrames?.coerceAtLeast(1) ?: 1
+            if (frames <= 1) return image
+            val direction = frameDirection(image, frames)
+            val frame = resolveFrameIndex(element.frame ?: spriteInfo.defaultFrame, frames)
+            return when (direction) {
+                FrameDirection.HORIZONTAL -> {
+                    val frameWidth = (image.width / frames).coerceAtLeast(1)
+                    val sx = (frame * frameWidth).coerceAtMost(image.width - 1)
+                    val width = if (frame == frames - 1) image.width - sx else frameWidth.coerceAtMost(image.width - sx)
+                    LOG.info("GUI sprite frame crop: sprite=${spriteInfo.name} element=${element.name} raw=${image.width}x${image.height} frames=$frames frame=${element.frame} index=$frame direction=$direction crop=$sx,0 ${width}x${image.height}")
+                    image.getSubimage(sx, 0, width.coerceAtLeast(1), image.height)
+                }
+                FrameDirection.VERTICAL -> {
+                    val frameHeight = (image.height / frames).coerceAtLeast(1)
+                    val sy = (frame * frameHeight).coerceAtMost(image.height - 1)
+                    val height = if (frame == frames - 1) image.height - sy else frameHeight.coerceAtMost(image.height - sy)
+                    LOG.info("GUI sprite frame crop: sprite=${spriteInfo.name} element=${element.name} raw=${image.width}x${image.height} frames=$frames frame=${element.frame} index=$frame direction=$direction crop=0,$sy ${image.width}x$height")
+                    image.getSubimage(0, sy, image.width, height.coerceAtLeast(1))
+                }
+            }
+        }
+
+        private fun frameDirection(image: BufferedImage, frames: Int): FrameDirection {
+            if (frames <= 1) return FrameDirection.VERTICAL
+            val horizontalFrameWidth = image.width / frames
+            val verticalFrameHeight = image.height / frames
+            if (horizontalFrameWidth <= 0) return FrameDirection.VERTICAL
+            if (verticalFrameHeight <= 0) return FrameDirection.HORIZONTAL
+            val horizontalRatio = horizontalFrameWidth.toDouble() / image.height.toDouble()
+            val verticalRatio = image.width.toDouble() / verticalFrameHeight.toDouble()
+            return if (kotlin.math.abs(horizontalRatio - 1.0) <= kotlin.math.abs(verticalRatio - 1.0)) {
+                FrameDirection.HORIZONTAL
+            } else {
+                FrameDirection.VERTICAL
+            }
+        }
+
+        private fun resolveFrameIndex(frame: Int?, frames: Int): Int {
+            if (frame == null) return 0
+            if (frame <= 0) return 0
+            return (frame - 1).coerceIn(0, frames - 1)
+        }
+
+        private fun aspectFitBounds(sourceImage: BufferedImage, targetWidth: Int, targetHeight: Int): Rectangle {
+            val ratio = sourceImage.width.toDouble() / sourceImage.height.toDouble()
+            val fitted = fitAspectRatio(targetWidth, targetHeight, ratio)
+            return Rectangle(
+                (targetWidth - fitted.width) / 2,
+                (targetHeight - fitted.height) / 2,
+                fitted.width,
+                fitted.height
+            )
         }
 
         private fun spriteRenderKey(
@@ -483,6 +794,7 @@ class GuiPreviewPanel(
             height: Int
         ): SpriteRenderKey {
             val border = spriteInfo.borderSize?.let { "${it.left},${it.top},${it.right},${it.bottom}" }
+            val spriteSize = spriteInfo.size?.let { "${it.width},${it.height}" }
             return SpriteRenderKey(
                 name = spriteInfo.name,
                 subtype = spriteInfo.subtype,
@@ -495,11 +807,14 @@ class GuiPreviewPanel(
                 noOfFrames = spriteInfo.noOfFrames,
                 defaultFrame = spriteInfo.defaultFrame,
                 border = border,
+                spriteSize = spriteSize,
                 tilingCenter = spriteInfo.tilingCenter,
                 horizontal = element.horizontal ?: spriteInfo.horizontal,
                 progressRatio = (progressRatio(element) * 10_000).roundToInt(),
                 rotation = spriteInfo.rotation,
-                amount = spriteInfo.amount
+                amount = spriteInfo.amount,
+                steps = spriteInfo.steps,
+                alwaysTransparent = spriteInfo.alwaysTransparent
             )
         }
 
@@ -514,32 +829,42 @@ class GuiPreviewPanel(
                 spriteInfo.subtype == "progressbar" -> paintProgressBar(g, image, bounds, element, spriteInfo)
                 spriteInfo.subtype == "circular_progressbar" -> paintCircularProgressBar(g, image, bounds, spriteInfo)
                 spriteInfo.subtype == "masked_shield" -> paintLayeredSprite(g, image, bounds, spriteInfo)
-                spriteInfo.subtype == "frame_animated_sprite" -> paintFrameSprite(g, image, bounds, element, spriteInfo)
-                element.quadTextureSprite != null || spriteInfo.subtype == "quad_texture" -> tileImage(g, image, bounds)
-                spriteInfo.subtype == "cornered_tile_sprite" && spriteInfo.borderSize != null -> {
-                    paintNinePatch(g, image, bounds, spriteInfo.borderSize, spriteInfo.tilingCenter)
+                spriteInfo.borderSize != null -> {
+                    paintNinePatch(g, image, bounds, effectiveBorderInsets(image, spriteInfo), spriteInfo.tilingCenter)
                 }
+                element.quadTextureSprite != null || spriteInfo.subtype == "quad_texture" -> tileImage(g, image, bounds)
                 else -> g.drawImage(image, bounds.x, bounds.y, bounds.width, bounds.height, null)
             }
         }
 
-        private fun paintFrameSprite(
-            g: Graphics2D,
-            image: BufferedImage,
-            bounds: Rectangle,
-            element: GuiElement,
-            spriteInfo: SpriteInfo
-        ) {
-            val frames = spriteInfo.noOfFrames?.coerceAtLeast(1) ?: 1
-            if (frames <= 1) {
-                g.drawImage(image, bounds.x, bounds.y, bounds.width, bounds.height, null)
-                return
-            }
-            val frameWidth = (image.width / frames).coerceAtLeast(1)
-            val frame = (element.frame ?: spriteInfo.defaultFrame ?: 0).coerceIn(0, frames - 1)
-            val sx1 = frame * frameWidth
-            val sx2 = if (frame == frames - 1) image.width else (sx1 + frameWidth).coerceAtMost(image.width)
-            g.drawImage(image, bounds.x, bounds.y, bounds.x + bounds.width, bounds.y + bounds.height, sx1, 0, sx2, image.height, null)
+        private fun effectiveBorderInsets(image: BufferedImage, spriteInfo: SpriteInfo): SpriteInsets {
+            val insets = spriteInfo.borderSize ?: return SpriteInsets(0, 0, 0, 0)
+            val size = spriteInfo.size
+            if (size == null || size.width <= 0 || size.height <= 0) return insets.coerceFor(image)
+            if (size.width == image.width && size.height == image.height) return insets.coerceFor(image)
+
+            fun scaleX(value: Int): Int = scaleBorderValue(value, size.width, image.width)
+            fun scaleY(value: Int): Int = scaleBorderValue(value, size.height, image.height)
+            return SpriteInsets(
+                left = scaleX(insets.left),
+                top = scaleY(insets.top),
+                right = scaleX(insets.right),
+                bottom = scaleY(insets.bottom)
+            ).coerceFor(image)
+        }
+
+        private fun scaleBorderValue(value: Int, declaredTotal: Int, imageTotal: Int): Int {
+            if (value <= 0 || declaredTotal <= 0 || imageTotal <= 0) return value.coerceAtLeast(0)
+            val scaled = (value * imageTotal.toDouble() / declaredTotal.toDouble()).roundToInt()
+            return scaled.coerceAtLeast(1)
+        }
+
+        private fun SpriteInsets.coerceFor(image: BufferedImage): SpriteInsets {
+            val left = left.coerceIn(0, image.width / 2)
+            val right = right.coerceIn(0, image.width - left)
+            val top = top.coerceIn(0, image.height / 2)
+            val bottom = bottom.coerceIn(0, image.height - top)
+            return SpriteInsets(left, top, right, bottom)
         }
 
         private fun paintProgressBar(
@@ -549,12 +874,14 @@ class GuiPreviewPanel(
             element: GuiElement,
             spriteInfo: SpriteInfo
         ) {
-            val background = spriteInfo.imagePath1?.let { PreviewImageLoader.load(it, imageCache) } ?: fallbackImage
-            val foreground = spriteInfo.imagePath2?.let { PreviewImageLoader.load(it, imageCache) }
-            g.drawImage(background, bounds.x, bounds.y, bounds.width, bounds.height, null)
-            if (foreground == null) return
+            val foreground = spriteInfo.imagePath1?.let { PreviewImageLoader.load(it, imageCache) } ?: fallbackImage
+            val background = spriteInfo.imagePath2?.let { PreviewImageLoader.load(it, imageCache) }
+            if (background != null) {
+                g.drawImage(background, bounds.x, bounds.y, bounds.width, bounds.height, null)
+            }
 
-            val ratio = progressRatio(element).coerceIn(0.0, 1.0)
+            val ratio = steppedProgressRatio(element, spriteInfo)
+            if (ratio <= 0.0) return
             val horizontal = element.horizontal ?: spriteInfo.horizontal ?: true
             val oldClip = g.clip
             val clip = if (horizontal) {
@@ -580,10 +907,11 @@ class GuiPreviewPanel(
             bounds: Rectangle,
             spriteInfo: SpriteInfo
         ) {
-            val background = spriteInfo.imagePath1?.let { PreviewImageLoader.load(it, imageCache) } ?: fallbackImage
-            val foreground = spriteInfo.imagePath2?.let { PreviewImageLoader.load(it, imageCache) }
-            g.drawImage(background, bounds.x, bounds.y, bounds.width, bounds.height, null)
-            if (foreground == null) return
+            val foreground = spriteInfo.imagePath1?.let { PreviewImageLoader.load(it, imageCache) } ?: fallbackImage
+            val background = spriteInfo.imagePath2?.let { PreviewImageLoader.load(it, imageCache) }
+            if (background != null) {
+                g.drawImage(background, bounds.x, bounds.y, bounds.width, bounds.height, null)
+            }
 
             val ratio = ((spriteInfo.amount ?: 50).toDouble() / 100.0).coerceIn(0.0, 1.0)
             if (ratio <= 0.0) return
@@ -616,6 +944,15 @@ class GuiPreviewPanel(
             val overlay = spriteInfo.imagePath2?.let { PreviewImageLoader.load(it, imageCache) }
             g.drawImage(base, bounds.x, bounds.y, bounds.width, bounds.height, null)
             if (overlay != null) g.drawImage(overlay, bounds.x, bounds.y, bounds.width, bounds.height, null)
+        }
+
+        private val SpriteInfo.usesCompositeTextures: Boolean
+            get() = subtype == "progressbar" || subtype == "circular_progressbar" || subtype == "masked_shield"
+
+        private fun steppedProgressRatio(element: GuiElement, spriteInfo: SpriteInfo): Double {
+            val ratio = progressRatio(element).coerceIn(0.0, 1.0)
+            val steps = spriteInfo.steps?.takeIf { it > 1 } ?: return ratio
+            return (ratio * steps).roundToInt().toDouble() / steps.toDouble()
         }
 
         private fun tileImage(g: Graphics2D, image: BufferedImage, bounds: Rectangle) {
@@ -662,7 +999,7 @@ class GuiPreviewPanel(
             g: Graphics2D,
             image: BufferedImage,
             bounds: Rectangle,
-            insets: net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteInsets,
+            insets: SpriteInsets,
             tileCenter: Boolean
         ) {
             val left = insets.left.coerceIn(0, image.width / 2)
@@ -699,7 +1036,6 @@ class GuiPreviewPanel(
             if (total <= 0) return 0 to 0
             val sum = start + end
             if (sum <= total) return start to end
-            if (sum <= 0) return 0 to 0
             val fittedStart = (total.toDouble() * start / sum).roundToInt().coerceIn(0, total)
             return fittedStart to (total - fittedStart)
         }
@@ -727,31 +1063,6 @@ class GuiPreviewPanel(
             g.drawRect(b.x - 2, b.y - 2, b.width + 4, b.height + 4)
         }
 
-        private fun labelFor(element: GuiElement): String {
-            val text = element.text?.let { localizedText(it) ?: it.trim('"') }
-            return text ?: element.name ?: element.primarySprite ?: element.type
-        }
-
-        private fun backgroundFor(type: String): Color {
-            return when (type) {
-                "containerWindowType" -> JBColor(0xF7F8FA, 0x25272B)
-                "buttonType" -> JBColor(0xD9E5F4, 0x33465F)
-                "instantTextBoxType" -> JBColor(0xFFF7D6, 0x4A432B)
-                "iconType" -> JBColor(0xE9E9E9, 0x3A3A3A)
-                else -> JBColor(0xEEF1F4, 0x30343A)
-            }
-        }
-
-        private fun borderFor(type: String): Color {
-            return when (type) {
-                "containerWindowType" -> JBColor.border()
-                "buttonType" -> JBColor(0x59789E, 0x7895BA)
-                "instantTextBoxType" -> JBColor(0x9B8530, 0xBFA74A)
-                "iconType" -> JBColor(0x777777, 0x999999)
-                else -> JBColor(0x7F8A94, 0x8A96A3)
-            }
-        }
-
         private fun spritePath(element: GuiElement): String? {
             return spriteInfo(element)?.primaryImagePath
         }
@@ -774,7 +1085,9 @@ class GuiPreviewPanel(
         }
 
         private fun findNodeAt(point: Point): GuiLayoutNode? {
-            return nodes.asReversed().firstOrNull { it.bounds.contains(point) }
+            return nodes.asReversed().firstOrNull { node ->
+                node.bounds.contains(point) && node.clipBounds?.contains(point) == true
+            }
         }
 
         private fun screenToLogical(point: Point): Point {
@@ -791,25 +1104,124 @@ class GuiPreviewPanel(
             }
         }
 
-        private fun buildTooltip(node: GuiLayoutNode): String {
+        private fun scheduleNodeHint(node: GuiLayoutNode, point: Point) {
+            cancelPendingSingleClick()
+            val hintPoint = Point(point)
+            singleClickTimer = Timer(multiClickInterval()) {
+                singleClickTimer = null
+                if (isShowing) showNodeHint(node, hintPoint)
+            }.apply {
+                isRepeats = false
+                start()
+            }
+        }
+
+        private fun cancelPendingSingleClick() {
+            singleClickTimer?.stop()
+            singleClickTimer = null
+        }
+
+        private fun showNodeHint(node: GuiLayoutNode, point: Point) {
+            hideNodeHint(clearLocked = false)
+            selected = node
+            lockedNode = node
+
+            val content = HintUtil.createInformationLabel(buildDetailText(node))
+            content.border = BorderFactory.createCompoundBorder(
+                HintUtil.createHintBorder(),
+                BorderFactory.createEmptyBorder(
+                    JBUIScale.scale(10),
+                    JBUIScale.scale(12),
+                    JBUIScale.scale(10),
+                    JBUIScale.scale(12)
+                )
+            )
+            content.background = HintUtil.getInformationColor()
+            content.isOpaque = true
+
+            val hint = LightweightHint(content)
+            hint.setForceShowAsPopup(true)
+            hint.setCancelOnClickOutside(true)
+            hint.setCancelOnOtherWindowOpen(true)
+            hint.addHintListener {
+                if (lockedHint === hint) {
+                    lockedHint = null
+                    lockedNode = null
+                    repaint()
+                }
+            }
+
+            val hintPoint = computeHintPoint(point, content)
+            val hintHint = HintHint(this, hintPoint)
+                .setTextBg(HintUtil.getInformationColor())
+                .setTextFg(JBColor.foreground())
+                .setBorderColor(HintUtil.getHintBorderColor())
+                .setShowImmediately(true)
+            hint.show(this, hintPoint.x, hintPoint.y, this, hintHint)
+            lockedHint = hint
+            repaint()
+        }
+
+        private fun hideNodeHint(clearLocked: Boolean) {
+            val hint = lockedHint
+            lockedHint = null
+            if (hint?.isVisible == true) hint.hide()
+            if (clearLocked) lockedNode = null
+        }
+
+        private fun computeHintPoint(point: Point, content: JComponent): Point {
+            val gap = JBUIScale.scale(12)
+            val viewport = visibleRect
+            val size = content.preferredSize
+            val rightLimit = viewport.x + viewport.width - gap
+            val bottomLimit = viewport.y + viewport.height - gap
+            var x = point.x + gap
+            var y = point.y + gap
+            if (x + size.width > rightLimit) x = point.x - size.width - gap
+            if (y + size.height > bottomLimit) y = point.y - size.height - gap
+            return Point(x.coerceAtLeast(viewport.x + gap), y.coerceAtLeast(viewport.y + gap))
+        }
+
+        private fun buildTooltipText(node: GuiLayoutNode): String {
+            val element = node.element
+            val sb = StringBuilder("<html>")
+            appendRow(sb, "Type", element.type)
+            appendRow(sb, "Name", element.name)
+            appendRow(sb, "Sprite", element.primarySprite)
+            appendRow(sb, "Line", element.sourceLine.takeIf { it > 0 }?.toString())
+            sb.append("</html>")
+            return sb.toString()
+        }
+
+        private fun buildDetailText(node: GuiLayoutNode): String {
             val element = node.element
             val text = element.text?.let { localizedText(it) ?: it.trim('"') }
             val sb = StringBuilder("<html>")
             appendRow(sb, "Type", element.type)
             appendRow(sb, "Name", element.name)
-            appendRow(sb, "Position", "${element.position.x}, ${element.position.y}")
+            appendRow(sb, "Position", "${element.position.xValue}, ${element.position.yValue}")
+            appendRow(sb, "Bounds", "${node.bounds.x}, ${node.bounds.y}, ${node.bounds.width} x ${node.bounds.height}")
             appendRow(sb, "Size", "${node.bounds.width} x ${node.bounds.height}")
+            appendRow(sb, "Orientation", element.orientation)
+            appendRow(sb, "Origo", element.origo)
+            appendRow(sb, "Scale", element.scale?.toString())
+            appendRow(sb, "Center Position", element.centerPosition.takeIf { it }?.toString())
+            appendRow(sb, "Preserve Aspect", element.preserveAspectRatio.takeIf { it }?.toString())
             appendRow(sb, "Sprite", element.primarySprite)
             val info = spriteInfo(element)
             appendRow(sb, "Subtype", info?.subtype)
             appendRow(sb, "Frame", element.frame?.toString() ?: info?.defaultFrame?.toString())
+            appendRow(sb, "Frame Index", info?.noOfFrames?.let { resolveFrameIndex(element.frame ?: info.defaultFrame, it.coerceAtLeast(1)).toString() })
+            appendRow(sb, "No Of Frames", info?.noOfFrames?.toString())
             appendRow(sb, "Sprite URL", info?.primaryImagePath)
             appendRow(sb, "Texture", info?.textureFile)
             appendRow(sb, "Texture 1", info?.textureFile1)
             appendRow(sb, "Texture 1 URL", info?.imagePath1)
             appendRow(sb, "Texture 2", info?.textureFile2)
             appendRow(sb, "Texture 2 URL", info?.imagePath2)
+            appendRow(sb, "Sprite Size", info?.size?.let { "${it.width}, ${it.height}" })
             appendRow(sb, "Border", info?.borderSize?.let { "${it.left}, ${it.top}, ${it.right}, ${it.bottom}" })
+            appendRow(sb, "Always Transparent", info?.alwaysTransparent?.takeIf { it }?.toString())
             appendRow(sb, "Text", text)
             appendRow(sb, "Line", element.sourceLine.takeIf { it > 0 }?.toString())
             for (issue in node.issues) appendRow(sb, issue.severity.name, issue.message)
@@ -832,15 +1244,6 @@ class GuiPreviewPanel(
                 .replace("<", "&lt;")
                 .replace(">", "&gt;")
                 .replace("\"", "&quot;")
-        }
-
-        private fun fitText(metrics: FontMetrics, value: String, width: Int): String {
-            if (metrics.stringWidth(value) <= width) return value
-            var text = value
-            while (text.length > 1 && metrics.stringWidth("$text...") > width) {
-                text = text.dropLast(1)
-            }
-            return if (text.length <= 1) text else "$text..."
         }
 
         private fun setScrollBarValue(scrollBar: javax.swing.JScrollBar?, value: Int) {

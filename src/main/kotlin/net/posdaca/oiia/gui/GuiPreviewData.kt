@@ -1,6 +1,7 @@
 package net.posdaca.oiia.gui
 
 import java.awt.Rectangle
+import kotlin.math.roundToInt
 
 data class GuiPreviewFile(
     val sourceFilePath: String?,
@@ -13,6 +14,10 @@ data class GuiElement(
     val position: GuiPoint = GuiPoint.ZERO,
     val size: GuiSize? = null,
     val text: String? = null,
+    val font: String? = null,
+    val buttonFont: String? = null,
+    val format: String? = null,
+    val verticalAlignment: String? = null,
     val sprite: String? = null,
     val quadTextureSprite: String? = null,
     val background: String? = null,
@@ -20,11 +25,20 @@ data class GuiElement(
     val hoverSprite: String? = null,
     val disabledSprite: String? = null,
     val orientation: String? = null,
+    val origo: String? = null,
+    val scale: Double? = null,
+    val centerPosition: Boolean = false,
+    val preserveAspectRatio: Boolean = false,
+    val fullscreen: Boolean = false,
+    val clipping: Boolean = false,
     val frame: Int? = null,
     val horizontal: Boolean? = null,
     val startValue: Double? = null,
     val maxValue: Double? = null,
     val minValue: Double? = null,
+    val maxWidth: GuiValue? = null,
+    val maxHeight: GuiValue? = null,
+    val fixedSize: Boolean = false,
     val sourceFilePath: String? = null,
     val sourceLine: Int = 0,
     val properties: Map<String, String> = emptyMap(),
@@ -49,10 +63,10 @@ data class GuiElement(
     companion object {
         fun defaultSize(type: String): GuiSize {
             return when (type) {
-                "instantTextBoxType" -> GuiSize(180, 28)
+                "instantTextBoxType", "instantTextboxType" -> GuiSize(180, 28)
                 "buttonType" -> GuiSize(160, 36)
                 "iconType" -> GuiSize(48, 48)
-                "listboxType" -> GuiSize(220, 180)
+                "listboxType", "gridboxType", "gridBoxType", "gridboxtype", "smoothListboxType", "smoothListBoxType" -> GuiSize(220, 180)
                 "scrollbarType" -> GuiSize(18, 160)
                 "editBoxType" -> GuiSize(160, 28)
                 "checkboxType" -> GuiSize(24, 24)
@@ -62,17 +76,74 @@ data class GuiElement(
     }
 }
 
-data class GuiPoint(val x: Int, val y: Int) {
+data class GuiPoint(val xValue: GuiValue, val yValue: GuiValue) {
+    constructor(x: Int, y: Int) : this(GuiValue.pixels(x), GuiValue.pixels(y))
+
+    val x: Int
+        get() = xValue.asFallbackPixels()
+
+    val y: Int
+        get() = yValue.asFallbackPixels()
+
+    fun resolveX(parentWidth: Int): Int = xValue.resolve(parentWidth)
+
+    fun resolveY(parentHeight: Int): Int = yValue.resolve(parentHeight)
+
     companion object {
-        val ZERO = GuiPoint(0, 0)
+        val ZERO = GuiPoint(GuiValue.ZERO, GuiValue.ZERO)
     }
 }
 
-data class GuiSize(val width: Int, val height: Int)
+data class GuiSize(val widthValue: GuiValue, val heightValue: GuiValue) {
+    constructor(width: Int, height: Int) : this(GuiValue.pixels(width), GuiValue.pixels(height))
+
+    val width: Int
+        get() = widthValue.asFallbackPixels()
+
+    val height: Int
+        get() = heightValue.asFallbackPixels()
+
+    fun resolveWidth(parentWidth: Int): Int = widthValue.resolveSize(parentWidth)
+
+    fun resolveHeight(parentHeight: Int): Int = heightValue.resolveSize(parentHeight)
+}
+
+data class GuiValue(val value: Double, val percent: Boolean = false) {
+    fun resolve(total: Int): Int {
+        val resolved = if (percent) total * value / 100.0 else value
+        return resolved.roundToInt()
+    }
+
+    fun resolveSize(total: Int): Int {
+        val resolved = if (percent) {
+            val percentage = total * kotlin.math.abs(value) / 100.0
+            if (value < 0) total - percentage else percentage
+        } else {
+            if (value < 0) total + value else value
+        }
+        return resolved.roundToInt()
+    }
+
+    fun asFallbackPixels(): Int = value.roundToInt()
+
+    override fun toString(): String {
+        val number = if (value % 1.0 == 0.0) value.toInt().toString() else value.toString()
+        return if (percent) "$number%" else number
+    }
+
+    companion object {
+        val ZERO = pixels(0)
+
+        fun pixels(value: Int): GuiValue = GuiValue(value.toDouble(), false)
+
+        fun of(value: Double, percent: Boolean): GuiValue = GuiValue(value, percent)
+    }
+}
 
 data class GuiLayoutNode(
     val element: GuiElement,
     val bounds: Rectangle,
+    val clipBounds: Rectangle?,
     val depth: Int,
     val issues: List<GuiPreviewIssue> = emptyList()
 )

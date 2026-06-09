@@ -1,6 +1,7 @@
 package net.posdaca.oiia.core
 
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.diagnostic.Logger
 import icu.windea.pls.lang.search.ParadoxDefinitionSearch
 import icu.windea.pls.lang.util.ParadoxDefinitionManager
 import icu.windea.pls.lang.util.ParadoxImageManager
@@ -19,14 +20,17 @@ class ParadoxSpriteResolver(private val project: Project) {
         val subtype: String? = null,
         val textureFile: String? = null,
         val borderSize: SpriteInsets? = null,
+        val size: SpriteSize? = null,
         val tilingCenter: Boolean = false,
         val noOfFrames: Int? = null,
         val defaultFrame: Int? = null,
         val textureFile1: String? = null,
         val textureFile2: String? = null,
         val horizontal: Boolean? = null,
+        val steps: Int? = null,
         val rotation: Int? = null,
-        val amount: Int? = null
+        val amount: Int? = null,
+        val alwaysTransparent: Boolean? = null
     ) {
         val primaryImagePath: String?
             get() = imagePath ?: imagePath1 ?: imagePath2
@@ -39,20 +43,28 @@ class ParadoxSpriteResolver(private val project: Project) {
         val bottom: Int
     )
 
+    data class SpriteSize(
+        val width: Int,
+        val height: Int
+    )
+
     private data class SpriteDefinition(
         val name: String,
         val textureFile: String?,
         val root: Path,
         val subtype: String? = null,
         val borderSize: SpriteInsets? = null,
+        val size: SpriteSize? = null,
         val tilingCenter: Boolean = false,
         val noOfFrames: Int? = null,
         val defaultFrame: Int? = null,
         val textureFile1: String? = null,
         val textureFile2: String? = null,
         val horizontal: Boolean? = null,
+        val steps: Int? = null,
         val rotation: Int? = null,
-        val amount: Int? = null
+        val amount: Int? = null,
+        val alwaysTransparent: Boolean? = null
     )
 
     private data class SpriteBlock(
@@ -132,7 +144,7 @@ class ParadoxSpriteResolver(private val project: Project) {
             ?: imagePath1
             ?: imagePath2
         if (imagePath == null && imagePath1 == null && imagePath2 == null) return null
-        return SpriteInfo(
+        val info = SpriteInfo(
             name = name,
             imagePath = imagePath,
             imagePath1 = imagePath1,
@@ -141,15 +153,21 @@ class ParadoxSpriteResolver(private val project: Project) {
                 ?: subtypeFromPropertyKey(propertyKey.text),
             textureFile = textureFile,
             borderSize = block?.propertyBlock("borderSize")?.let(::parseInsets),
+            size = block?.propertyBlock("size")?.let(::parseSize),
             tilingCenter = block?.propertyValue("tilingCenter").parseParadoxBoolean() ?: false,
-            noOfFrames = block?.propertyValue("noOfFrames")?.toIntOrNull(),
-            defaultFrame = block?.propertyValue("default_frame")?.toIntOrNull(),
+            noOfFrames = block?.propertyValue("noOfFrames")?.parseParadoxInt(),
+            defaultFrame = block?.propertyValue("default_frame")?.parseParadoxInt(),
             textureFile1 = textureFile1,
             textureFile2 = textureFile2,
             horizontal = block?.propertyValue("horizontal").parseParadoxBoolean(),
-            rotation = block?.propertyValue("rotation")?.toIntOrNull(),
-            amount = block?.propertyValue("amount")?.toIntOrNull()
+            steps = block?.propertyValue("steps")?.parseParadoxInt(),
+            rotation = block?.propertyValue("rotation")?.parseParadoxInt(),
+            amount = block?.propertyValue("amount")?.parseParadoxInt(),
+            alwaysTransparent = block?.propertyValue("alwaystransparent").parseParadoxBoolean()
+                ?: block?.propertyValue("allwaystransparent").parseParadoxBoolean()
         )
+        LOG.info("GUI sprite resolved by PLS: name=$name type=${propertyKey.text} file=${containingFile?.virtualFile?.path} texture=${info.textureFile} image=${info.primaryImagePath} frames=${info.noOfFrames} size=${info.size}")
+        return info
     }
 
     private fun ParadoxScriptProperty.isSpriteDefinition(): Boolean {
@@ -170,7 +188,7 @@ class ParadoxSpriteResolver(private val project: Project) {
             spriteDefinitionsByName.clear()
 
             val spriteDefinitions = mutableListOf<SpriteDefinition>()
-            for (root in roots.asReversed()) {
+            for (root in roots) {
                 cacheImages(root)
                 cacheSpriteDefinitions(root, spriteDefinitions)
             }
@@ -180,11 +198,12 @@ class ParadoxSpriteResolver(private val project: Project) {
                     ?: resolveTexturePath(sprite.textureFile1, sprite.root, ensureCache = false)
                     ?: resolveTexturePath(sprite.textureFile2, sprite.root, ensureCache = false)
                 if (iconPath != null) putAliases(spriteIconFiles, sprite.name, iconPath)
-                putAliases(spriteDefinitionsByName, sprite.name, sprite)
+                putDefinitionAliases(sprite)
             }
 
             cacheRootsKey = rootsKey
             resolvedSpriteInfos.clear()
+            LOG.info("GUI sprite cache rebuilt: roots=${roots.size} images=${iconFiles.size} spriteImages=${spriteIconFiles.size} definitions=${spriteDefinitionsByName.size}")
         }
     }
 
@@ -218,11 +237,12 @@ class ParadoxSpriteResolver(private val project: Project) {
         val content = runCatching { Files.readString(path) }.getOrNull() ?: return
         findSpriteBlocks(content).forEach { spriteBlock ->
             val body = spriteBlock.body
-            val name = NAME_ASSIGNMENT_REGEX.find(body)?.groupValues?.getOrNull(1)?.takeIf { it.isNotBlank() }
+            val assignmentBody = stripLineComments(body)
+            val name = NAME_ASSIGNMENT_REGEX.find(assignmentBody)?.groupValues?.getOrNull(1)?.takeIf { it.isNotBlank() }
                 ?: return@forEach
-            val texture = parseAssignmentValue(body, "textureFile")
-            val texture1 = parseAssignmentValue(body, "textureFile1")
-            val texture2 = parseAssignmentValue(body, "textureFile2")
+            val texture = parseAssignmentValue(assignmentBody, "textureFile")
+            val texture1 = parseAssignmentValue(assignmentBody, "textureFile1")
+            val texture2 = parseAssignmentValue(assignmentBody, "textureFile2")
             if (texture == null && texture1 == null && texture2 == null) return@forEach
             val cleanName = cleanToken(name)
             spriteDefinitions.add(
@@ -231,28 +251,33 @@ class ParadoxSpriteResolver(private val project: Project) {
                     textureFile = texture,
                     root = root,
                     subtype = subtypeFromPropertyKey(spriteBlock.key),
-                    borderSize = parseBorderSize(body),
-                    tilingCenter = parseAssignmentValue(body, "tilingCenter").parseParadoxBoolean() ?: false,
-                    noOfFrames = parseAssignmentValue(body, "noOfFrames")?.toIntOrNull(),
-                    defaultFrame = parseAssignmentValue(body, "default_frame")?.toIntOrNull(),
+                    borderSize = parseBorderSize(assignmentBody),
+                    size = parseSpriteSize(assignmentBody),
+                    tilingCenter = parseAssignmentValue(assignmentBody, "tilingCenter").parseParadoxBoolean() ?: false,
+                    noOfFrames = parseAssignmentValue(assignmentBody, "noOfFrames")?.parseParadoxInt(),
+                    defaultFrame = parseAssignmentValue(assignmentBody, "default_frame")?.parseParadoxInt(),
                     textureFile1 = texture1,
                     textureFile2 = texture2,
-                    horizontal = parseAssignmentValue(body, "horizontal").parseParadoxBoolean(),
-                    rotation = parseAssignmentValue(body, "rotation")?.toIntOrNull(),
-                    amount = parseAssignmentValue(body, "amount")?.toIntOrNull()
+                    horizontal = parseAssignmentValue(assignmentBody, "horizontal").parseParadoxBoolean(),
+                    steps = parseAssignmentValue(assignmentBody, "steps")?.parseParadoxInt(),
+                    rotation = parseAssignmentValue(assignmentBody, "rotation")?.parseParadoxInt(),
+                    amount = parseAssignmentValue(assignmentBody, "amount")?.parseParadoxInt(),
+                    alwaysTransparent = parseAssignmentValue(assignmentBody, "alwaystransparent").parseParadoxBoolean()
+                        ?: parseAssignmentValue(assignmentBody, "allwaystransparent").parseParadoxBoolean()
                 )
             )
         }
     }
 
     private fun findSpriteBlocks(content: String): Sequence<SpriteBlock> {
+        val searchableContent = stripLineComments(content)
         return sequence {
             var index = 0
-            while (index < content.length) {
-                val match = SPRITE_BLOCK_START_REGEX.find(content, index) ?: break
+            while (index < searchableContent.length) {
+                val match = SPRITE_BLOCK_START_REGEX.find(searchableContent, index) ?: break
                 val key = match.groupValues[1]
                 val openBraceIndex = match.range.last
-                val closeBraceIndex = findMatchingBrace(content, openBraceIndex)
+                val closeBraceIndex = findMatchingBrace(searchableContent, openBraceIndex)
                 if (closeBraceIndex == null) {
                     index = openBraceIndex + 1
                     continue
@@ -261,6 +286,41 @@ class ParadoxSpriteResolver(private val project: Project) {
                 index = closeBraceIndex + 1
             }
         }
+    }
+
+    private fun stripLineComments(content: String): String {
+        val result = StringBuilder(content.length)
+        var inString = false
+        var index = 0
+        while (index < content.length) {
+            val char = content[index]
+            if (inString) {
+                result.append(char)
+                if (char == '\\' && index + 1 < content.length) {
+                    index++
+                    result.append(content[index])
+                } else if (char == '"') {
+                    inString = false
+                }
+            } else {
+                when (char) {
+                    '"' -> {
+                        inString = true
+                        result.append(char)
+                    }
+                    '#' -> {
+                        result.append(' ')
+                        while (index + 1 < content.length && content[index + 1] != '\n' && content[index + 1] != '\r') {
+                            index++
+                            result.append(' ')
+                        }
+                    }
+                    else -> result.append(char)
+                }
+            }
+            index++
+        }
+        return result.toString()
     }
 
     private fun findMatchingBrace(content: String, openBraceIndex: Int): Int? {
@@ -331,6 +391,11 @@ class ParadoxSpriteResolver(private val project: Project) {
         }
     }
 
+    private fun putDefinitionAliases(definition: SpriteDefinition) {
+        putAliases(spriteDefinitionsByName, definition.name, definition)
+        definition.textureFile?.let { putAliases(spriteDefinitionsByName, it, definition) }
+    }
+
     private fun resolveSpriteInfoFromCache(name: String): SpriteInfo? {
         ensureIconCache()
         val definition = lookupSpriteDefinition(name)
@@ -342,7 +407,7 @@ class ParadoxSpriteResolver(private val project: Project) {
             ?: imagePath1
             ?: imagePath2
         if (definition == null && path == null && imagePath1 == null && imagePath2 == null) return null
-        return SpriteInfo(
+        val info = SpriteInfo(
             name = name,
             imagePath = path,
             imagePath1 = imagePath1,
@@ -350,15 +415,24 @@ class ParadoxSpriteResolver(private val project: Project) {
             subtype = definition?.subtype,
             textureFile = definition?.textureFile,
             borderSize = definition?.borderSize,
+            size = definition?.size,
             tilingCenter = definition?.tilingCenter ?: false,
             noOfFrames = definition?.noOfFrames,
             defaultFrame = definition?.defaultFrame,
             textureFile1 = definition?.textureFile1,
             textureFile2 = definition?.textureFile2,
             horizontal = definition?.horizontal,
+            steps = definition?.steps,
             rotation = definition?.rotation,
-            amount = definition?.amount
+            amount = definition?.amount,
+            alwaysTransparent = definition?.alwaysTransparent
         )
+        if (definition == null) {
+            LOG.info("GUI sprite resolved by image fallback without gfx definition: name=$name aliases=${aliases(name)} image=${info.primaryImagePath}")
+        } else {
+            LOG.info("GUI sprite resolved by cache: name=$name type=${definition.subtype} root=${definition.root} texture=${definition.textureFile} image=${info.primaryImagePath} frames=${info.noOfFrames} size=${info.size}")
+        }
+        return info
     }
 
     private fun lookupSpriteDefinition(name: String): SpriteDefinition? {
@@ -434,7 +508,11 @@ class ParadoxSpriteResolver(private val project: Project) {
     }
 
     private fun icu.windea.pls.script.psi.ParadoxScriptBlock.propertyValue(key: String): String? {
-        return propertyList.firstOrNull { it.propertyKey.text.equals(key, ignoreCase = true) }?.value
+        val property = propertyList.firstOrNull { it.propertyKey.text.equals(key, ignoreCase = true) } ?: return null
+        return property.value
+            ?: property.block?.propertyList?.firstOrNull { it.propertyKey.text.equals("value", ignoreCase = true) }?.value
+            ?: property.block?.valueList?.firstOrNull()?.text?.trim()
+            ?: property.propertyValue?.text?.trim()
     }
 
     private fun icu.windea.pls.script.psi.ParadoxScriptBlock.propertyBlock(key: String): icu.windea.pls.script.psi.ParadoxScriptBlock? {
@@ -467,6 +545,18 @@ class ParadoxSpriteResolver(private val project: Project) {
         )
     }
 
+    private fun parseSize(block: icu.windea.pls.script.psi.ParadoxScriptBlock): SpriteSize {
+        val x = block.propertyValue("x")?.toDoubleOrNull()?.toInt()
+        val y = block.propertyValue("y")?.toDoubleOrNull()?.toInt()
+        val width = block.propertyValue("width")?.toDoubleOrNull()?.toInt()
+        val height = block.propertyValue("height")?.toDoubleOrNull()?.toInt()
+        val values = block.valueList.mapNotNull { it.text.trim().trim('"').toDoubleOrNull()?.toInt() }
+        return SpriteSize(
+            width = x ?: width ?: values.getOrNull(0) ?: 0,
+            height = y ?: height ?: values.getOrNull(1) ?: values.getOrNull(0) ?: 0
+        )
+    }
+
     private fun parseBorderSize(body: String): SpriteInsets? {
         val block = Regex("""(?is)\bborderSize\s*=\s*\{(.*?)\}""").find(body)?.groupValues?.getOrNull(1)
             ?: return null
@@ -495,6 +585,20 @@ class ParadoxSpriteResolver(private val project: Project) {
         )
     }
 
+    private fun parseSpriteSize(body: String): SpriteSize? {
+        val block = Regex("""(?is)\bsize\s*=\s*\{(.*?)\}""").find(body)?.groupValues?.getOrNull(1)
+            ?: return null
+        val x = parseAssignmentValue(block, "x")?.toDoubleOrNull()?.toInt()
+        val y = parseAssignmentValue(block, "y")?.toDoubleOrNull()?.toInt()
+        val width = parseAssignmentValue(block, "width")?.toDoubleOrNull()?.toInt()
+        val height = parseAssignmentValue(block, "height")?.toDoubleOrNull()?.toInt()
+        val values = NUMBER_REGEX.findAll(block).mapNotNull { it.value.toDoubleOrNull()?.toInt() }.toList()
+        return SpriteSize(
+            width = x ?: width ?: values.getOrNull(0) ?: 0,
+            height = y ?: height ?: values.getOrNull(1) ?: values.getOrNull(0) ?: 0
+        )
+    }
+
     private fun parseAssignmentValue(body: String, key: String): String? {
         return Regex("""(?im)\b${Regex.escape(key)}\s*=\s*("[^"]+"|[^\s#{}]+)""")
             .find(body)
@@ -507,6 +611,10 @@ class ParadoxSpriteResolver(private val project: Project) {
         return value.trim().trim('"')
     }
 
+    private fun String.parseParadoxInt(): Int? {
+        return cleanToken(this).toDoubleOrNull()?.toInt()
+    }
+
     private fun String?.parseParadoxBoolean(): Boolean? {
         return when (this?.let(::cleanToken)?.lowercase()) {
             "yes", "true", "1" -> true
@@ -516,6 +624,7 @@ class ParadoxSpriteResolver(private val project: Project) {
     }
 
     companion object {
+        private val LOG = Logger.getInstance(ParadoxSpriteResolver::class.java)
         private val ICON_EXTENSIONS = setOf(".dds", ".tga", ".png")
         private val SPRITE_DEFINITION_PROPERTY_KEYS = setOf(
             "spritetype",

@@ -1,5 +1,6 @@
 package net.posdaca.oiia.gui
 
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
@@ -9,12 +10,19 @@ import icu.windea.pls.script.psi.ParadoxScriptBlock
 import icu.windea.pls.script.psi.ParadoxScriptFile
 import icu.windea.pls.script.psi.ParadoxScriptProperty
 import icu.windea.pls.script.psi.ParadoxScriptValue
+import net.posdaca.oiia.core.HoI4ResourceRoots
 import net.posdaca.oiia.core.ParadoxSpriteResolver
 import net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteInfo
+import java.nio.file.Files
+import java.nio.file.Path
+import kotlin.io.path.isRegularFile
 
 class GuiPreviewService(private val project: Project) {
 
     private val localisationCache = mutableMapOf<String, String?>()
+    private val localisationFallbackLock = Any()
+    private var localisationFallbackRootsKey: String? = null
+    private var localisationFallbackCache: Map<String, String> = emptyMap()
     private val spriteResolver = ParadoxSpriteResolver(project)
 
     fun parseGuiFile(psiFile: PsiFile): GuiPreviewFile {
@@ -30,11 +38,17 @@ class GuiPreviewService(private val project: Project) {
         val trimmed = key?.trim()?.trim('"')?.takeIf { it.isNotBlank() } ?: return null
         synchronized(localisationCache) {
             if (localisationCache.containsKey(trimmed)) return localisationCache[trimmed]
-            val resolved = runCatching {
+            val plsResolved = runCatching {
                 val selector = ParadoxLocalisationSearch.selector(project, null).distinct()
                 val property = ParadoxLocalisationSearch.searchNormal(trimmed, selector).find()
                 property?.let { ParadoxLocalisationService.resolveLocalizedText(it) ?: it.value }
-            }.getOrNull()
+            }.getOrNull()?.takeIf { it.isNotBlank() && it != trimmed }
+            val resolved = plsResolved ?: resolveLocalisationFromFiles(trimmed)
+            if (resolved == null) {
+                LOG.info("GUI localisation not resolved: key=$trimmed")
+            } else {
+                LOG.info("GUI localisation resolved: key=$trimmed source=${if (plsResolved != null) "PLS" else "fallback"} value=$resolved")
+            }
             localisationCache[trimmed] = resolved
             return resolved
         }
@@ -100,6 +114,10 @@ class GuiPreviewService(private val project: Project) {
         var position = GuiPoint.ZERO
         var size: GuiSize? = null
         var text: String? = null
+        var font: String? = null
+        var buttonFont: String? = null
+        var format: String? = null
+        var verticalAlignment: String? = null
         var sprite: String? = null
         var quadTextureSprite: String? = null
         var background: String? = null
@@ -107,11 +125,20 @@ class GuiPreviewService(private val project: Project) {
         var hoverSprite: String? = null
         var disabledSprite: String? = null
         var orientation: String? = null
+        var origo: String? = null
+        var scale: Double? = null
+        var centerPosition = false
+        var preserveAspectRatio = false
+        var fullscreen = false
+        var clipping = false
         var frame: Int? = null
         var horizontal: Boolean? = null
         var startValue: Double? = null
         var maxValue: Double? = null
         var minValue: Double? = null
+        var maxWidth: GuiValue? = null
+        var maxHeight: GuiValue? = null
+        var fixedSize = false
         val properties = linkedMapOf<String, String>()
         val spriteCandidates = mutableListOf<String>()
         val children = mutableListOf<GuiElement>()
@@ -122,14 +149,17 @@ class GuiPreviewService(private val project: Project) {
                 "position" -> position = parsePoint(field.block) ?: position
                 "size" -> size = parseSize(field.block) ?: size
                 "text" -> text = scalarValue(field)
+                "buttonText", "buttontext" -> text = scalarValue(field)
+                "font" -> font = scalarValue(field)
+                "buttonFont", "buttonfont" -> buttonFont = scalarValue(field)
+                "format" -> format = scalarValue(field)
+                "vertical_alignment", "verticalAlignment" -> verticalAlignment = scalarValue(field)
                 "spriteType" -> sprite = scalarValue(field).also { it?.let(spriteCandidates::add) }
                 "quadTextureSprite" -> quadTextureSprite = scalarValue(field).also { it?.let(spriteCandidates::add) }
                 "textureFile" -> scalarValue(field)?.let(spriteCandidates::add)
                 "backGround" -> background = scalarValue(field).also { it?.let(spriteCandidates::add) }
-                "background" -> {
-                    val backgroundSprite = parseSpriteFromImageBlock(field) ?: scalarValue(field)
-                    background = backgroundSprite
-                    backgroundSprite?.let(spriteCandidates::add)
+                "background", "Background" -> {
+                    parseElement(field)?.let { children.add(it) }
                 }
                 "buttonSpriteType" -> buttonSprite = scalarValue(field).also { it?.let(spriteCandidates::add) }
                 "buttonSprite" -> buttonSprite = scalarValue(field).also { it?.let(spriteCandidates::add) }
@@ -139,11 +169,21 @@ class GuiPreviewService(private val project: Project) {
                 "disabledSprite" -> disabledSprite = scalarValue(field).also { it?.let(spriteCandidates::add) }
                 "Orientation" -> orientation = scalarValue(field)
                 "orientation" -> orientation = scalarValue(field)
+                "origo", "Origo" -> origo = scalarValue(field)
+                "scale" -> scale = scalarValue(field)?.parseGuiDouble()
+                "centerposition" -> centerPosition = scalarValue(field).parseGuiBoolean() ?: centerPosition
+                "centerPosition" -> centerPosition = scalarValue(field).parseGuiBoolean() ?: centerPosition
+                "preserve_aspect_ratio" -> preserveAspectRatio = scalarValue(field).parseGuiBoolean() ?: preserveAspectRatio
+                "fullscreen" -> fullscreen = scalarValue(field).parseGuiBoolean() ?: fullscreen
+                "clipping" -> clipping = scalarValue(field).parseGuiBoolean() ?: clipping
                 "frame" -> frame = scalarValue(field)?.parseGuiNumber()
                 "horizontal" -> horizontal = scalarValue(field).parseGuiBoolean()
                 "startValue" -> startValue = scalarValue(field)?.parseGuiDouble()
                 "maxValue" -> maxValue = scalarValue(field)?.parseGuiDouble()
                 "minValue" -> minValue = scalarValue(field)?.parseGuiDouble()
+                "maxWidth", "maxwidth" -> maxWidth = scalarValue(field)?.parseGuiValue()
+                "maxHeight", "maxheight" -> maxHeight = scalarValue(field)?.parseGuiValue()
+                "fixedsize", "fixedSize" -> fixedSize = scalarValue(field).parseGuiBoolean() ?: fixedSize
                 in GUI_ELEMENT_TYPES -> parseElement(field)?.let { children.add(it) }
                 else -> scalarValue(field)?.let { properties[key] = it }
             }
@@ -159,6 +199,10 @@ class GuiPreviewService(private val project: Project) {
             position = position,
             size = size,
             text = text,
+            font = font,
+            buttonFont = buttonFont,
+            format = format,
+            verticalAlignment = verticalAlignment,
             sprite = sprite,
             quadTextureSprite = quadTextureSprite,
             background = background,
@@ -166,11 +210,20 @@ class GuiPreviewService(private val project: Project) {
             hoverSprite = hoverSprite,
             disabledSprite = disabledSprite,
             orientation = orientation,
+            origo = origo,
+            scale = scale,
+            centerPosition = centerPosition,
+            preserveAspectRatio = preserveAspectRatio,
+            fullscreen = fullscreen,
+            clipping = clipping,
             frame = frame,
             horizontal = horizontal,
             startValue = startValue,
             maxValue = maxValue,
             minValue = minValue,
+            maxWidth = maxWidth,
+            maxHeight = maxHeight,
+            fixedSize = fixedSize,
             sourceFilePath = vf?.path,
             sourceLine = line,
             properties = properties,
@@ -191,7 +244,12 @@ class GuiPreviewService(private val project: Project) {
         val block = prop.block ?: return null
         return block.propertyList.firstNotNullOfOrNull { field ->
             when (field.propertyKey.text) {
-                "spriteType", "quadTextureSprite", "textureFile" -> scalarValue(field)
+                "spriteType",
+                "quadTextureSprite",
+                "textureFile",
+                "buttonSpriteType",
+                "buttonSprite",
+                "backGround" -> scalarValue(field)
                 else -> null
             }
         }
@@ -199,31 +257,42 @@ class GuiPreviewService(private val project: Project) {
 
     private fun parsePoint(block: ParadoxScriptBlock?): GuiPoint? {
         val properties = block?.propertyList.orEmpty()
-        val x = properties.firstOrNull { it.propertyKey.text == "x" }?.value?.parseGuiNumber()
-        val y = properties.firstOrNull { it.propertyKey.text == "y" }?.value?.parseGuiNumber()
-        if (x != null || y != null) return GuiPoint(x ?: 0, y ?: 0)
+        val x = properties.firstOrNull { it.propertyKey.text == "x" }?.value?.parseGuiValue()
+        val y = properties.firstOrNull { it.propertyKey.text == "y" }?.value?.parseGuiValue()
+        if (x != null || y != null) return GuiPoint(x ?: GuiValue.ZERO, y ?: GuiValue.ZERO)
         val values = blockValues(block)
         if (values.size < 2) return null
-        return GuiPoint(values[0].parseGuiNumber() ?: 0, values[1].parseGuiNumber() ?: 0)
+        return GuiPoint(values[0].parseGuiValue() ?: GuiValue.ZERO, values[1].parseGuiValue() ?: GuiValue.ZERO)
     }
 
     private fun parseSize(block: ParadoxScriptBlock?): GuiSize? {
         val properties = block?.propertyList.orEmpty()
-        val widthByName = properties.firstOrNull { it.propertyKey.text == "width" }?.value?.parseGuiNumber()
-        val heightByName = properties.firstOrNull { it.propertyKey.text == "height" }?.value?.parseGuiNumber()
+        val widthByAxis = properties.firstOrNull { it.propertyKey.text == "x" }?.value?.parseGuiValue()
+        val heightByAxis = properties.firstOrNull { it.propertyKey.text == "y" }?.value?.parseGuiValue()
+        if (widthByAxis != null || heightByAxis != null) {
+            return GuiSize(widthByAxis ?: GuiValue.ZERO, heightByAxis ?: GuiValue.ZERO)
+        }
+        val widthByName = properties.firstOrNull { it.propertyKey.text == "width" }?.value?.parseGuiValue()
+        val heightByName = properties.firstOrNull { it.propertyKey.text == "height" }?.value?.parseGuiValue()
         if (widthByName != null || heightByName != null) {
-            return GuiSize(widthByName ?: 0, heightByName ?: 0)
+            return GuiSize(widthByName ?: GuiValue.ZERO, heightByName ?: GuiValue.ZERO)
         }
         val values = blockValues(block)
         if (values.size < 2) return null
-        val width = values[0].parseGuiNumber() ?: return null
-        val height = values[1].parseGuiNumber() ?: return null
+        val width = values[0].parseGuiValue() ?: return null
+        val height = values[1].parseGuiValue() ?: return null
         return GuiSize(width, height)
     }
 
     private fun String.parseGuiNumber(): Int? {
-        val clean = trim().trim('"').removeSuffix("%")
-        return clean.toDoubleOrNull()?.toInt()
+        return parseGuiValue()?.asFallbackPixels()
+    }
+
+    private fun String.parseGuiValue(): GuiValue? {
+        val clean = trim().trim('"')
+        val percent = clean.endsWith("%")
+        val number = clean.trimEnd('%').toDoubleOrNull() ?: return null
+        return GuiValue.of(number, percent)
     }
 
     private fun String?.parseGuiDouble(): Double? {
@@ -257,6 +326,100 @@ class GuiPreviewService(private val project: Project) {
         return text.trim().trim('"')
     }
 
+    private fun resolveLocalisationFromFiles(key: String): String? {
+        return loadLocalisationFallbackCache()[key]
+    }
+
+    private fun loadLocalisationFallbackCache(): Map<String, String> {
+        val roots = HoI4ResourceRoots.resourceRoots(project, projectFirst = true, gameFirst = false)
+        val rootsKey = roots.joinToString("|") { HoI4ResourceRoots.normalizedKey(it) }
+        synchronized(localisationFallbackLock) {
+            if (localisationFallbackRootsKey == rootsKey) return localisationFallbackCache
+
+            val paths = findLocFilePaths(roots)
+            val rootScores = roots.mapIndexed { index, root -> HoI4ResourceRoots.normalizedKey(root) to roots.size - index }
+            val scoreByKey = mutableMapOf<String, Int>()
+            val result = linkedMapOf<String, String>()
+
+            for (path in paths) {
+                val score = localisationScore(path, rootScores)
+                parseLocFileText(path).forEach { (locKey, value) ->
+                    val existing = scoreByKey[locKey] ?: Int.MIN_VALUE
+                    if (score > existing) {
+                        scoreByKey[locKey] = score
+                        result[locKey] = value
+                    }
+                }
+            }
+
+            localisationFallbackRootsKey = rootsKey
+            localisationFallbackCache = result
+            LOG.info("GUI localisation fallback loaded: roots=${roots.size} files=${paths.size} entries=${result.size}")
+            return result
+        }
+    }
+
+    private fun findLocFilePaths(roots: List<Path>): List<Path> {
+        val files = mutableListOf<Path>()
+        val seen = mutableSetOf<String>()
+        for (root in roots) {
+            for (locDir in listOf(root.resolve("localisation"), root.resolve("localization"))) {
+                if (!Files.isDirectory(locDir)) continue
+                try {
+                    Files.walk(locDir, 4).use { stream ->
+                        stream
+                            .filter { it.isRegularFile() && it.fileName.toString().endsWith(".yml", ignoreCase = true) }
+                            .forEach {
+                                val path = it.toAbsolutePath().normalize()
+                                if (seen.add(HoI4ResourceRoots.normalizedKey(path))) files.add(path)
+                            }
+                    }
+                } catch (e: Exception) {
+                    LOG.warn("GUI localisation directory scan failed: $locDir", e)
+                }
+            }
+        }
+        return files
+    }
+
+    private fun parseLocFileText(path: Path): Map<String, String> {
+        val map = linkedMapOf<String, String>()
+        try {
+            val content = Files.readString(path).removePrefix("\uFEFF")
+            LOCALISATION_REGEX.findAll(content).forEach { match ->
+                map[match.groupValues[1]] = unescapeLocalisation(match.groupValues[2])
+            }
+        } catch (e: Exception) {
+            LOG.warn("GUI localisation file parse failed: $path", e)
+        }
+        return map
+    }
+
+    private fun localisationScore(path: Path, rootScores: List<Pair<String, Int>>): Int {
+        return languagePriority(path.toString()) * LOCALISATION_SCORE_LANGUAGE_WEIGHT +
+                localisationRootScore(path, rootScores)
+    }
+
+    private fun localisationRootScore(path: Path, rootScores: List<Pair<String, Int>>): Int {
+        val key = HoI4ResourceRoots.normalizedKey(path)
+        return rootScores.firstOrNull { key.startsWith(it.first) }?.second ?: 0
+    }
+
+    private fun languagePriority(path: String): Int {
+        val lower = path.lowercase()
+        for ((index, tag) in LANG_PRIORITY.withIndex()) {
+            if (tag in lower) return LANG_PRIORITY.size - index
+        }
+        return 0
+    }
+
+    private fun unescapeLocalisation(value: String): String {
+        return value
+            .replace("\\\"", "\"")
+            .replace("\\n", " ")
+            .replace("\\t", " ")
+    }
+
     private fun List<GuiElement>.renameDuplicateRoots(): List<GuiElement> {
         val counts = groupingBy { it.name.orEmpty() }.eachCount()
         return map { root ->
@@ -267,18 +430,36 @@ class GuiPreviewService(private val project: Project) {
     }
 
     companion object {
+        private val LOG = Logger.getInstance(GuiPreviewService::class.java)
         private const val ROOT_TYPE = "containerWindowType"
+        private const val LOCALISATION_SCORE_LANGUAGE_WEIGHT = 10000
         private val ROOT_WRAPPER_TYPES = setOf("guiTypes", "windowTypes")
+        private val LANG_PRIORITY = listOf(
+            "simp_chinese",
+            "english",
+            "braz_por",
+            "french",
+            "german",
+            "polish",
+            "russian",
+            "spanish",
+            "japanese"
+        )
         private val GUI_ELEMENT_TYPES = setOf(
+            "background",
+            "Background",
             "containerWindowType",
             "iconType",
             "buttonType",
             "instantTextBoxType",
+            "instantTextboxType",
             "listboxType",
             "scrollbarType",
             "editBoxType",
             "checkboxType",
             "gridboxType",
+            "gridBoxType",
+            "gridboxtype",
             "smoothListboxType",
             "smoothListBoxType",
             "overlappingElementsBoxType",
@@ -294,5 +475,6 @@ class GuiPreviewService(private val project: Project) {
             "decreaseButton"
         )
         private val TOKEN_REGEX = Regex(""""[^"]*"|[^\s{}=]+""")
+        private val LOCALISATION_REGEX = Regex("""^\s*([^\s:#]+)\s*:\d*\s*"((?:\\.|[^"])*)"""", RegexOption.MULTILINE)
     }
 }
