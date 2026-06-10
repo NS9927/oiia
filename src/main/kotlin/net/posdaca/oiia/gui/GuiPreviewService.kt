@@ -11,13 +11,12 @@ import icu.windea.pls.script.psi.ParadoxScriptBlock
 import icu.windea.pls.script.psi.ParadoxScriptFile
 import icu.windea.pls.script.psi.ParadoxScriptProperty
 import icu.windea.pls.script.psi.ParadoxScriptValue
+import net.posdaca.oiia.core.HoI4LocalisationFiles
 import net.posdaca.oiia.core.HoI4ResourceRoots
 import net.posdaca.oiia.core.ParadoxLocalisationPreference
 import net.posdaca.oiia.core.ParadoxSpriteResolver
 import net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteInfo
-import java.nio.file.Files
 import java.nio.file.Path
-import kotlin.io.path.isRegularFile
 
 class GuiPreviewService(private val project: Project) {
 
@@ -347,18 +346,18 @@ class GuiPreviewService(private val project: Project) {
         synchronized(localisationFallbackLock) {
             if (localisationFallbackRootsKey == rootsKey) return localisationFallbackCache
 
-            val paths = findLocFilePaths(roots)
-            val rootScores = roots.mapIndexed { index, root -> HoI4ResourceRoots.normalizedKey(root) to roots.size - index }
+            val paths = HoI4LocalisationFiles.findFiles(roots)
+            val rootScores = HoI4LocalisationFiles.rootScores(roots)
             val scoreByKey = mutableMapOf<String, Int>()
             val result = linkedMapOf<String, String>()
 
             for (path in paths) {
                 val score = localisationScore(path, rootScores)
-                parseLocFileText(path).forEach { (locKey, value) ->
+                HoI4LocalisationFiles.parseFile(path).forEach { (locKey, value) ->
                     val existing = scoreByKey[locKey] ?: Int.MIN_VALUE
                     if (score > existing) {
                         scoreByKey[locKey] = score
-                        result[locKey] = value
+                        result[locKey] = HoI4LocalisationFiles.unescape(value)
                     }
                 }
             }
@@ -370,50 +369,13 @@ class GuiPreviewService(private val project: Project) {
         }
     }
 
-    private fun findLocFilePaths(roots: List<Path>): List<Path> {
-        val files = mutableListOf<Path>()
-        val seen = mutableSetOf<String>()
-        for (root in roots) {
-            for (locDir in listOf(root.resolve("localisation"), root.resolve("localization"))) {
-                if (!Files.isDirectory(locDir)) continue
-                try {
-                    Files.walk(locDir, 4).use { stream ->
-                        stream
-                            .filter { it.isRegularFile() && it.fileName.toString().endsWith(".yml", ignoreCase = true) }
-                            .forEach {
-                                val path = it.toAbsolutePath().normalize()
-                                if (seen.add(HoI4ResourceRoots.normalizedKey(path))) files.add(path)
-                            }
-                    }
-                } catch (e: Exception) {
-                    LOG.warn("GUI localisation directory scan failed: $locDir", e)
-                }
-            }
-        }
-        return files
-    }
-
-    private fun parseLocFileText(path: Path): Map<String, String> {
-        val map = linkedMapOf<String, String>()
-        try {
-            val content = Files.readString(path).removePrefix("\uFEFF")
-            LOCALISATION_REGEX.findAll(content).forEach { match ->
-                map[match.groupValues[1]] = unescapeLocalisation(match.groupValues[2])
-            }
-        } catch (e: Exception) {
-            LOG.warn("GUI localisation file parse failed: $path", e)
-        }
-        return map
-    }
-
     private fun localisationScore(path: Path, rootScores: List<Pair<String, Int>>): Int {
         return languagePriority(path.toString()) * LOCALISATION_SCORE_LANGUAGE_WEIGHT +
                 localisationRootScore(path, rootScores)
     }
 
     private fun localisationRootScore(path: Path, rootScores: List<Pair<String, Int>>): Int {
-        val key = HoI4ResourceRoots.normalizedKey(path)
-        return rootScores.firstOrNull { key.startsWith(it.first) }?.second ?: 0
+        return HoI4LocalisationFiles.rootScore(path, rootScores)
     }
 
     private fun languagePriority(path: String): Int {
@@ -423,13 +385,6 @@ class GuiPreviewService(private val project: Project) {
     private fun localisationPriority(property: ParadoxLocalisationProperty): Int {
         val path = property.containingFile?.virtualFile?.path ?: return 0
         return ParadoxLocalisationPreference.languagePriority(path, LANG_PRIORITY)
-    }
-
-    private fun unescapeLocalisation(value: String): String {
-        return value
-            .replace("\\\"", "\"")
-            .replace("\\n", " ")
-            .replace("\\t", " ")
     }
 
     private fun List<GuiElement>.renameDuplicateRoots(): List<GuiElement> {
@@ -487,6 +442,5 @@ class GuiPreviewService(private val project: Project) {
             "decreaseButton"
         )
         private val TOKEN_REGEX = Regex(""""[^"]*"|[^\s{}=]+""")
-        private val LOCALISATION_REGEX = Regex("""^\s*([^\s:#]+)\s*:\d*\s*"((?:\\.|[^"])*)"""", RegexOption.MULTILINE)
     }
 }

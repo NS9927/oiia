@@ -3,6 +3,7 @@ package net.posdaca.oiia.map
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.util.ui.ImageUtil
+import net.posdaca.oiia.core.HoI4LocalisationFiles
 import net.posdaca.oiia.core.HoI4ResourceRoots
 import net.posdaca.oiia.core.ParadoxLocalisationPreference
 import java.awt.Color
@@ -1123,47 +1124,21 @@ class MapPreviewService(private val project: Project) {
     }
 
     private fun findLocFilePaths(roots: List<Path>): List<Path> {
-        val files = mutableListOf<Path>()
-        val seen = mutableSetOf<String>()
-        for (root in roots) {
-            for (locDir in listOf(root.resolve("localisation"), root.resolve("localization"))) {
-                if (!Files.isDirectory(locDir)) continue
-                try {
-                    Files.walk(locDir, 4).use { stream ->
-                        stream
-                            .filter { it.isRegularFile() && it.fileName.toString().endsWith(".yml", ignoreCase = true) }
-                            .forEach {
-                                val path = it.toAbsolutePath().normalize()
-                                if (seen.add(HoI4ResourceRoots.normalizedKey(path))) files.add(path)
-                            }
-                    }
-                } catch (e: Exception) {
-                    LOG.warn("Localisation directory scan failed: $locDir", e)
-                }
-            }
-        }
-        return files
+        return HoI4LocalisationFiles.findFiles(roots)
     }
 
     private fun loadLocalisations(paths: List<Path>, roots: List<Path>): Map<String, String> {
         val result = linkedMapOf<String, String>()
         val scoreByKey = mutableMapOf<String, Int>()
-        val rootScores = roots
-            .mapIndexed { index, root -> HoI4ResourceRoots.normalizedKey(root) to roots.size - index }
+        val rootScores = HoI4LocalisationFiles.rootScores(roots)
         for (path in paths) {
             val score = localisationScore(path, rootScores)
-            try {
-                val content = Files.readString(path).removePrefix("\uFEFF")
-                LOCALISATION_REGEX.findAll(content).forEach { match ->
-                    val key = match.groupValues[1]
-                    val currentScore = scoreByKey[key] ?: Int.MIN_VALUE
-                    if (score > currentScore) {
-                        scoreByKey[key] = score
-                        result[key] = unescapeLocalisation(match.groupValues[2])
-                    }
+            for ((key, value) in HoI4LocalisationFiles.parseFile(path)) {
+                val currentScore = scoreByKey[key] ?: Int.MIN_VALUE
+                if (score > currentScore) {
+                    scoreByKey[key] = score
+                    result[key] = HoI4LocalisationFiles.unescape(value)
                 }
-            } catch (e: Exception) {
-                LOG.warn("Localisation file parse failed: $path", e)
             }
         }
         return result
@@ -1191,15 +1166,7 @@ class MapPreviewService(private val project: Project) {
     }
 
     private fun localisationRootScore(path: Path, rootScores: List<Pair<String, Int>>): Int {
-        val key = HoI4ResourceRoots.normalizedKey(path)
-        return rootScores.firstOrNull { key.startsWith(it.first) }?.second ?: 0
-    }
-
-    private fun unescapeLocalisation(value: String): String {
-        return value
-            .replace("\\\"", "\"")
-            .replace("\\n", " ")
-            .replace("\\t", " ")
+        return HoI4LocalisationFiles.rootScore(path, rootScores)
     }
 
     private fun computeSourceStamp(
@@ -1248,7 +1215,6 @@ class MapPreviewService(private val project: Project) {
             "common/countries/colors.txt"
         )
         private val COUNTRY_COLOR_ASSIGNMENT_REGEX = Regex("""(?im)(?:^|[\s{}])([A-Z0-9_]{3})\s*=""")
-        private val LOCALISATION_REGEX = Regex("""(?m)^\s*([^\s:#]+)\s*:\d*\s*"((?:\\.|[^"])*)"""")
         private val LANG_PRIORITY = listOf(
             "simp_chinese", "l_simp_chinese", "chinese", "l_chinese",
             "english", "l_english"

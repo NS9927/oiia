@@ -3,6 +3,7 @@ package net.posdaca.oiia.core
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.diagnostic.Logger
 import icu.windea.pls.lang.search.ParadoxDefinitionSearch
+import icu.windea.pls.lang.search.ParadoxFilePathSearch
 import icu.windea.pls.lang.util.ParadoxDefinitionManager
 import icu.windea.pls.lang.util.ParadoxImageManager
 import icu.windea.pls.script.psi.ParadoxScriptProperty
@@ -488,8 +489,18 @@ class ParadoxSpriteResolver(private val project: Project) {
         if (absolute != null && absolute.isAbsolute && absolute.isRegularFile()) {
             return absolute.toAbsolutePath().normalize().toString()
         }
+        resolveTexturePathWithPls(cleanPath)?.let { return it }
         if (ensureCache) ensureIconCache()
         return lookupCachedPath(iconFiles, cleanPath)
+    }
+
+    private fun resolveTexturePathWithPls(cleanPath: String): String? {
+        return runCatching {
+            val selector = ParadoxFilePathSearch.selector(project, null).distinct()
+            val file = ParadoxFilePathSearch.searchIcon(cleanPath, selector, ignoreLocale = true).find()
+                ?: ParadoxFilePathSearch.search(cleanPath, selector = selector, ignoreLocale = true).find()
+            file?.let { ParadoxImageManager.resolveUrlByFile(it, project) ?: it.path }
+        }.getOrNull()
     }
 
     private fun resourceRootFor(filePath: String?): Path? {

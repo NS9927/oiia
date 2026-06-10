@@ -5,18 +5,17 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
-import com.intellij.psi.search.FileTypeIndex
-import com.intellij.psi.search.GlobalSearchScope
 import icu.windea.pls.lang.resolve.ParadoxLocalisationService
 import icu.windea.pls.lang.util.ParadoxDefinitionManager
-import icu.windea.pls.localisation.ParadoxLocalisationFileType
-import icu.windea.pls.localisation.psi.ParadoxLocalisationFile
 import icu.windea.pls.script.psi.ParadoxScriptBlock
 import icu.windea.pls.script.psi.ParadoxScriptFile
 import icu.windea.pls.script.psi.ParadoxScriptProperty
+import net.posdaca.oiia.core.HoI4LocalisationFiles
 import net.posdaca.oiia.core.HoI4ResourceRoots
 import net.posdaca.oiia.core.ParadoxLocalisationPreference
+import net.posdaca.oiia.core.ParadoxLocalisationResolver
 import net.posdaca.oiia.core.ParadoxSpriteResolver
+import net.posdaca.oiia.core.PrefixIconLookup
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
@@ -35,6 +34,7 @@ class TechnologyService(private val project: Project) {
     private val cachedIconFiles = mutableMapOf<String, String>()
     private val cachedSpriteIconFiles = mutableMapOf<String, String>()
     private val spriteResolver = ParadoxSpriteResolver(project)
+    private val localisationResolver = ParadoxLocalisationResolver(project, LANG_PRIORITY)
     private var cachesValid = false
 
     fun parseTechnologyTreesFromFile(psiFile: PsiFile): List<TechnologyTreeData> {
@@ -157,41 +157,14 @@ class TechnologyService(private val project: Project) {
         val version = resolutionVersion.incrementAndGet()
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
-                val locScoreMap = mutableMapOf<String, Int>()
                 val locMap = ApplicationManager.getApplication().runReadAction<MutableMap<String, String>> {
-                    val m = mutableMapOf<String, String>()
-                    val psiManager = PsiManager.getInstance(project)
-                    for (vf in FileTypeIndex.getFiles(
-                        ParadoxLocalisationFileType,
-                        GlobalSearchScope.allScope(project)
-                    )) {
-                        val psiFile = psiManager.findFile(vf) as? ParadoxLocalisationFile ?: continue
-                        val langScore = getLanguagePriority(vf.path)
-                        for (prop in psiFile.properties) {
-                            val key = prop.name
-                            val value = prop.value ?: continue
-                            val existing = locScoreMap[key] ?: -1
-                            if (langScore > existing) {
-                                locScoreMap[key] = langScore
-                                m[key] = value
-                            }
-                        }
-                    }
-                    m
+                    resolveNeededLocalisations(allTechnologies).toMutableMap()
                 }
 
                 if (version != resolutionVersion.get()) return@executeOnPooledThread
 
-                for (path in findLocFilePaths()) {
-                    val parsed = parseLocFileText(path)
-                    val langScore = getLanguagePriority(path.toString()) + localisationRootScore(path)
-                    for ((key, value) in parsed) {
-                        val existing = locScoreMap[key] ?: -1
-                        if (langScore > existing) {
-                            locScoreMap[key] = langScore
-                            locMap[key] = value
-                        }
-                    }
+                for ((key, value) in resolveNeededLocalisationsFromFiles(allTechnologies, locMap.keys)) {
+                    locMap.putIfAbsent(key, value)
                 }
 
                 if (version != resolutionVersion.get()) return@executeOnPooledThread
@@ -232,6 +205,46 @@ class TechnologyService(private val project: Project) {
         return ParadoxLocalisationPreference.languagePriority(path, LANG_PRIORITY, LOCALISATION_LANGUAGE_WEIGHT)
     }
 
+    private fun neededLocalisationKeys(technologies: List<TechnologyData>): Set<String> {
+        val keys = linkedSetOf<String>()
+        for (technology in technologies) {
+            keys.add(technology.id)
+            keys.add("${technology.id}_desc")
+        }
+        return keys
+    }
+
+    private fun resolveNeededLocalisations(technologies: List<TechnologyData>): Map<String, String> {
+        val result = linkedMapOf<String, String>()
+        for (key in neededLocalisationKeys(technologies)) {
+            localisationResolver.resolve(key)?.let { result[key] = it }
+        }
+        return result
+    }
+
+    private fun resolveNeededLocalisationsFromFiles(
+        technologies: List<TechnologyData>,
+        alreadyResolved: Set<String>
+    ): Map<String, String> {
+        val neededKeys = neededLocalisationKeys(technologies) - alreadyResolved
+        if (neededKeys.isEmpty()) return emptyMap()
+        val result = linkedMapOf<String, String>()
+        val scoreByKey = mutableMapOf<String, Int>()
+        for (path in findLocFilePaths()) {
+            val langScore = getLanguagePriority(path.toString()) + localisationRootScore(path)
+            val parsed = parseLocFileText(path)
+            for (key in neededKeys) {
+                val value = parsed[key] ?: continue
+                val existing = scoreByKey[key] ?: -1
+                if (langScore > existing) {
+                    scoreByKey[key] = langScore
+                    result[key] = value
+                }
+            }
+        }
+        return result
+    }
+
     private fun getPlsRoots(): List<Path> {
         if (cachesValid && cachedRoots.isNotEmpty()) return cachedRoots
 
@@ -244,42 +257,15 @@ class TechnologyService(private val project: Project) {
     }
 
     private fun findLocFilePaths(): List<Path> {
-        val files = mutableListOf<Path>()
-        val seen = mutableSetOf<String>()
-        for (root in getResourceRoots()) {
-            for (locDir in listOf(root.resolve("localisation"), root.resolve("localization"))) {
-                if (!locDir.isDirectory()) continue
-                try {
-                    Files.walk(locDir, 3).use { stream ->
-                        stream.filter { it.fileName.toString().lowercase().endsWith(".yml") }.forEach {
-                            if (seen.add(it.toString().lowercase())) files.add(it)
-                        }
-                    }
-                } catch (_: Exception) {
-                }
-            }
-        }
-        return files
+        return HoI4LocalisationFiles.findFiles(getResourceRoots(), maxDepth = 3)
     }
 
     private fun localisationRootScore(path: Path): Int {
-        val key = HoI4ResourceRoots.normalizedKey(path)
-        val roots = getResourceRoots()
-        val rootIndex = roots.indexOfFirst { key.startsWith(HoI4ResourceRoots.normalizedKey(it)) }
-        return if (rootIndex < 0) 0 else roots.size - rootIndex
+        return HoI4LocalisationFiles.rootScoreForRoots(path, getResourceRoots())
     }
 
     private fun parseLocFileText(path: Path): Map<String, String> {
-        val map = mutableMapOf<String, String>()
-        try {
-            val content = Files.readString(path)
-            val regex = Regex("""^\s*([^\s:#]+)\s*:\d*\s*"((?:\\.|[^"])*)"""", RegexOption.MULTILINE)
-            for (match in regex.findAll(content)) {
-                map[match.groupValues[1]] = match.groupValues[2]
-            }
-        } catch (_: Exception) {
-        }
-        return map
+        return HoI4LocalisationFiles.parseFile(path)
     }
 
     private fun ensureIconCache() {
@@ -333,6 +319,7 @@ class TechnologyService(private val project: Project) {
     private fun searchIconsCached(iconNamesById: Map<String, List<String>>): Map<String, String> {
         ensureIconCache()
         val map = mutableMapOf<String, String>()
+        val prefixLookup = PrefixIconLookup(cachedIconFiles)
         for ((technologyId, names) in iconNamesById) {
             for (name in names) {
                 var path = findCachedSpriteIconPath(name) ?: findCachedIconPath(name)
@@ -341,9 +328,7 @@ class TechnologyService(private val project: Project) {
                     break
                 }
                 val aliases = iconAliases(name)
-                path = cachedIconFiles.entries.firstOrNull { (key, _) ->
-                    aliases.any { alias -> key.startsWith(alias) || alias.startsWith(key) }
-                }?.value
+                path = prefixLookup.find(aliases)
                 if (path != null) {
                     map[technologyId] = path
                     break
