@@ -13,6 +13,7 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.scale.JBUIScale
 import com.intellij.util.ui.JBFont
 import net.posdaca.OiiaBundle
+import net.posdaca.oiia.core.ParadoxLocalisationPreference
 import net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteInfo
 import net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteInsets
 import net.posdaca.oiia.core.PreviewHintSupport
@@ -142,6 +143,7 @@ class GuiPreviewPanel(
         private val spritePathCache = mutableMapOf<String, String?>()
         private val spriteInfoCache = mutableMapOf<String, SpriteInfo?>()
         private val localisationCache = mutableMapOf<String, String?>()
+        private var localisationCacheKey: String? = null
         private var root: GuiElement? = null
         private var nodes = emptyList<GuiLayoutNode>()
         private var logicalSize = Dimension(JBUIScale.scale(800), JBUIScale.scale(520))
@@ -584,7 +586,6 @@ class GuiPreviewPanel(
             g.clip = intersectClip(oldClip, clipBounds)
             val bounds = node.bounds
             val element = node.element
-            val hasIssue = node.issues.any { it.severity != GuiIssueSeverity.INFO }
             try {
                 val spriteInfo = spriteInfo(element)
                 val nativeSize = spriteInfo?.let { nativeElementSize(it) }
@@ -599,11 +600,6 @@ class GuiPreviewPanel(
                     g.drawImage(image, paintBounds.x, paintBounds.y, null)
                 }
                 paintElementText(g, element, bounds)
-
-                if (hasIssue) {
-                    g.color = JBColor.RED
-                    g.fillOval(paintBounds.x + paintBounds.width - JBUIScale.scale(10), paintBounds.y + JBUIScale.scale(4), JBUIScale.scale(6), JBUIScale.scale(6))
-                }
             } finally {
                 g.clip = oldClip
             }
@@ -1230,6 +1226,11 @@ class GuiPreviewPanel(
 
         private fun localizedText(key: String?): String? {
             if (key == null) return null
+            val currentKey = ParadoxLocalisationPreference.cacheKey()
+            if (localisationCacheKey != currentKey) {
+                localisationCache.clear()
+                localisationCacheKey = currentKey
+            }
             return localisationCache.getOrPut(key) { service.resolveLocalisation(key) }
         }
 

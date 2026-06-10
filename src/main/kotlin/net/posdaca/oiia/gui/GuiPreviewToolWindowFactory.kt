@@ -14,6 +14,7 @@ import com.intellij.ui.components.JBPanel
 import com.intellij.ui.content.ContentFactory
 import com.intellij.util.messages.MessageBusConnection
 import net.posdaca.OiiaBundle
+import net.posdaca.oiia.core.PreviewToolWindowSupport
 import java.awt.BorderLayout
 import javax.swing.SwingConstants
 import javax.swing.Timer
@@ -23,6 +24,11 @@ class GuiPreviewToolWindowFactory : ToolWindowFactory {
     override fun shouldBeAvailable(project: Project) = true
 
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
+        PreviewToolWindowSupport.configure(
+            toolWindow,
+            { OiiaBundle.message("toolwindow.GuiPreview.display.name") },
+            PreviewToolWindowSupport.GuiIcon
+        )
         val panel = GuiToolWindowPanel(project)
         val content = ContentFactory.getInstance().createContent(panel, null, false)
         toolWindow.contentManager.addContent(content)

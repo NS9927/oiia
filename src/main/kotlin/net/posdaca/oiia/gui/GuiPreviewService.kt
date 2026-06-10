@@ -6,6 +6,7 @@ import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
 import icu.windea.pls.lang.resolve.ParadoxLocalisationService
 import icu.windea.pls.lang.search.ParadoxLocalisationSearch
+import icu.windea.pls.localisation.psi.ParadoxLocalisationProperty
 import icu.windea.pls.script.psi.ParadoxScriptBlock
 import icu.windea.pls.script.psi.ParadoxScriptFile
 import icu.windea.pls.script.psi.ParadoxScriptProperty
@@ -47,7 +48,9 @@ class GuiPreviewService(private val project: Project) {
             if (localisationCache.containsKey(trimmed)) return localisationCache[trimmed]
             val plsResolved = runCatching {
                 val selector = ParadoxLocalisationSearch.selector(project, null).distinct()
-                val property = ParadoxLocalisationSearch.searchNormal(trimmed, selector).find()
+                val property = ParadoxLocalisationSearch.searchNormal(trimmed, selector)
+                    .findAll()
+                    .maxByOrNull { localisationPriority(it) }
                 property?.let { ParadoxLocalisationService.resolveLocalizedText(it) ?: it.value }
             }.getOrNull()?.takeIf { it.isNotBlank() && it != trimmed }
             val resolved = plsResolved ?: resolveLocalisationFromFiles(trimmed)
@@ -414,6 +417,11 @@ class GuiPreviewService(private val project: Project) {
     }
 
     private fun languagePriority(path: String): Int {
+        return ParadoxLocalisationPreference.languagePriority(path, LANG_PRIORITY)
+    }
+
+    private fun localisationPriority(property: ParadoxLocalisationProperty): Int {
+        val path = property.containingFile?.virtualFile?.path ?: return 0
         return ParadoxLocalisationPreference.languagePriority(path, LANG_PRIORITY)
     }
 
