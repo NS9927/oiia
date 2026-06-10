@@ -73,10 +73,6 @@ class GuiPreviewService(private val project: Project) {
         }
     }
 
-    fun resolveSpritePath(spriteName: String?): String? {
-        return spriteResolver.resolveSprite(spriteName)
-    }
-
     fun resolveSpriteInfo(spriteName: String?): SpriteInfo? {
         return spriteResolver.resolveSpriteInfo(spriteName)
     }
@@ -303,21 +299,6 @@ class GuiPreviewService(private val project: Project) {
             ?: prop.block?.propertyList?.firstOrNull { it.propertyKey.text == "name" }?.value
             ?: prop.block?.valueList?.firstOrNull()?.text?.trim()
             ?: prop.propertyValue?.text?.trim()
-    }
-
-    private fun parseSpriteFromImageBlock(prop: ParadoxScriptProperty): String? {
-        val block = prop.block ?: return null
-        return block.propertyList.firstNotNullOfOrNull { field ->
-            when (field.propertyKey.text) {
-                "spriteType",
-                "quadTextureSprite",
-                "textureFile",
-                "buttonSpriteType",
-                "buttonSprite",
-                "backGround" -> scalarValue(field)
-                else -> null
-            }
-        }
     }
 
     private fun parsePoint(block: ParadoxScriptBlock?): GuiPoint? {

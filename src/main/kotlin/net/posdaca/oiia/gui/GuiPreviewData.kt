@@ -86,8 +86,6 @@ data class GuiElement(
 }
 
 data class GuiPoint(val xValue: GuiValue, val yValue: GuiValue) {
-    constructor(x: Int, y: Int) : this(GuiValue.pixels(x), GuiValue.pixels(y))
-
     val x: Int
         get() = xValue.asFallbackPixels()
 
@@ -164,6 +162,5 @@ data class GuiPreviewIssue(
 
 enum class GuiIssueSeverity {
     INFO,
-    WARNING,
-    ERROR
+    WARNING
 }

@@ -52,8 +52,7 @@ object ParadoxLocalisationPreference {
     private fun expandLocaleTags(locale: String): List<String> {
         val normalized = normalizeLocale(locale)
         if (normalized.isBlank()) return emptyList()
-        val base = normalized.removePrefix("l_")
-        val tags = when (base) {
+        val tags = when (val base = normalized.removePrefix("l_")) {
             "zh", "zh_cn", "zh_hans", "cn", "simp_chinese", "simplified_chinese", "chinese", "简体中文", "中文" -> listOf("simp_chinese", "l_simp_chinese", "chinese", "l_chinese")
             "en", "en_us", "en_gb", "english", "英语", "英文" -> listOf("english", "l_english")
             "pt", "pt_br", "braz_por", "brazilian_portuguese", "portuguese", "葡萄牙语", "巴西葡萄牙语" -> listOf("braz_por", "l_braz_por")

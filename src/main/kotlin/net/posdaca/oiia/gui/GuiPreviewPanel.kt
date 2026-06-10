@@ -13,6 +13,7 @@ import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPanel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.scale.JBUIScale
+import com.intellij.util.ui.ImageUtil
 import com.intellij.util.ui.JBFont
 import net.posdaca.OiiaBundle
 import net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteInfo
@@ -483,8 +484,7 @@ class GuiPreviewPanel(
             }
 
             if (parentElement?.type == "extendedScrollbarType" && element.size == null && element.type in setOf("slider", "track", "increaseButton", "decreaseButton")) {
-                val native = spriteSize
-                if (native != null) return Dimension(native.width.coerceAtLeast(1), native.height.coerceAtLeast(1))
+                if (spriteSize != null) return Dimension(spriteSize.width.coerceAtLeast(1), spriteSize.height.coerceAtLeast(1))
             }
             return Dimension(width, height)
         }
@@ -747,7 +747,7 @@ class GuiPreviewPanel(
             val key = spriteRenderKey(element, spriteInfo, targetWidth, targetHeight)
             processedImageCache[key]?.let { return it }
 
-            val output = BufferedImage(targetWidth, targetHeight, BufferedImage.TYPE_INT_ARGB)
+            val output = ImageUtil.createImage(targetWidth, targetHeight, BufferedImage.TYPE_INT_ARGB)
             val g = output.createGraphics()
             try {
                 g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR)
@@ -1049,7 +1049,6 @@ class GuiPreviewPanel(
                 return
             }
             val sourceHeight = (foreground.height / 3).coerceAtLeast(1)
-            val startY = sourceHeight
             val middleY = (sourceHeight * 2).coerceAtMost(foreground.height - 1)
             val stopY = (sourceHeight * 3).coerceAtMost(foreground.height)
             val oldClip = g.clip
@@ -1074,7 +1073,7 @@ class GuiPreviewPanel(
                     (target.x + foreground.width).coerceAtMost(target.x + target.width),
                     target.y + target.height,
                     0,
-                    startY,
+                    sourceHeight,
                     foreground.width.coerceAtMost(foreground.width),
                     middleY,
                     null
@@ -1429,7 +1428,7 @@ class GuiPreviewPanel(
             appendRow(sb, "Always Transparent", info?.alwaysTransparent?.takeIf { it }?.toString())
             appendRow(sb, "Text", text)
             appendRow(sb, "Line", element.sourceLine.takeIf { it > 0 }?.toString())
-            for (issue in node.issues) appendRow(sb, issue.severity.name, issue.message)
+            for ((severity, message) in node.issues) appendRow(sb, severity.name, message)
             sb.append("</html>")
             return sb.toString()
         }

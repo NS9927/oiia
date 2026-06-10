@@ -131,8 +131,7 @@ class ParadoxSpriteResolver(private val project: Project) {
                 definitions
                     .asSequence()
                     .filter { it.isSpriteDefinition() }
-                    .mapNotNull { definition -> definition.toSpriteInfo(name) }
-                    .firstOrNull()
+                    .firstNotNullOfOrNull { definition -> definition.toSpriteInfo(name) }
             }
         }.getOrNull()
     }
