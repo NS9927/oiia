@@ -2,11 +2,11 @@
 <idea-plugin>
     <id>net.posdaca.oiia</id>
 
-    <name>%plugin.name</name>
+    <name>oi</name>
 
     <vendor url="https://github.com/DragonKnightOfBreeze/Paradox-Language-Support">Oiia Team</vendor>
 
-    <description>%plugin.description</description>
+    <description>oiiaioiiiai,oiiaioiiiai,oiiaioiiiai,oiiaioiiiai</description>
 
     <depends>com.intellij.modules.platform</depends>
     <depends>icu.windea.pls</depends>
