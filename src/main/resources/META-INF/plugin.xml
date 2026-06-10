@@ -15,19 +15,19 @@
 
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow id="NationalFocusPreview" factoryClass="net.posdaca.oiia.focus.NationalFocusPreviewToolWindowFactory"
-                    icon="AllIcons.Toolwindows.ToolWindowPalette"
+                    icon="/icons/focusPreview.svg"
                     anchor="right"
                     secondary="true"/>
         <toolWindow id="TechnologyPreview" factoryClass="net.posdaca.oiia.technology.TechnologyPreviewToolWindowFactory"
-                    icon="AllIcons.Toolwindows.ToolWindowPalette"
+                    icon="/icons/technologyPreview.svg"
                     anchor="right"
                     secondary="true"/>
         <toolWindow id="GuiPreview" factoryClass="net.posdaca.oiia.gui.GuiPreviewToolWindowFactory"
-                    icon="AllIcons.Toolwindows.ToolWindowPalette"
+                    icon="/icons/guiPreview.svg"
                     anchor="right"
                     secondary="true"/>
         <toolWindow id="MapPreview" factoryClass="net.posdaca.oiia.map.MapPreviewToolWindowFactory"
-                    icon="AllIcons.Toolwindows.ToolWindowPalette"
+                    icon="/icons/mapPreview.svg"
                     anchor="right"
                     secondary="true"/>
     </extensions>
