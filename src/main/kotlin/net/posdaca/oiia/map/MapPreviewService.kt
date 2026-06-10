@@ -56,7 +56,11 @@ class MapPreviewService(private val project: Project) {
                     stateImage = renderData.stateImage,
                     countryImage = renderData.countryImage,
                     strategicRegionImage = renderData.strategicRegionImage,
+                    smoothStateImage = renderData.smoothStateImage,
+                    smoothCountryImage = renderData.smoothCountryImage,
+                    smoothStrategicRegionImage = renderData.smoothStrategicRegionImage,
                     borderImages = renderData.borderImages,
+                    smoothBorderSegments = renderData.smoothBorderSegments,
                     pixelIndex = renderData.pixelIndex,
                     provinceByColor = provinces,
                     provinceById = provinceById,
@@ -473,7 +477,11 @@ class MapPreviewService(private val project: Project) {
         val stateImage: BufferedImage?,
         val countryImage: BufferedImage?,
         val strategicRegionImage: BufferedImage?,
-        val borderImages: Map<MapPreviewMode, BufferedImage>
+        val smoothStateImage: BufferedImage?,
+        val smoothCountryImage: BufferedImage?,
+        val smoothStrategicRegionImage: BufferedImage?,
+        val borderImages: Map<MapPreviewMode, BufferedImage>,
+        val smoothBorderSegments: Map<MapPreviewMode, List<MapLineSegment>>
     )
 
     private fun buildRenderData(
@@ -554,12 +562,19 @@ class MapPreviewService(private val project: Project) {
             countryBounds = countryBounds.mapValues { it.value.toBounds() },
             strategicRegionBounds = strategicRegionBounds.mapValues { it.value.toBounds() }
         )
+        val borderImages = buildBorderImages(pixelIndex, width, height)
         return MapRenderData(
             pixelIndex = pixelIndex,
             stateImage = stateImage,
             countryImage = countryImage,
             strategicRegionImage = strategicRegionImage,
-            borderImages = buildBorderImages(pixelIndex, width, height)
+            smoothStateImage = stateImage?.let { buildSmoothColorImage(it, stateKeys, width, height) },
+            smoothCountryImage = countryImage?.let { buildSmoothColorImage(it, countryKeys, width, height) },
+            smoothStrategicRegionImage = strategicRegionImage?.let {
+                buildSmoothColorImage(it, strategicRegionKeys, width, height)
+            },
+            borderImages = borderImages,
+            smoothBorderSegments = buildSmoothBorderSegments(pixelIndex, width, height)
         )
     }
 
@@ -639,6 +654,215 @@ class MapPreviewService(private val project: Project) {
             image.setRGB(x, y, border)
         }
     }
+
+    private fun buildSmoothColorImage(source: BufferedImage, keys: IntArray, width: Int, height: Int): BufferedImage {
+        val image = ImageUtil.createImage(width, height, BufferedImage.TYPE_INT_RGB)
+        for (y in 0 until height) {
+            val rowOffset = y * width
+            for (x in 0 until width) {
+                val index = rowOffset + x
+                val key = keys[index]
+                val originalRgb = source.getRGB(x, y) and RGB_MASK
+                if (key == UNKNOWN_KEY || !isNearKeyBoundary(keys, width, height, x, y, index, key)) {
+                    image.setRGB(x, y, originalRgb)
+                    continue
+                }
+                image.setRGB(x, y, blendedNeighborColor(source, keys, width, height, x, y, key, originalRgb))
+            }
+        }
+        return image
+    }
+
+    private fun isNearKeyBoundary(
+        keys: IntArray,
+        width: Int,
+        height: Int,
+        x: Int,
+        y: Int,
+        index: Int,
+        key: Int
+    ): Boolean {
+        val rowOffset = y * width
+        val leftIndex = rowOffset + if (x == 0) width - 1 else x - 1
+        val rightIndex = rowOffset + if (x + 1 == width) 0 else x + 1
+        return keys[leftIndex] != key ||
+                keys[rightIndex] != key ||
+                y > 0 && keys[index - width] != key ||
+                y + 1 < height && keys[index + width] != key
+    }
+
+    private fun blendedNeighborColor(
+        source: BufferedImage,
+        keys: IntArray,
+        width: Int,
+        height: Int,
+        x: Int,
+        y: Int,
+        key: Int,
+        originalRgb: Int
+    ): Int {
+        var red = (originalRgb shr 16 and 0xFF) * SMOOTH_COLOR_CENTER_WEIGHT
+        var green = (originalRgb shr 8 and 0xFF) * SMOOTH_COLOR_CENTER_WEIGHT
+        var blue = (originalRgb and 0xFF) * SMOOTH_COLOR_CENTER_WEIGHT
+        var weight = SMOOTH_COLOR_CENTER_WEIGHT
+        for (dy in -1..1) {
+            val ny = y + dy
+            if (ny !in 0 until height) continue
+            for (dx in -1..1) {
+                if (dx == 0 && dy == 0) continue
+                val nx = when {
+                    x + dx < 0 -> width + x + dx
+                    x + dx >= width -> x + dx - width
+                    else -> x + dx
+                }
+                val neighborIndex = ny * width + nx
+                val neighborKey = keys[neighborIndex]
+                if (neighborKey == UNKNOWN_KEY || neighborKey == key) continue
+                val neighborWeight = if (dx == 0 || dy == 0) 2 else 1
+                val rgb = source.getRGB(nx, ny) and RGB_MASK
+                red += (rgb shr 16 and 0xFF) * neighborWeight
+                green += (rgb shr 8 and 0xFF) * neighborWeight
+                blue += (rgb and 0xFF) * neighborWeight
+                weight += neighborWeight
+            }
+        }
+        return ((red / weight).coerceIn(0, 255) shl 16) or
+                ((green / weight).coerceIn(0, 255) shl 8) or
+                (blue / weight).coerceIn(0, 255)
+    }
+
+    private fun buildSmoothBorderSegments(
+        pixelIndex: MapPixelIndex,
+        width: Int,
+        height: Int
+    ): Map<MapPreviewMode, List<MapLineSegment>> {
+        return mapOf(
+            MapPreviewMode.PROVINCE to buildSmoothBorderSegments(width, height, pixelIndex.provinceKeys),
+            MapPreviewMode.STATE to buildSmoothBorderSegments(width, height, pixelIndex.stateKeys),
+            MapPreviewMode.COUNTRY to buildSmoothBorderSegments(width, height, pixelIndex.countryKeys),
+            MapPreviewMode.STRATEGIC_REGION to buildSmoothBorderSegments(width, height, pixelIndex.strategicRegionKeys)
+        )
+    }
+
+    private fun buildSmoothBorderSegments(width: Int, height: Int, keys: IntArray): List<MapLineSegment> {
+        val edges = mutableListOf<BorderEdge>()
+        for (y in 0 until height) {
+            val rowOffset = y * width
+            for (x in 0 until width) {
+                val key = keys[rowOffset + x]
+                if (key == UNKNOWN_KEY) continue
+
+                val rightKey = keys[rowOffset + if (x + 1 == width) 0 else x + 1]
+                if (rightKey != UNKNOWN_KEY && rightKey != key) {
+                    edges.add(BorderEdge(BorderPoint(x + 1.0, y.toDouble()), BorderPoint(x + 1.0, (y + 1).toDouble())))
+                }
+
+                if (y + 1 < height) {
+                    val downKey = keys[rowOffset + width + x]
+                    if (downKey != UNKNOWN_KEY && downKey != key) {
+                        edges.add(BorderEdge(BorderPoint(x.toDouble(), y + 1.0), BorderPoint((x + 1).toDouble(), y + 1.0)))
+                    }
+                }
+            }
+        }
+        return buildBorderChains(edges)
+            .flatMap { simplifyBorderChain(it).zipWithNext() }
+            .map { (a, b) -> MapLineSegment(a.x, a.y, b.x, b.y) }
+    }
+
+    private fun buildBorderChains(edges: List<BorderEdge>): List<List<BorderPoint>> {
+        val outgoing = linkedMapOf<BorderPoint, MutableList<BorderPoint>>()
+        for (edge in edges) {
+            outgoing.getOrPut(edge.start) { mutableListOf() }.add(edge.end)
+            outgoing.getOrPut(edge.end) { mutableListOf() }.add(edge.start)
+        }
+        val visitedEdges = mutableSetOf<Pair<BorderPoint, BorderPoint>>()
+        val chains = mutableListOf<List<BorderPoint>>()
+        for ((start, nextPoints) in outgoing) {
+            for (next in nextPoints) {
+                val edgeKey = normalizedEdgeKey(start, next)
+                if (!visitedEdges.add(edgeKey)) continue
+                val chain = mutableListOf(start, next)
+                extendBorderChain(chain, outgoing, visitedEdges, forward = true)
+                extendBorderChain(chain, outgoing, visitedEdges, forward = false)
+                chains.add(chain)
+            }
+        }
+        return chains
+    }
+
+    private fun extendBorderChain(
+        chain: MutableList<BorderPoint>,
+        outgoing: Map<BorderPoint, List<BorderPoint>>,
+        visitedEdges: MutableSet<Pair<BorderPoint, BorderPoint>>,
+        forward: Boolean
+    ) {
+        while (true) {
+            val current = if (forward) chain.last() else chain.first()
+            val previous = if (forward) chain.getOrNull(chain.lastIndex - 1) else chain.getOrNull(1)
+            val next = outgoing[current]
+                .orEmpty()
+                .filter { it != previous }
+                .firstOrNull { visitedEdges.add(normalizedEdgeKey(current, it)) }
+                ?: break
+            if (forward) chain.add(next) else chain.add(0, next)
+        }
+    }
+
+    private fun normalizedEdgeKey(a: BorderPoint, b: BorderPoint): Pair<BorderPoint, BorderPoint> {
+        return if (a <= b) a to b else b to a
+    }
+
+    private fun simplifyBorderChain(points: List<BorderPoint>): List<BorderPoint> {
+        if (points.size <= 2) return points
+        val keep = BooleanArray(points.size)
+        keep[0] = true
+        keep[points.lastIndex] = true
+        simplifyBorderChain(points, 0, points.lastIndex, keep)
+        return points.filterIndexed { index, _ -> keep[index] }
+    }
+
+    private fun simplifyBorderChain(points: List<BorderPoint>, start: Int, end: Int, keep: BooleanArray) {
+        if (end <= start + 1) return
+        var farthestIndex = -1
+        var farthestDistance = 0.0
+        val a = points[start]
+        val b = points[end]
+        for (index in start + 1 until end) {
+            val distance = pointLineDistance(points[index], a, b)
+            if (distance > farthestDistance) {
+                farthestDistance = distance
+                farthestIndex = index
+            }
+        }
+        if (farthestDistance > SMOOTH_EDGE_SIMPLIFY_TOLERANCE && farthestIndex >= 0) {
+            keep[farthestIndex] = true
+            simplifyBorderChain(points, start, farthestIndex, keep)
+            simplifyBorderChain(points, farthestIndex, end, keep)
+        }
+    }
+
+    private fun pointLineDistance(point: BorderPoint, start: BorderPoint, end: BorderPoint): Double {
+        val dx = end.x - start.x
+        val dy = end.y - start.y
+        if (dx == 0.0 && dy == 0.0) {
+            val px = point.x - start.x
+            val py = point.y - start.y
+            return kotlin.math.sqrt(px * px + py * py)
+        }
+        val numerator = kotlin.math.abs(dy * point.x - dx * point.y + end.x * start.y - end.y * start.x)
+        val denominator = kotlin.math.sqrt(dx * dx + dy * dy)
+        return numerator / denominator
+    }
+
+    private data class BorderPoint(val x: Double, val y: Double) : Comparable<BorderPoint> {
+        override fun compareTo(other: BorderPoint): Int {
+            val yCompare = y.compareTo(other.y)
+            return if (yCompare != 0) yCompare else x.compareTo(other.x)
+        }
+    }
+
+    private data class BorderEdge(val start: BorderPoint, val end: BorderPoint)
 
     private fun colorForId(id: Int): Int {
         val hash = id * 1103515245 + 12345
@@ -989,6 +1213,8 @@ class MapPreviewService(private val project: Project) {
         private const val COUNTRIES_PATH = "common/countries"
         private const val RGB_MASK = 0xFFFFFF
         private const val UNKNOWN_KEY = -1
+        private const val SMOOTH_COLOR_CENTER_WEIGHT = 5
+        private const val SMOOTH_EDGE_SIMPLIFY_TOLERANCE = 0.85
         private val COUNTRY_TAG_REGEX = Regex("""[A-Z0-9_]{3}""")
         private val COUNTRY_COLOR_OVERRIDE_PATHS = listOf(
             "common/countries/color.txt",

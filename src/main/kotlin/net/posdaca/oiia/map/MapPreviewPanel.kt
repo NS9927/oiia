@@ -27,6 +27,9 @@ import java.awt.Graphics2D
 import java.awt.Point
 import java.awt.Rectangle
 import java.awt.RenderingHints
+import java.awt.BasicStroke
+import java.awt.geom.Line2D
+import java.awt.image.BufferedImage
 import java.awt.event.ComponentAdapter
 import java.awt.event.ComponentEvent
 import java.awt.event.MouseAdapter
@@ -63,6 +66,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
     private var colorMode = MapPreviewMode.PROVINCE
     private var borderMode = MapPreviewMode.PROVINCE
     private var showBorders = true
+    private var smoothBorders = false
     private var showLabels = false
     private val reloadTimer = Timer(1200) {
         if (isShowing) reloadIfChanged()
@@ -139,6 +143,12 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             showBorders = borderToggle.isSelected
             canvas.repaint()
         }
+        val smoothBorderToggle = JCheckBox(msg("smooth.borders"), smoothBorders)
+        smoothBorderToggle.isOpaque = false
+        smoothBorderToggle.addActionListener {
+            smoothBorders = smoothBorderToggle.isSelected
+            canvas.setSmoothBorders(smoothBorders)
+        }
         val labelToggle = JCheckBox(msg("labels"), showLabels)
         labelToggle.isOpaque = false
         labelToggle.addActionListener {
@@ -152,6 +162,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         actions.add(JBLabel(msg("border.mode")))
         actions.add(borderSelector)
         actions.add(borderToggle)
+        actions.add(smoothBorderToggle)
         actions.add(labelToggle)
         actions.add(reloadButton)
         panel.add(actions, BorderLayout.EAST)
@@ -285,6 +296,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         private var zoom = 1.0
         private var fillMode = MapPreviewMode.PROVINCE
         private var outlineMode = MapPreviewMode.PROVINCE
+        private var smoothBorders = false
         private var hoverSelection: HoverSelection? = null
         private var hoverOverlay: HoverOverlay? = null
         private var dragStartScreenPoint: Point? = null
@@ -293,6 +305,9 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         private var singleClickTimer: Timer? = null
         private var recenteringScroll = false
         private var fitToMinimumAfterLayout = false
+        private var cachedSmoothBorderImage: BufferedImage? = null
+        private var cachedSmoothBorderMode: MapPreviewMode? = null
+        private var cachedSmoothBorderZoom = 0.0
 
         private val scrollPane: JBScrollPane?
             get() = SwingUtilities.getAncestorOfClass(JBScrollPane::class.java, this) as? JBScrollPane
@@ -397,6 +412,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             cancelPendingSingleClick()
             hideMapHint()
             fillMode = nextMode
+            clearSmoothBorderCache()
             revalidate()
             repaint()
         }
@@ -407,7 +423,14 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             outlineMode = nextMode
             hoverSelection = null
             hoverOverlay = null
+            clearSmoothBorderCache()
             revalidate()
+            repaint()
+        }
+
+        fun setSmoothBorders(enabled: Boolean) {
+            smoothBorders = enabled
+            clearSmoothBorderCache()
             repaint()
         }
 
@@ -419,6 +442,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             zoom = nextData?.let { zoomInBounds(minZoom(it)) } ?: 1.0
             hoverSelection = null
             hoverOverlay = null
+            clearSmoothBorderCache()
             revalidate()
             repaint()
             SwingUtilities.invokeLater {
@@ -437,6 +461,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             val anchorImageX = anchor.x / oldZoom
             val anchorImageY = anchor.y / oldZoom
             zoom = clampedZoom
+            clearSmoothBorderCache()
             revalidate()
             if (scroll != null && viewport != null) {
                 val nextViewX = (anchorImageX * clampedZoom - anchorInViewport.x).toInt()
@@ -460,13 +485,13 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         }
 
         override fun getPreferredSize(): Dimension {
-            val image = data?.imageFor(fillMode) ?: return Dimension(JBUIScale.scale(600), JBUIScale.scale(360))
+            val image = data?.imageFor(fillMode, smoothBorders) ?: return Dimension(JBUIScale.scale(600), JBUIScale.scale(360))
             return Dimension((image.width * zoom * LOOP_COPIES).toInt(), (image.height * zoom).toInt())
         }
 
         override fun paintComponent(g: Graphics) {
             super.paintComponent(g)
-            val image = data?.imageFor(fillMode)
+            val image = data?.imageFor(fillMode, smoothBorders)
             if (image == null) {
                 paintEmptyMessage(g)
                 return
@@ -480,13 +505,62 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             for (copy in 0 until LOOP_COPIES) {
                 val offsetX = copy * scaledWidth
                 g2.drawImage(image, offsetX, 0, scaledWidth, scaledHeight, null)
-                if (showBorders) data?.borderImageFor(outlineMode)?.let { borderImage ->
-                    g2.drawImage(borderImage, offsetX, 0, scaledWidth, scaledHeight, null)
+                if (showBorders) {
+                    if (smoothBorders) {
+                        paintSmoothBorders(g2, offsetX)
+                    } else {
+                        data?.borderImageFor(outlineMode)?.let { borderImage ->
+                            g2.drawImage(borderImage, offsetX, 0, scaledWidth, scaledHeight, null)
+                        }
+                    }
                 }
             }
             paintHoverHighlight(g2)
             if (showLabels) paintMapLabels(g2)
             g2.dispose()
+        }
+
+        private fun paintSmoothBorders(g2: Graphics2D, offsetX: Int) {
+            val current = data ?: return
+            val borderImage = cachedSmoothBorderImage?.takeIf {
+                cachedSmoothBorderMode == outlineMode && cachedSmoothBorderZoom == zoom
+            } ?: renderSmoothBorderImage(current).also {
+                cachedSmoothBorderImage = it
+                cachedSmoothBorderMode = outlineMode
+                cachedSmoothBorderZoom = zoom
+            }
+            g2.drawImage(borderImage, offsetX, 0, null)
+        }
+
+        private fun renderSmoothBorderImage(current: LoadedMapData): BufferedImage {
+            val image = current.imageFor(fillMode, smoothBorders)
+            val scaledWidth = (image.width * zoom).toInt().coerceAtLeast(1)
+            val scaledHeight = (image.height * zoom).toInt().coerceAtLeast(1)
+            val output = BufferedImage(scaledWidth, scaledHeight, BufferedImage.TYPE_INT_ARGB)
+            val g = output.createGraphics()
+            try {
+                g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
+                g.color = Color(0, 0, 0, 190)
+                g.stroke = BasicStroke(
+                    (zoom.coerceAtLeast(1.0)).toFloat(),
+                    BasicStroke.CAP_ROUND,
+                    BasicStroke.JOIN_ROUND
+                )
+                g.scale(zoom, zoom)
+                for (segment in current.smoothBorderSegmentsFor(outlineMode)) {
+                    g.draw(Line2D.Double(segment.x1, segment.y1, segment.x2, segment.y2))
+                }
+            } finally {
+                g.dispose()
+            }
+            return output
+        }
+
+        private fun clearSmoothBorderCache() {
+            cachedSmoothBorderImage = null
+            cachedSmoothBorderMode = null
+            cachedSmoothBorderZoom = 0.0
         }
 
         private fun paintEmptyMessage(g: Graphics) {
