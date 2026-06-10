@@ -47,6 +47,13 @@ class NationalFocusPreviewToolWindowFactory : ToolWindowFactory {
         }.apply { isRepeats = true }
 
         init {
+            add(
+                PreviewToolWindowSupport.createReloadToolbar(
+                    OiiaBundle.message("toolwindow.NationalFocusPreview.reload"),
+                    onReload = { refreshFromCurrentFile() }
+                ),
+                BorderLayout.NORTH
+            )
             add(currentPanel, BorderLayout.CENTER)
             connectEditorListener()
             refreshTimer.start()

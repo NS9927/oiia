@@ -767,14 +767,26 @@ class MapPreviewService(private val project: Project) {
                 val key = keys[rowOffset + x]
                 if (key == UNKNOWN_KEY) continue
 
+                val leftKey = keys[rowOffset + if (x == 0) width - 1 else x - 1]
+                if (leftKey == UNKNOWN_KEY) {
+                    edges.add(BorderEdge(BorderPoint(x.toDouble(), y.toDouble()), BorderPoint(x.toDouble(), (y + 1).toDouble())))
+                }
+
                 val rightKey = keys[rowOffset + if (x + 1 == width) 0 else x + 1]
-                if (rightKey != UNKNOWN_KEY && rightKey != key) {
+                if (rightKey != key) {
                     edges.add(BorderEdge(BorderPoint(x + 1.0, y.toDouble()), BorderPoint(x + 1.0, (y + 1).toDouble())))
+                }
+
+                if (y > 0) {
+                    val upKey = keys[rowOffset - width + x]
+                    if (upKey == UNKNOWN_KEY) {
+                        edges.add(BorderEdge(BorderPoint(x.toDouble(), y.toDouble()), BorderPoint((x + 1).toDouble(), y.toDouble())))
+                    }
                 }
 
                 if (y + 1 < height) {
                     val downKey = keys[rowOffset + width + x]
-                    if (downKey != UNKNOWN_KEY && downKey != key) {
+                    if (downKey != key) {
                         edges.add(BorderEdge(BorderPoint(x.toDouble(), y + 1.0), BorderPoint((x + 1).toDouble(), y + 1.0)))
                     }
                 }

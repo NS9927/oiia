@@ -39,6 +39,7 @@ class GuiPreviewToolWindowFactory : ToolWindowFactory {
     ) : JBPanel<JBPanel<*>>(BorderLayout()) {
 
         private var currentPanel: JBPanel<JBPanel<*>> = createEmptyPanel()
+        private var toolbar = createToolbar()
         private var messageBusConnection: MessageBusConnection? = null
         private var renderedFilePath: String? = null
         private var renderedStamp: Long = -1
@@ -48,6 +49,7 @@ class GuiPreviewToolWindowFactory : ToolWindowFactory {
         }.apply { isRepeats = true }
 
         init {
+            add(toolbar, BorderLayout.NORTH)
             add(currentPanel, BorderLayout.CENTER)
             connectEditorListener()
             refreshTimer.start()
@@ -95,28 +97,56 @@ class GuiPreviewToolWindowFactory : ToolWindowFactory {
             renderedStamp = stamp
 
             val selectedFile = file ?: run {
+                updateToolbar()
                 updatePanel(createEmptyPanel())
                 return
             }
 
             if (!isGuiFile(selectedFile)) {
+                updateToolbar()
                 updatePanel(createEmptyPanel())
                 return
             }
 
             val psiFile: PsiFile? = PsiManager.getInstance(project).findFile(selectedFile)
             if (psiFile == null) {
+                updateToolbar()
                 updatePanel(createNoContainerPanel())
                 return
             }
 
             val previewFile = service.parseGuiFile(psiFile)
             if (previewFile.roots.isEmpty()) {
+                updateToolbar()
                 updatePanel(createNoContainerPanel())
                 return
             }
 
-            updatePanel(GuiPreviewPanel(project, previewFile, service))
+            val previewPanel = GuiPreviewPanel(project, previewFile, service)
+            updateToolbar(previewPanel.statusComponent, previewPanel.rootSelectorActions)
+            updatePanel(previewPanel)
+        }
+
+        private fun createToolbar(
+            centerContent: javax.swing.JComponent? = null,
+            extraActions: javax.swing.JComponent? = null
+        ): javax.swing.JComponent {
+            return PreviewToolWindowSupport.createReloadToolbar(
+                OiiaBundle.message("toolwindow.GuiPreview.reload"),
+                { refreshFromCurrentFile() },
+                centerContent,
+                extraActions
+            )
+        }
+
+        private fun updateToolbar(
+            centerContent: javax.swing.JComponent? = null,
+            extraActions: javax.swing.JComponent? = null
+        ) {
+            val nextToolbar = createToolbar(centerContent, extraActions)
+            remove(toolbar)
+            toolbar = nextToolbar
+            add(toolbar, BorderLayout.NORTH)
         }
 
         @Suppress("UnstableApiUsage")

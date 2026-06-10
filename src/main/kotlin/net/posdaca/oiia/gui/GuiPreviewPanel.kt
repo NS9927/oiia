@@ -35,7 +35,6 @@ import java.awt.event.MouseEvent
 import java.awt.event.MouseWheelEvent
 import java.awt.geom.Arc2D
 import java.awt.image.BufferedImage
-import javax.swing.BorderFactory
 import javax.swing.DefaultListCellRenderer
 import javax.swing.JComponent
 import javax.swing.JList
@@ -58,11 +57,11 @@ class GuiPreviewPanel(
     private val selector = ComboBox(roots.toTypedArray())
     private val statusLabel = JBLabel()
     private val canvas = GuiCanvas(project, service)
+    val statusComponent: JComponent = createStatusComponent()
+    val rootSelectorActions: JComponent = createRootSelectorActions()
 
     init {
         background = JBColor.PanelBackground
-        add(createToolbar(), BorderLayout.NORTH)
-
         val scrollPane = JBScrollPane(canvas)
         scrollPane.border = null
         scrollPane.viewport.background = JBColor.PanelBackground
@@ -75,19 +74,12 @@ class GuiPreviewPanel(
         updateStatus()
     }
 
-    private fun createToolbar(): JComponent {
-        val panel = JPanel(BorderLayout(JBUIScale.scale(8), 0))
-        panel.background = JBColor.PanelBackground
-        panel.border = BorderFactory.createEmptyBorder(
-            JBUIScale.scale(6),
-            JBUIScale.scale(8),
-            JBUIScale.scale(6),
-            JBUIScale.scale(8)
-        )
-
+    private fun createStatusComponent(): JComponent {
         statusLabel.font = JBFont.label()
-        panel.add(statusLabel, BorderLayout.CENTER)
+        return statusLabel
+    }
 
+    private fun createRootSelectorActions(): JComponent {
         selector.renderer = object : DefaultListCellRenderer() {
             override fun getListCellRendererComponent(
                 list: JList<*>?,
@@ -111,8 +103,7 @@ class GuiPreviewPanel(
         actions.isOpaque = false
         actions.add(JBLabel(OiiaBundle.message("toolwindow.GuiPreview.root")))
         actions.add(selector)
-        panel.add(actions, BorderLayout.EAST)
-        return panel
+        return actions
     }
 
     private fun updateStatus() {
