@@ -1,6 +1,8 @@
 package net.posdaca.oiia.gui
 
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
@@ -13,11 +15,9 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.scale.JBUIScale
 import com.intellij.util.ui.JBFont
 import net.posdaca.OiiaBundle
-import net.posdaca.oiia.core.ParadoxLocalisationPreference
 import net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteInfo
 import net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteInsets
 import net.posdaca.oiia.core.PreviewHintSupport
-import net.posdaca.oiia.core.PreviewImageLoader
 import java.awt.BasicStroke
 import java.awt.BorderLayout
 import java.awt.Color
@@ -35,6 +35,7 @@ import java.awt.event.MouseEvent
 import java.awt.event.MouseWheelEvent
 import java.awt.geom.Arc2D
 import java.awt.image.BufferedImage
+import java.util.concurrent.atomic.AtomicInteger
 import javax.swing.DefaultListCellRenderer
 import javax.swing.JComponent
 import javax.swing.JList
@@ -50,13 +51,14 @@ import kotlin.math.roundToInt
 class GuiPreviewPanel(
     project: Project,
     previewFile: GuiPreviewFile,
-    service: GuiPreviewService
+    service: GuiPreviewService,
+    initialResources: GuiPreviewResources = GuiPreviewResources(GuiPreviewService.localisationCacheKey())
 ) : JBPanel<JBPanel<*>>(BorderLayout()) {
 
     private val roots = previewFile.roots
     private val selector = ComboBox(roots.toTypedArray())
     private val statusLabel = JBLabel()
-    private val canvas = GuiCanvas(project, service)
+    private val canvas = GuiCanvas(project, service, initialResources)
     val statusComponent: JComponent = createStatusComponent()
     val rootSelectorActions: JComponent = createRootSelectorActions()
 
@@ -125,13 +127,13 @@ class GuiPreviewPanel(
 
     private class GuiCanvas(
         private val project: Project,
-        private val service: GuiPreviewService
+        private val service: GuiPreviewService,
+        initialResources: GuiPreviewResources
     ) : JBPanel<JBPanel<*>>(null), Scrollable {
 
         private val padding = JBUIScale.scale(48)
         private val imageCache = mutableMapOf<String, BufferedImage>()
         private val processedImageCache = mutableMapOf<SpriteRenderKey, BufferedImage>()
-        private val spritePathCache = mutableMapOf<String, String?>()
         private val spriteInfoCache = mutableMapOf<String, SpriteInfo?>()
         private val localisationCache = mutableMapOf<String, String?>()
         private var localisationCacheKey: String? = null
@@ -148,6 +150,8 @@ class GuiPreviewPanel(
         private var pressedNode: GuiLayoutNode? = null
         private var draggingView = false
         private var singleClickTimer: Timer? = null
+        private val preloadVersion = AtomicInteger()
+        private var ready = false
 
         private val scrollableHsb: javax.swing.JScrollBar?
             get() = (SwingUtilities.getAncestorOfClass(JBScrollPane::class.java, this) as? JBScrollPane)?.horizontalScrollBar
@@ -211,6 +215,8 @@ class GuiPreviewPanel(
         }
 
         init {
+            mergeResources(initialResources)
+            ready = true
             isOpaque = true
             background = JBColor.PanelBackground
             ToolTipManager.sharedInstance().registerComponent(this)
@@ -306,13 +312,25 @@ class GuiPreviewPanel(
         fun setRoot(nextRoot: GuiElement) {
             cancelPendingSingleClick()
             hideNodeHint(clearLocked = true)
+            val version = preloadVersion.incrementAndGet()
             root = nextRoot
-            nodes = layout(nextRoot)
-            logicalSize = computeLogicalSize(nodes)
+            refreshLocalisationPreference()
             selected = null
             hovered = null
-            revalidate()
-            repaint()
+            if (isRootReady(nextRoot)) {
+                ready = true
+                nodes = layout(nextRoot)
+                logicalSize = computeLogicalSize(nodes)
+                revalidate()
+                repaint()
+            } else {
+                ready = false
+                nodes = emptyList()
+                logicalSize = Dimension(JBUIScale.scale(800), JBUIScale.scale(520))
+                revalidate()
+                repaint()
+                preloadResources(nextRoot, version)
+            }
             SwingUtilities.invokeLater {
                 setScrollBarValue(scrollableHsb, 0)
                 setScrollBarValue(scrollableVsb, 0)
@@ -353,6 +371,7 @@ class GuiPreviewPanel(
 
         override fun paintComponent(g: Graphics) {
             super.paintComponent(g)
+            if (!ready) return
             val g2 = g.create() as Graphics2D
             try {
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
@@ -367,12 +386,20 @@ class GuiPreviewPanel(
             }
         }
 
+        override fun addNotify() {
+            super.addNotify()
+            root?.let {
+                refreshLocalisationPreference()
+                if (!isRootReady(it)) preloadResources(it, preloadVersion.incrementAndGet())
+            }
+        }
+
         override fun removeNotify() {
+            preloadVersion.incrementAndGet()
             ToolTipManager.sharedInstance().unregisterComponent(this)
             cancelPendingSingleClick()
             hideNodeHint(clearLocked = true)
             super.removeNotify()
-            imageCache.clear()
             processedImageCache.clear()
         }
 
@@ -428,7 +455,7 @@ class GuiPreviewPanel(
                 return Dimension(parentBounds.width.coerceAtLeast(1), parentBounds.height.coerceAtLeast(1))
             }
             val declared = element.size
-            val spriteSize = spriteInfo(element)?.let { nativeElementSize(it) }
+            val spriteSize = cachedSpriteInfo(element)?.let { nativeElementSize(it) }
             val textSize = textSizeFallback(element, parentBounds)
             val baseWidth = declared?.resolveWidth(parentBounds.width)
                 ?: textSize?.width
@@ -538,10 +565,10 @@ class GuiPreviewPanel(
             if (declaredSize != null && declaredSize.width == 0 && declaredSize.height == 0) {
                 issues.add(GuiPreviewIssue(GuiIssueSeverity.WARNING, "size is 0 x 0"))
             }
-            if (element.primarySprite != null && spritePath(element) == null) {
+            if (element.primarySprite != null && isSpriteKnownMissing(element)) {
                 issues.add(GuiPreviewIssue(GuiIssueSeverity.WARNING, "sprite not resolved: ${element.primarySprite}"))
             }
-            if (element.text != null && localizedText(element.text) == null) {
+            if (element.text != null && isLocalisationKnownMissing(element.text)) {
                 issues.add(GuiPreviewIssue(GuiIssueSeverity.INFO, "localisation not resolved: ${element.text}"))
             }
             if (parentBounds != null && !parentBounds.contains(bounds)) {
@@ -578,7 +605,7 @@ class GuiPreviewPanel(
             val bounds = node.bounds
             val element = node.element
             try {
-                val spriteInfo = spriteInfo(element)
+                val spriteInfo = cachedSpriteInfo(element)
                 val nativeSize = spriteInfo?.let { nativeElementSize(it) }
                 val paintBounds = if (nativeSize != null && element.size == null && element.type == "iconType") {
                     Rectangle(bounds.x, bounds.y, nativeSize.width, nativeSize.height)
@@ -597,7 +624,7 @@ class GuiPreviewPanel(
         }
 
         private fun paintElementText(g: Graphics2D, element: GuiElement, bounds: Rectangle) {
-            val value = localizedText(element.text) ?: element.text?.trim()?.trim('"') ?: return
+            val value = cachedLocalizedText(element.text) ?: element.text?.trim()?.trim('"') ?: return
             if (value.isBlank()) return
             val oldClip = g.clip
             try {
@@ -692,7 +719,7 @@ class GuiPreviewPanel(
         }
 
         private fun nativeElementSize(spriteInfo: SpriteInfo): Dimension? {
-            val image = spriteInfo.primaryImagePath?.let { PreviewImageLoader.load(it, imageCache) }
+            val image = spriteInfo.primaryImagePath?.let { imageCache[it] }
             val native = image?.let { nativeSpriteSize(it, spriteInfo) }
             if (native != null) return native
             if (spriteInfo.usesDeclaredSpriteSize) return spriteInfo.size?.toDimension()
@@ -715,7 +742,7 @@ class GuiPreviewPanel(
         ): BufferedImage? {
             val targetWidth = width.coerceAtLeast(1)
             val targetHeight = height.coerceAtLeast(1)
-            val rawImage = spriteInfo.primaryImagePath?.let { PreviewImageLoader.load(it, imageCache) } ?: return null
+            val rawImage = spriteInfo.primaryImagePath?.let { imageCache[it] } ?: return null
             val sourceImage = if (spriteInfo.usesCompositeTextures) rawImage else frameImage(rawImage, element, spriteInfo)
             val key = spriteRenderKey(element, spriteInfo, targetWidth, targetHeight)
             processedImageCache[key]?.let { return it }
@@ -886,8 +913,8 @@ class GuiPreviewPanel(
             element: GuiElement,
             spriteInfo: SpriteInfo
         ) {
-            val foreground = spriteInfo.imagePath1?.let { PreviewImageLoader.load(it, imageCache) } ?: fallbackImage
-            val background = spriteInfo.imagePath2?.let { PreviewImageLoader.load(it, imageCache) }
+            val foreground = spriteInfo.imagePath1?.let { imageCache[it] } ?: fallbackImage
+            val background = spriteInfo.imagePath2?.let { imageCache[it] }
             if (background != null) {
                 g.drawImage(background, bounds.x, bounds.y, bounds.width, bounds.height, null)
             }
@@ -912,8 +939,8 @@ class GuiPreviewPanel(
             bounds: Rectangle,
             spriteInfo: SpriteInfo
         ) {
-            val foreground = spriteInfo.imagePath1?.let { PreviewImageLoader.load(it, imageCache) } ?: fallbackImage
-            val background = spriteInfo.imagePath2?.let { PreviewImageLoader.load(it, imageCache) }
+            val foreground = spriteInfo.imagePath1?.let { imageCache[it] } ?: fallbackImage
+            val background = spriteInfo.imagePath2?.let { imageCache[it] }
             if (background != null) {
                 g.drawImage(background, bounds.x, bounds.y, bounds.width, bounds.height, null)
             }
@@ -945,8 +972,8 @@ class GuiPreviewPanel(
             bounds: Rectangle,
             spriteInfo: SpriteInfo
         ) {
-            val base = spriteInfo.imagePath1?.let { PreviewImageLoader.load(it, imageCache) } ?: fallbackImage
-            val overlay = spriteInfo.imagePath2?.let { PreviewImageLoader.load(it, imageCache) }
+            val base = spriteInfo.imagePath1?.let { imageCache[it] } ?: fallbackImage
+            val overlay = spriteInfo.imagePath2?.let { imageCache[it] }
             g.drawImage(base, bounds.x, bounds.y, bounds.width, bounds.height, null)
             if (overlay != null) g.drawImage(overlay, bounds.x, bounds.y, bounds.width, bounds.height, null)
         }
@@ -1199,30 +1226,104 @@ class GuiPreviewPanel(
             g.drawRect(b.x - 2, b.y - 2, b.width + 4, b.height + 4)
         }
 
-        private fun spritePath(element: GuiElement): String? {
-            return spriteInfo(element)?.primaryImagePath
+        private fun preloadResources(preloadRoot: GuiElement, version: Int) {
+            ApplicationManager.getApplication().executeOnPooledThread {
+                val result = service.loadResources(listOf(preloadRoot)) {
+                    version != preloadVersion.get()
+                }
+                ApplicationManager.getApplication().invokeLater({
+                    applyPreloadResult(preloadRoot, version, result)
+                }, ModalityState.any())
+            }
         }
 
-        private fun spriteInfo(element: GuiElement): SpriteInfo? {
-            val candidates = (element.spriteCandidates + listOfNotNull(element.primarySprite)).distinct()
-            for (sprite in candidates) {
-                val info = spriteInfoCache.getOrPut(sprite) { service.resolveSpriteInfo(sprite) }
-                if (info?.primaryImagePath != null) {
-                    spritePathCache[sprite] = info.primaryImagePath
-                    return info
-                }
+        private fun applyPreloadResult(
+            preloadRoot: GuiElement,
+            version: Int,
+            result: GuiPreviewResources
+        ) {
+            if (version != preloadVersion.get() || root !== preloadRoot) return
+
+            mergeResources(result)
+            ready = true
+            nodes = layout(preloadRoot)
+            logicalSize = computeLogicalSize(nodes)
+            revalidate()
+            repaint()
+        }
+
+        private fun cachedSpriteInfo(element: GuiElement): SpriteInfo? {
+            for (sprite in spriteCandidates(element)) {
+                val info = spriteInfoCache[sprite]
+                if (info?.primaryImagePath != null) return info
             }
             return null
         }
 
-        private fun localizedText(key: String?): String? {
-            if (key == null) return null
-            val currentKey = ParadoxLocalisationPreference.cacheKey()
+        private fun isSpriteKnownMissing(element: GuiElement): Boolean {
+            val candidates = spriteCandidates(element)
+            return candidates.isNotEmpty() && candidates.all { sprite ->
+                spriteInfoCache.containsKey(sprite) && spriteInfoCache[sprite]?.primaryImagePath == null
+            }
+        }
+
+        private fun cachedLocalizedText(key: String?): String? {
+            return normalisedLocalisationKey(key)?.let { localisationCache[it] }
+        }
+
+        private fun isLocalisationKnownMissing(key: String): Boolean {
+            val normalised = normalisedLocalisationKey(key) ?: return false
+            return localisationCache.containsKey(normalised) && localisationCache[normalised] == null
+        }
+
+        private fun refreshLocalisationPreference() {
+            val currentKey = GuiPreviewService.localisationCacheKey()
             if (localisationCacheKey != currentKey) {
                 localisationCache.clear()
                 localisationCacheKey = currentKey
             }
-            return localisationCache.getOrPut(key) { service.resolveLocalisation(key) }
+        }
+
+        private fun mergeResources(resources: GuiPreviewResources) {
+            if (resources.localisationKey != localisationCacheKey) {
+                localisationCache.clear()
+                localisationCacheKey = resources.localisationKey
+            }
+            spriteInfoCache.putAll(resources.sprites)
+            localisationCache.putAll(resources.localisations)
+            for ((path, image) in resources.images) {
+                imageCache.putIfAbsent(path, image)
+            }
+        }
+
+        private fun isRootReady(element: GuiElement): Boolean {
+            if (spriteCandidates(element).any { it !in spriteInfoCache }) return false
+            normalisedLocalisationKey(element.text)?.let {
+                if (it !in localisationCache) return false
+            }
+            return element.children.all(::isRootReady)
+        }
+
+        private fun spriteCandidates(element: GuiElement): List<String> {
+            val result = linkedSetOf<String>()
+            element.spriteCandidates.mapNotNullTo(result) { normalisedSpriteName(it) }
+            listOf(
+                element.sprite,
+                element.quadTextureSprite,
+                element.background,
+                element.buttonSprite,
+                element.hoverSprite,
+                element.disabledSprite
+            ).mapNotNullTo(result) { normalisedSpriteName(it) }
+            return result.toList()
+        }
+
+        private fun normalisedSpriteName(value: String?): String? {
+            return value?.trim()?.trim('"')?.takeIf { it.isNotBlank() }
+        }
+
+        private fun normalisedLocalisationKey(value: String?): String? {
+            return value?.trim()?.trim('"')?.takeIf { it.isNotBlank() }
         }
 
         private fun findNodeAt(point: Point): GuiLayoutNode? {
@@ -1298,7 +1399,7 @@ class GuiPreviewPanel(
 
         private fun buildDetailText(node: GuiLayoutNode): String {
             val element = node.element
-            val text = element.text?.let { localizedText(it) ?: it.trim('"') }
+            val text = element.text?.let { cachedLocalizedText(it) ?: it.trim('"') }
             val sb = StringBuilder("<html>")
             appendRow(sb, "Type", element.type)
             appendRow(sb, "Name", element.name)
@@ -1311,7 +1412,7 @@ class GuiPreviewPanel(
             appendRow(sb, "Center Position", element.centerPosition.takeIf { it }?.toString())
             appendRow(sb, "Preserve Aspect", element.preserveAspectRatio.takeIf { it }?.toString())
             appendRow(sb, "Sprite", element.primarySprite)
-            val info = spriteInfo(element)
+            val info = cachedSpriteInfo(element)
             appendRow(sb, "Subtype", info?.subtype)
             appendRow(sb, "Frame", element.frame?.toString() ?: info?.defaultFrame?.toString())
             appendRow(sb, "Frame Index", info?.noOfFrames?.let { resolveFrameIndex(element.frame ?: info.defaultFrame, it.coerceAtLeast(1)).toString() })

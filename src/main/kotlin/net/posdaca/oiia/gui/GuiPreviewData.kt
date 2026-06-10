@@ -1,11 +1,20 @@
 package net.posdaca.oiia.gui
 
+import net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteInfo
 import java.awt.Rectangle
+import java.awt.image.BufferedImage
 import kotlin.math.roundToInt
 
 data class GuiPreviewFile(
     val sourceFilePath: String?,
     val roots: List<GuiElement>
+)
+
+data class GuiPreviewResources(
+    val localisationKey: String,
+    val sprites: Map<String, SpriteInfo?> = emptyMap(),
+    val localisations: Map<String, String?> = emptyMap(),
+    val images: Map<String, BufferedImage> = emptyMap()
 )
 
 data class GuiElement(

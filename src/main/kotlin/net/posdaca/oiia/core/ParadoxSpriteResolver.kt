@@ -1,5 +1,6 @@
 package net.posdaca.oiia.core
 
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.diagnostic.Logger
 import icu.windea.pls.lang.search.ParadoxDefinitionSearch
@@ -123,14 +124,16 @@ class ParadoxSpriteResolver(private val project: Project) {
 
     private fun resolveSpriteInfoWithPls(name: String): SpriteInfo? {
         return runCatching {
-            val selector = ParadoxDefinitionSearch.selector(project, null).distinct()
-            val definitions = ParadoxDefinitionSearch.searchProperty(name, "sprite", selector).findAll()
-                .ifEmpty { ParadoxDefinitionSearch.searchProperty(name, null, selector).findAll() }
-            definitions
-                .asSequence()
-                .filter { it.isSpriteDefinition() }
-                .mapNotNull { definition -> definition.toSpriteInfo(name) }
-                .firstOrNull()
+            ApplicationManager.getApplication().runReadAction<SpriteInfo?> {
+                val selector = ParadoxDefinitionSearch.selector(project, null).distinct()
+                val definitions = ParadoxDefinitionSearch.searchProperty(name, "sprite", selector).findAll()
+                    .ifEmpty { ParadoxDefinitionSearch.searchProperty(name, null, selector).findAll() }
+                definitions
+                    .asSequence()
+                    .filter { it.isSpriteDefinition() }
+                    .mapNotNull { definition -> definition.toSpriteInfo(name) }
+                    .firstOrNull()
+            }
         }.getOrNull()
     }
 

@@ -1,12 +1,15 @@
 package net.posdaca.oiia.gui
 
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
 import icu.windea.pls.lang.resolve.ParadoxLocalisationService
 import icu.windea.pls.lang.search.ParadoxLocalisationSearch
+import icu.windea.pls.lang.search.util.locale
 import icu.windea.pls.localisation.psi.ParadoxLocalisationProperty
+import icu.windea.pls.localisation.psi.ParadoxLocalisationPropertyList
 import icu.windea.pls.script.psi.ParadoxScriptBlock
 import icu.windea.pls.script.psi.ParadoxScriptFile
 import icu.windea.pls.script.psi.ParadoxScriptProperty
@@ -16,6 +19,8 @@ import net.posdaca.oiia.core.HoI4ResourceRoots
 import net.posdaca.oiia.core.ParadoxLocalisationPreference
 import net.posdaca.oiia.core.ParadoxSpriteResolver
 import net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteInfo
+import net.posdaca.oiia.core.PreviewImageLoader
+import java.awt.image.BufferedImage
 import java.nio.file.Path
 
 class GuiPreviewService(private val project: Project) {
@@ -39,24 +44,29 @@ class GuiPreviewService(private val project: Project) {
     fun resolveLocalisation(key: String?): String? {
         val trimmed = key?.trim()?.trim('"')?.takeIf { it.isNotBlank() } ?: return null
         synchronized(localisationCache) {
-            val preferenceKey = ParadoxLocalisationPreference.preferenceKey()
+            val preferenceKey = guiLocalisationCacheKey()
             if (localisationCachePreferenceKey != preferenceKey) {
                 localisationCache.clear()
                 localisationCachePreferenceKey = preferenceKey
             }
             if (localisationCache.containsKey(trimmed)) return localisationCache[trimmed]
-            val plsResolved = runCatching {
-                val selector = ParadoxLocalisationSearch.selector(project, null).distinct()
-                val property = ParadoxLocalisationSearch.searchNormal(trimmed, selector)
-                    .findAll()
-                    .maxByOrNull { localisationPriority(it) }
-                property?.let { ParadoxLocalisationService.resolveLocalizedText(it) ?: it.value }
-            }.getOrNull()?.takeIf { it.isNotBlank() && it != trimmed }
-            val resolved = plsResolved ?: resolveLocalisationFromFiles(trimmed)
+            val preferredPlsResolved = resolveLocalisationWithPls(trimmed, preferCurrentLocaleOnly = true)
+            if (preferredPlsResolved != null) {
+                LOG.info("GUI localisation resolved: key=$trimmed source=PLS preferred value=$preferredPlsResolved")
+                localisationCache[trimmed] = preferredPlsResolved
+                return preferredPlsResolved
+            }
+            val fallbackResolved = resolveLocalisationFromFiles(trimmed)
+            if (fallbackResolved != null) {
+                LOG.info("GUI localisation resolved: key=$trimmed source=fallback value=$fallbackResolved")
+                localisationCache[trimmed] = fallbackResolved
+                return fallbackResolved
+            }
+            val resolved = resolveLocalisationWithPls(trimmed, preferCurrentLocaleOnly = false)
             if (resolved == null) {
                 LOG.info("GUI localisation not resolved: key=$trimmed")
             } else {
-                LOG.info("GUI localisation resolved: key=$trimmed source=${if (plsResolved != null) "PLS" else "fallback"} value=$resolved")
+                LOG.info("GUI localisation resolved: key=$trimmed source=PLS value=$resolved")
             }
             localisationCache[trimmed] = resolved
             return resolved
@@ -69,6 +79,52 @@ class GuiPreviewService(private val project: Project) {
 
     fun resolveSpriteInfo(spriteName: String?): SpriteInfo? {
         return spriteResolver.resolveSpriteInfo(spriteName)
+    }
+
+    private fun resolveLocalisationWithPls(key: String, preferCurrentLocaleOnly: Boolean): String? {
+        return runCatching {
+            ApplicationManager.getApplication().runReadAction<Pair<String, Int>?> {
+                val preferredLocale = ParadoxLocalisationPreference.preferredLocaleConfig()
+                val selector = ParadoxLocalisationSearch.selector(project, null)
+                    .let { if (preferCurrentLocaleOnly) it.locale(preferredLocale) else it }
+                    .distinct()
+                ParadoxLocalisationSearch.searchNormal(key, selector)
+                    .findAll()
+                    .asSequence()
+                    .mapNotNull { property ->
+                        val value = ParadoxLocalisationService.resolveLocalizedText(property) ?: property.value
+                        value?.takeIf { it.isNotBlank() && it != key }
+                            ?.let { it to localisationPriority(property) }
+                    }
+                    .maxByOrNull { it.second }
+            }
+        }.getOrNull()?.first
+    }
+
+    fun loadResources(roots: List<GuiElement>, shouldCancel: () -> Boolean = { false }): GuiPreviewResources {
+        val spriteNames = collectSpriteCandidates(roots)
+        val textKeys = collectTextKeys(roots)
+        val localisationKey = guiLocalisationCacheKey()
+
+        val sprites = linkedMapOf<String, SpriteInfo?>()
+        for (sprite in spriteNames) {
+            if (shouldCancel()) return GuiPreviewResources(localisationKey)
+            sprites[sprite] = runCatching { resolveSpriteInfo(sprite) }.getOrNull()
+        }
+
+        val localisations = linkedMapOf<String, String?>()
+        for (key in textKeys) {
+            if (shouldCancel()) return GuiPreviewResources(localisationKey)
+            localisations[key] = runCatching { resolveLocalisation(key) }.getOrNull()
+        }
+
+        val images = mutableMapOf<String, BufferedImage>()
+        for (path in sprites.values.flatMap { it.imagePaths() }.distinct()) {
+            if (shouldCancel()) return GuiPreviewResources(localisationKey)
+            PreviewImageLoader.load(path, images)
+        }
+
+        return GuiPreviewResources(localisationKey, sprites, localisations, images)
     }
 
     private fun parseFromPlsPsi(psiFile: ParadoxScriptFile): List<GuiElement> {
@@ -341,7 +397,7 @@ class GuiPreviewService(private val project: Project) {
 
     private fun loadLocalisationFallbackCache(): Map<String, String> {
         val roots = HoI4ResourceRoots.resourceRoots(project, projectFirst = true, gameFirst = false)
-        val rootsKey = ParadoxLocalisationPreference.preferenceKey() + "|" +
+        val rootsKey = guiLocalisationCacheKey() + "|" +
                 roots.joinToString("|") { HoI4ResourceRoots.normalizedKey(it) }
         synchronized(localisationFallbackLock) {
             if (localisationFallbackRootsKey == rootsKey) return localisationFallbackCache
@@ -382,9 +438,68 @@ class GuiPreviewService(private val project: Project) {
         return ParadoxLocalisationPreference.languagePriority(path, LANG_PRIORITY)
     }
 
+    private fun guiLocalisationCacheKey(): String {
+        return localisationCacheKey()
+    }
+
     private fun localisationPriority(property: ParadoxLocalisationProperty): Int {
-        val path = property.containingFile?.virtualFile?.path ?: return 0
-        return ParadoxLocalisationPreference.languagePriority(path, LANG_PRIORITY)
+        val localisationFile = property.containingFile
+        val locale = (property.parent as? ParadoxLocalisationPropertyList)?.locale?.name
+        val paths = listOfNotNull(
+            locale,
+            localisationFile?.virtualFile?.path,
+            localisationFile?.name
+        )
+        return paths.maxOfOrNull { languagePriority(it) } ?: 0
+    }
+
+    private fun collectSpriteCandidates(roots: List<GuiElement>): List<String> {
+        val result = linkedSetOf<String>()
+        roots.forEach { collectSpriteCandidates(it, result) }
+        return result.toList()
+    }
+
+    private fun collectSpriteCandidates(element: GuiElement, result: MutableSet<String>) {
+        result.addAll(spriteCandidates(element))
+        element.children.forEach { collectSpriteCandidates(it, result) }
+    }
+
+    private fun collectTextKeys(roots: List<GuiElement>): List<String> {
+        val result = linkedSetOf<String>()
+        roots.forEach { collectTextKeys(it, result) }
+        return result.toList()
+    }
+
+    private fun collectTextKeys(element: GuiElement, result: MutableSet<String>) {
+        normalisedLocalisationKey(element.text)?.let(result::add)
+        element.children.forEach { collectTextKeys(it, result) }
+    }
+
+    private fun spriteCandidates(element: GuiElement): List<String> {
+        val result = linkedSetOf<String>()
+        element.spriteCandidates.mapNotNullTo(result) { normalisedSpriteName(it) }
+        listOf(
+            element.sprite,
+            element.quadTextureSprite,
+            element.background,
+            element.buttonSprite,
+            element.hoverSprite,
+            element.disabledSprite
+        ).mapNotNullTo(result) { normalisedSpriteName(it) }
+        return result.toList()
+    }
+
+    private fun normalisedSpriteName(value: String?): String? {
+        return value?.trim()?.trim('"')?.takeIf { it.isNotBlank() }
+    }
+
+    private fun normalisedLocalisationKey(value: String?): String? {
+        return value?.trim()?.trim('"')?.takeIf { it.isNotBlank() }
+    }
+
+    private fun SpriteInfo?.imagePaths(): List<String> {
+        if (this == null) return emptyList()
+        return listOfNotNull(primaryImagePath, imagePath1, imagePath2).distinct()
     }
 
     private fun List<GuiElement>.renameDuplicateRoots(): List<GuiElement> {
@@ -412,6 +527,10 @@ class GuiPreviewService(private val project: Project) {
             "spanish",
             "japanese"
         )
+        fun localisationCacheKey(): String {
+            return ParadoxLocalisationPreference.cacheKey(LANG_PRIORITY)
+        }
+
         private val GUI_ELEMENT_TYPES = setOf(
             "background",
             "Background",

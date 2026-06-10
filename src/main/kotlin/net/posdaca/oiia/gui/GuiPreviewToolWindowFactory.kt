@@ -3,6 +3,8 @@ package net.posdaca.oiia.gui
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorManagerEvent
 import com.intellij.openapi.fileEditor.FileEditorManagerListener
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.ToolWindow
@@ -16,6 +18,7 @@ import com.intellij.util.messages.MessageBusConnection
 import net.posdaca.OiiaBundle
 import net.posdaca.oiia.core.PreviewToolWindowSupport
 import java.awt.BorderLayout
+import java.util.concurrent.atomic.AtomicInteger
 import javax.swing.SwingConstants
 import javax.swing.Timer
 
@@ -43,6 +46,7 @@ class GuiPreviewToolWindowFactory : ToolWindowFactory {
         private var messageBusConnection: MessageBusConnection? = null
         private var renderedFilePath: String? = null
         private var renderedStamp: Long = -1
+        private val refreshVersion = AtomicInteger()
         private val service = GuiPreviewService(project)
         private val refreshTimer = Timer(350) {
             if (isShowing) refreshFromCurrentFileIfChanged()
@@ -93,6 +97,7 @@ class GuiPreviewToolWindowFactory : ToolWindowFactory {
             val filePath = file?.path
             val stamp = file?.modificationStamp ?: -1
             if (!force && filePath == renderedFilePath && stamp == renderedStamp) return
+            val version = refreshVersion.incrementAndGet()
             renderedFilePath = filePath
             renderedStamp = stamp
 
@@ -108,23 +113,38 @@ class GuiPreviewToolWindowFactory : ToolWindowFactory {
                 return
             }
 
-            val psiFile: PsiFile? = PsiManager.getInstance(project).findFile(selectedFile)
-            if (psiFile == null) {
-                updateToolbar()
-                updatePanel(createNoContainerPanel())
-                return
-            }
+            updateToolbar()
+            updatePanel(createLoadingPanel())
 
-            val previewFile = service.parseGuiFile(psiFile)
-            if (previewFile.roots.isEmpty()) {
-                updateToolbar()
-                updatePanel(createNoContainerPanel())
-                return
-            }
+            ApplicationManager.getApplication().executeOnPooledThread {
+                val previewFile = ApplicationManager.getApplication().runReadAction<GuiPreviewFile?> {
+                    if (!selectedFile.isValid || selectedFile.modificationStamp != stamp) return@runReadAction null
+                    val psiFile: PsiFile = PsiManager.getInstance(project).findFile(selectedFile) ?: return@runReadAction null
+                    service.parseGuiFile(psiFile)
+                }
 
-            val previewPanel = GuiPreviewPanel(project, previewFile, service)
-            updateToolbar(previewPanel.statusComponent, previewPanel.rootSelectorActions)
-            updatePanel(previewPanel)
+                val resources = if (previewFile != null && previewFile.roots.isNotEmpty()) {
+                    service.loadResources(previewFile.roots) { version != refreshVersion.get() }
+                } else {
+                    null
+                }
+
+                ApplicationManager.getApplication().invokeLater({
+                    if (version != refreshVersion.get()) return@invokeLater
+                    if (selectedFile.modificationStamp != stamp || selectedFile.path != renderedFilePath) return@invokeLater
+
+                    if (previewFile == null || previewFile.roots.isEmpty()) {
+                        updateToolbar()
+                        updatePanel(createNoContainerPanel())
+                        return@invokeLater
+                    }
+                    if (resources == null) return@invokeLater
+
+                    val previewPanel = GuiPreviewPanel(project, previewFile, service, resources)
+                    updateToolbar(previewPanel.statusComponent, previewPanel.rootSelectorActions)
+                    updatePanel(previewPanel)
+                }, ModalityState.any())
+            }
         }
 
         private fun createToolbar(
@@ -189,6 +209,16 @@ class GuiPreviewToolWindowFactory : ToolWindowFactory {
             val panel = JBPanel<JBPanel<*>>(BorderLayout())
             val label = JBLabel(
                 OiiaBundle.message("toolwindow.GuiPreview.no.container"),
+                SwingConstants.CENTER
+            )
+            panel.add(label, BorderLayout.CENTER)
+            return panel
+        }
+
+        private fun createLoadingPanel(): JBPanel<JBPanel<*>> {
+            val panel = JBPanel<JBPanel<*>>(BorderLayout())
+            val label = JBLabel(
+                OiiaBundle.message("toolwindow.GuiPreview.loading"),
                 SwingConstants.CENTER
             )
             panel.add(label, BorderLayout.CENTER)

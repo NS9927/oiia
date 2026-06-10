@@ -1,32 +1,52 @@
 package net.posdaca.oiia.core
 
-import icu.windea.pls.lang.settings.PlsSettings
+import icu.windea.pls.config.config.delegated.CwtLocaleConfig
+import icu.windea.pls.lang.util.ParadoxLocaleManager
 
 object ParadoxLocalisationPreference {
-    fun preferenceKey(): String = preferredLocale().orEmpty()
+    fun preferenceKey(includePreferredLocale: Boolean = true): String {
+        return if (includePreferredLocale) preferredLocaleTags().joinToString("|") else ""
+    }
 
-    fun languagePriority(path: String, fallback: List<String>, weight: Int = 1): Int {
+    fun preferredLocaleConfig(): CwtLocaleConfig? {
+        return runCatching { ParadoxLocaleManager.getPreferredLocaleConfig() }.getOrNull()
+    }
+
+    fun languagePriority(
+        path: String,
+        fallback: List<String>,
+        weight: Int = 1,
+        includePreferredLocale: Boolean = true
+    ): Int {
         val lower = path.lowercase().replace('\\', '/')
-        val tags = orderedTags(fallback)
+        val tags = orderedTags(fallback, includePreferredLocale)
         for ((index, tag) in tags.withIndex()) {
             if (tag in lower) return (tags.size - index) * weight
         }
         return 0
     }
 
-    fun cacheKey(): String = orderedTags(emptyList()).joinToString("|")
+    fun cacheKey(
+        fallback: List<String> = emptyList(),
+        includePreferredLocale: Boolean = true
+    ): String = orderedTags(fallback, includePreferredLocale).joinToString("|")
 
-    private fun orderedTags(fallback: List<String>): List<String> {
+    private fun orderedTags(fallback: List<String>, includePreferredLocale: Boolean): List<String> {
         val result = linkedSetOf<String>()
-        preferredLocale()?.let { result.addAll(expandLocaleTags(it)) }
+        if (includePreferredLocale) result.addAll(preferredLocaleTags())
         fallback.forEach { result.addAll(expandLocaleTags(it)) }
         return result.toList()
     }
 
-    private fun preferredLocale(): String? {
-        return runCatching {
-            PlsSettings.getInstance().state.preferredLocale?.trim()?.takeIf { it.isNotBlank() }
-        }.getOrNull()
+    private fun preferredLocaleTags(): List<String> {
+        val locale = preferredLocaleConfig() ?: return emptyList()
+        val localeIds = buildList {
+            add(locale.id)
+            add(locale.shortId)
+            addAll(locale.codes)
+            add(locale.text)
+        }
+        return localeIds.flatMap { expandLocaleTags(it) }.filterTo(linkedSetOf()) { it.isNotBlank() }.toList()
     }
 
     private fun expandLocaleTags(locale: String): List<String> {
