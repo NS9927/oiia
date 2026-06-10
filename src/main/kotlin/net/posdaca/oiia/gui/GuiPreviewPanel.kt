@@ -182,6 +182,7 @@ class GuiPreviewPanel(
             val defaultFrame: Int?,
             val border: String?,
             val spriteSize: String?,
+            val effectFile: String?,
             val tilingCenter: Boolean,
             val horizontal: Boolean?,
             val progressRatio: Int,
@@ -194,6 +195,14 @@ class GuiPreviewPanel(
         private enum class FrameDirection {
             HORIZONTAL,
             VERTICAL
+        }
+
+        private enum class ProgressEffect {
+            NORMAL,
+            REVERSE,
+            START_END,
+            MIN_MAX,
+            RADIAL
         }
 
         private data class GuiAnchor(val xFactor: Double, val yFactor: Double) {
@@ -381,11 +390,12 @@ class GuiPreviewPanel(
             val viewport = Rectangle(padding, padding, PREVIEW_SCREEN_WIDTH, PREVIEW_SCREEN_HEIGHT)
             val rootSize = resolveElementSize(root, viewport, null)
             val rootBounds = Rectangle(padding, padding, rootSize.width.coerceAtLeast(1), rootSize.height.coerceAtLeast(1))
+            val rootClip = if (root.clipping || root.fullscreen) rootBounds else null
             collectLayout(
                 element = root,
                 parentBounds = null,
                 bounds = rootBounds,
-                inheritedClip = rootBounds,
+                inheritedClip = rootClip,
                 depth = 0,
                 result = result
             )
@@ -427,18 +437,16 @@ class GuiPreviewPanel(
                 return Dimension(parentBounds.width.coerceAtLeast(1), parentBounds.height.coerceAtLeast(1))
             }
             val declared = element.size
-            val spriteSize = spriteInfo(element)?.let { info ->
-                info.primaryImagePath?.let { PreviewImageLoader.load(it, imageCache) }?.let { nativeSpriteSize(it, info) }
-            }
+            val spriteSize = spriteInfo(element)?.let { nativeElementSize(it) }
             val textSize = textSizeFallback(element, parentBounds)
             val baseWidth = declared?.resolveWidth(parentBounds.width)
                 ?: textSize?.width
                 ?: spriteSize?.width
-                ?: element.preferredSize.width
+                ?: defaultElementSize(element).width
             val baseHeight = declared?.resolveHeight(parentBounds.height)
                 ?: textSize?.height
                 ?: spriteSize?.height
-                ?: element.preferredSize.height
+                ?: defaultElementSize(element).height
             val scale = element.scale?.takeIf { it > 0.0 } ?: 1.0
             var width = (baseWidth * scale).roundToInt().coerceAtLeast(1)
             var height = (baseHeight * scale).roundToInt().coerceAtLeast(1)
@@ -581,9 +589,8 @@ class GuiPreviewPanel(
             val hasIssue = node.issues.any { it.severity != GuiIssueSeverity.INFO }
             try {
                 val spriteInfo = spriteInfo(element)
-                val sourceImage = spriteInfo?.primaryImagePath?.let { PreviewImageLoader.load(it, imageCache) }
-                val paintBounds = if (sourceImage != null && element.size == null && element.type == "iconType") {
-                    val nativeSize = nativeSpriteSize(sourceImage, spriteInfo)
+                val nativeSize = spriteInfo?.let { nativeElementSize(it) }
+                val paintBounds = if (nativeSize != null && element.size == null && element.type == "iconType") {
                     Rectangle(bounds.x, bounds.y, nativeSize.width, nativeSize.height)
                 } else {
                     bounds
@@ -688,12 +695,31 @@ class GuiPreviewPanel(
         }
 
         private fun nativeSpriteSize(image: BufferedImage, spriteInfo: SpriteInfo): Dimension {
+            if (spriteInfo.usesDeclaredSpriteSize) {
+                spriteInfo.size?.toDimension()?.let { return it }
+            }
             val frames = spriteInfo.noOfFrames?.coerceAtLeast(1) ?: 1
             if (frames <= 1) return Dimension(image.width, image.height)
             return when (frameDirection(image, frames)) {
                 FrameDirection.HORIZONTAL -> Dimension((image.width / frames).coerceAtLeast(1), image.height)
                 FrameDirection.VERTICAL -> Dimension(image.width, (image.height / frames).coerceAtLeast(1))
             }
+        }
+
+        private fun nativeElementSize(spriteInfo: SpriteInfo): Dimension? {
+            val image = spriteInfo.primaryImagePath?.let { PreviewImageLoader.load(it, imageCache) }
+            val native = image?.let { nativeSpriteSize(it, spriteInfo) }
+            if (native != null) return native
+            if (spriteInfo.usesDeclaredSpriteSize) return spriteInfo.size?.toDimension()
+            return null
+        }
+
+        private fun defaultElementSize(element: GuiElement): Dimension {
+            if (element.type == "containerWindowType" && element.size == null && element.primarySprite == null) {
+                return Dimension(1, 1)
+            }
+            val preferred = element.preferredSize
+            return Dimension(preferred.width, preferred.height)
         }
 
         private fun preprocessedSpriteImage(
@@ -808,6 +834,7 @@ class GuiPreviewPanel(
                 defaultFrame = spriteInfo.defaultFrame,
                 border = border,
                 spriteSize = spriteSize,
+                effectFile = spriteInfo.effectFile,
                 tilingCenter = spriteInfo.tilingCenter,
                 horizontal = element.horizontal ?: spriteInfo.horizontal,
                 progressRatio = (progressRatio(element) * 10_000).roundToInt(),
@@ -832,7 +859,7 @@ class GuiPreviewPanel(
                 spriteInfo.borderSize != null -> {
                     paintNinePatch(g, image, bounds, effectiveBorderInsets(image, spriteInfo), spriteInfo.tilingCenter)
                 }
-                element.quadTextureSprite != null || spriteInfo.subtype == "quad_texture" -> tileImage(g, image, bounds)
+                spriteInfo.subtype == "quad_texture" -> tileImage(g, image, bounds)
                 else -> g.drawImage(image, bounds.x, bounds.y, bounds.width, bounds.height, null)
             }
         }
@@ -882,22 +909,15 @@ class GuiPreviewPanel(
 
             val ratio = steppedProgressRatio(element, spriteInfo)
             if (ratio <= 0.0) return
-            val horizontal = element.horizontal ?: spriteInfo.horizontal ?: true
-            val oldClip = g.clip
-            val clip = if (horizontal) {
-                val width = (bounds.width * ratio).roundToInt()
-                if (width <= 0) return
-                Rectangle(bounds.x, bounds.y, width, bounds.height)
-            } else {
-                val height = (bounds.height * ratio).roundToInt()
-                if (height <= 0) return
-                Rectangle(bounds.x, bounds.y + bounds.height - height, bounds.width, height)
-            }
-            try {
-                g.clip = intersectClip(oldClip, clip)
-                g.drawImage(foreground, bounds.x, bounds.y, bounds.width, bounds.height, null)
-            } finally {
-                g.clip = oldClip
+            when (spriteInfo.progressEffect) {
+                ProgressEffect.REVERSE -> paintProgressForeground(g, foreground, bounds, progressClip(bounds, ratio, horizontal = true, reverse = true))
+                ProgressEffect.START_END -> paintStartEndProgress(g, foreground, bounds, ratio)
+                ProgressEffect.MIN_MAX -> paintMinMaxProgress(g, foreground, bounds, ratio)
+                ProgressEffect.RADIAL -> paintRadialProgress(g, foreground, bounds, ratio)
+                ProgressEffect.NORMAL -> {
+                    val horizontal = element.horizontal ?: spriteInfo.horizontal ?: true
+                    paintProgressForeground(g, foreground, bounds, progressClip(bounds, ratio, horizontal = horizontal, reverse = false))
+                }
             }
         }
 
@@ -949,10 +969,141 @@ class GuiPreviewPanel(
         private val SpriteInfo.usesCompositeTextures: Boolean
             get() = subtype == "progressbar" || subtype == "circular_progressbar" || subtype == "masked_shield"
 
+        private val SpriteInfo.usesDeclaredSpriteSize: Boolean
+            get() = subtype == "progressbar" || subtype == "circular_progressbar"
+
+        private fun net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteSize.toDimension(): Dimension? {
+            if (width <= 0 || height <= 0) return null
+            return Dimension(width, height)
+        }
+
         private fun steppedProgressRatio(element: GuiElement, spriteInfo: SpriteInfo): Double {
             val ratio = progressRatio(element).coerceIn(0.0, 1.0)
             val steps = spriteInfo.steps?.takeIf { it > 1 } ?: return ratio
             return (ratio * steps).roundToInt().toDouble() / steps.toDouble()
+        }
+
+        private val SpriteInfo.progressEffect: ProgressEffect
+            get() {
+                val normalized = effectFile
+                    ?.replace('\\', '/')
+                    ?.substringAfterLast('/')
+                    ?.substringBeforeLast('.')
+                    ?.lowercase()
+                return when (normalized) {
+                    "progress_reverse" -> ProgressEffect.REVERSE
+                    "progress_startend" -> ProgressEffect.START_END
+                    "progress_minmax" -> ProgressEffect.MIN_MAX
+                    "progress_radial" -> ProgressEffect.RADIAL
+                    else -> ProgressEffect.NORMAL
+                }
+            }
+
+        private fun progressClip(bounds: Rectangle, ratio: Double, horizontal: Boolean, reverse: Boolean): Rectangle {
+            return if (horizontal) {
+                val width = (bounds.width * ratio).roundToInt().coerceIn(0, bounds.width)
+                if (reverse) {
+                    Rectangle(bounds.x + bounds.width - width, bounds.y, width, bounds.height)
+                } else {
+                    Rectangle(bounds.x, bounds.y, width, bounds.height)
+                }
+            } else {
+                val height = (bounds.height * ratio).roundToInt().coerceIn(0, bounds.height)
+                Rectangle(bounds.x, bounds.y + bounds.height - height, bounds.width, height)
+            }
+        }
+
+        private fun paintProgressForeground(g: Graphics2D, foreground: BufferedImage, bounds: Rectangle, clip: Shape) {
+            val oldClip = g.clip
+            try {
+                g.clip = intersectClip(oldClip, clip)
+                g.drawImage(foreground, bounds.x, bounds.y, bounds.width, bounds.height, null)
+            } finally {
+                g.clip = oldClip
+            }
+        }
+
+        private fun paintStartEndProgress(
+            g: Graphics2D,
+            foreground: BufferedImage,
+            bounds: Rectangle,
+            ratio: Double
+        ) {
+            val width = (bounds.width * ratio).roundToInt().coerceIn(0, bounds.width)
+            if (width <= 0) return
+            val target = Rectangle(bounds.x, bounds.y, width, bounds.height)
+            if (foreground.height < 3) {
+                paintProgressForeground(g, foreground, bounds, target)
+                return
+            }
+            val sourceHeight = (foreground.height / 3).coerceAtLeast(1)
+            val startY = sourceHeight
+            val middleY = (sourceHeight * 2).coerceAtMost(foreground.height - 1)
+            val stopY = (sourceHeight * 3).coerceAtMost(foreground.height)
+            val oldClip = g.clip
+            try {
+                g.clip = intersectClip(oldClip, target)
+                g.drawImage(
+                    foreground,
+                    target.x,
+                    target.y,
+                    target.x + target.width,
+                    target.y + target.height,
+                    0,
+                    middleY,
+                    foreground.width,
+                    stopY,
+                    null
+                )
+                g.drawImage(
+                    foreground,
+                    target.x,
+                    target.y,
+                    (target.x + foreground.width).coerceAtMost(target.x + target.width),
+                    target.y + target.height,
+                    0,
+                    startY,
+                    foreground.width.coerceAtMost(foreground.width),
+                    middleY,
+                    null
+                )
+                g.drawImage(
+                    foreground,
+                    (target.x + target.width - foreground.width).coerceAtLeast(target.x),
+                    target.y,
+                    target.x + target.width,
+                    target.y + target.height,
+                    0,
+                    middleY,
+                    foreground.width,
+                    stopY,
+                    null
+                )
+            } finally {
+                g.clip = oldClip
+            }
+        }
+
+        private fun paintMinMaxProgress(g: Graphics2D, foreground: BufferedImage, bounds: Rectangle, ratio: Double) {
+            val center = bounds.x + bounds.width / 2
+            val current = bounds.x + (bounds.width * ratio).roundToInt().coerceIn(0, bounds.width)
+            val x = minOf(center, current)
+            val width = kotlin.math.abs(current - center)
+            if (width <= 0) return
+            paintProgressForeground(g, foreground, bounds, Rectangle(x, bounds.y, width, bounds.height))
+        }
+
+        private fun paintRadialProgress(g: Graphics2D, foreground: BufferedImage, bounds: Rectangle, ratio: Double) {
+            val arc = Arc2D.Double(
+                bounds.x.toDouble(),
+                bounds.y.toDouble(),
+                bounds.width.toDouble(),
+                bounds.height.toDouble(),
+                90.0,
+                -360.0 * ratio,
+                Arc2D.PIE
+            )
+            paintProgressForeground(g, foreground, bounds, arc)
         }
 
         private fun tileImage(g: Graphics2D, image: BufferedImage, bounds: Rectangle) {
@@ -1219,6 +1370,7 @@ class GuiPreviewPanel(
             appendRow(sb, "Texture 1 URL", info?.imagePath1)
             appendRow(sb, "Texture 2", info?.textureFile2)
             appendRow(sb, "Texture 2 URL", info?.imagePath2)
+            appendRow(sb, "Effect", info?.effectFile)
             appendRow(sb, "Sprite Size", info?.size?.let { "${it.width}, ${it.height}" })
             appendRow(sb, "Border", info?.borderSize?.let { "${it.left}, ${it.top}, ${it.right}, ${it.bottom}" })
             appendRow(sb, "Always Transparent", info?.alwaysTransparent?.takeIf { it }?.toString())

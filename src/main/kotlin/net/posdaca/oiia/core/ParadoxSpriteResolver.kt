@@ -26,6 +26,7 @@ class ParadoxSpriteResolver(private val project: Project) {
         val defaultFrame: Int? = null,
         val textureFile1: String? = null,
         val textureFile2: String? = null,
+        val effectFile: String? = null,
         val horizontal: Boolean? = null,
         val steps: Int? = null,
         val rotation: Int? = null,
@@ -60,6 +61,7 @@ class ParadoxSpriteResolver(private val project: Project) {
         val defaultFrame: Int? = null,
         val textureFile1: String? = null,
         val textureFile2: String? = null,
+        val effectFile: String? = null,
         val horizontal: Boolean? = null,
         val steps: Int? = null,
         val rotation: Int? = null,
@@ -136,6 +138,7 @@ class ParadoxSpriteResolver(private val project: Project) {
         val textureFile = block?.propertyValue("textureFile")?.let(::cleanToken)
         val textureFile1 = block?.propertyValue("textureFile1")?.let(::cleanToken)
         val textureFile2 = block?.propertyValue("textureFile2")?.let(::cleanToken)
+        val effectFile = block?.propertyValue("effectFile")?.let(::cleanToken)
         val rootHint = resourceRootFor(containingFile?.virtualFile?.path)
         val imagePath1 = resolveTexturePath(textureFile1, rootHint)
         val imagePath2 = resolveTexturePath(textureFile2, rootHint)
@@ -159,6 +162,7 @@ class ParadoxSpriteResolver(private val project: Project) {
             defaultFrame = block?.propertyValue("default_frame")?.parseParadoxInt(),
             textureFile1 = textureFile1,
             textureFile2 = textureFile2,
+            effectFile = effectFile,
             horizontal = block?.propertyValue("horizontal").parseParadoxBoolean(),
             steps = block?.propertyValue("steps")?.parseParadoxInt(),
             rotation = block?.propertyValue("rotation")?.parseParadoxInt(),
@@ -166,7 +170,7 @@ class ParadoxSpriteResolver(private val project: Project) {
             alwaysTransparent = block?.propertyValue("alwaystransparent").parseParadoxBoolean()
                 ?: block?.propertyValue("allwaystransparent").parseParadoxBoolean()
         )
-        LOG.info("GUI sprite resolved by PLS: name=$name type=${propertyKey.text} file=${containingFile?.virtualFile?.path} texture=${info.textureFile} image=${info.primaryImagePath} frames=${info.noOfFrames} size=${info.size}")
+        LOG.info("GUI sprite resolved by PLS: name=$name type=${propertyKey.text} file=${containingFile?.virtualFile?.path} texture=${info.textureFile} image=${info.primaryImagePath} frames=${info.noOfFrames} size=${info.size} effect=${info.effectFile}")
         return info
     }
 
@@ -243,6 +247,7 @@ class ParadoxSpriteResolver(private val project: Project) {
             val texture = parseAssignmentValue(assignmentBody, "textureFile")
             val texture1 = parseAssignmentValue(assignmentBody, "textureFile1")
             val texture2 = parseAssignmentValue(assignmentBody, "textureFile2")
+            val effectFile = parseAssignmentValue(assignmentBody, "effectFile")
             if (texture == null && texture1 == null && texture2 == null) return@forEach
             val cleanName = cleanToken(name)
             spriteDefinitions.add(
@@ -258,6 +263,7 @@ class ParadoxSpriteResolver(private val project: Project) {
                     defaultFrame = parseAssignmentValue(assignmentBody, "default_frame")?.parseParadoxInt(),
                     textureFile1 = texture1,
                     textureFile2 = texture2,
+                    effectFile = effectFile,
                     horizontal = parseAssignmentValue(assignmentBody, "horizontal").parseParadoxBoolean(),
                     steps = parseAssignmentValue(assignmentBody, "steps")?.parseParadoxInt(),
                     rotation = parseAssignmentValue(assignmentBody, "rotation")?.parseParadoxInt(),
@@ -421,6 +427,7 @@ class ParadoxSpriteResolver(private val project: Project) {
             defaultFrame = definition?.defaultFrame,
             textureFile1 = definition?.textureFile1,
             textureFile2 = definition?.textureFile2,
+            effectFile = definition?.effectFile,
             horizontal = definition?.horizontal,
             steps = definition?.steps,
             rotation = definition?.rotation,
@@ -430,7 +437,7 @@ class ParadoxSpriteResolver(private val project: Project) {
         if (definition == null) {
             LOG.info("GUI sprite resolved by image fallback without gfx definition: name=$name aliases=${aliases(name)} image=${info.primaryImagePath}")
         } else {
-            LOG.info("GUI sprite resolved by cache: name=$name type=${definition.subtype} root=${definition.root} texture=${definition.textureFile} image=${info.primaryImagePath} frames=${info.noOfFrames} size=${info.size}")
+            LOG.info("GUI sprite resolved by cache: name=$name type=${definition.subtype} root=${definition.root} texture=${definition.textureFile} image=${info.primaryImagePath} frames=${info.noOfFrames} size=${info.size} effect=${info.effectFile}")
         }
         return info
     }
