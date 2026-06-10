@@ -4,6 +4,7 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.util.ui.ImageUtil
 import net.posdaca.oiia.core.HoI4ResourceRoots
+import net.posdaca.oiia.core.ParadoxLocalisationPreference
 import java.awt.Color
 import java.awt.image.BufferedImage
 import java.nio.file.Files
@@ -930,11 +931,7 @@ class MapPreviewService(private val project: Project) {
     }
 
     private fun languagePriority(path: String): Int {
-        val lower = path.lowercase()
-        for ((index, tag) in LANG_PRIORITY.withIndex()) {
-            if (tag in lower) return LANG_PRIORITY.size - index
-        }
-        return 0
+        return ParadoxLocalisationPreference.languagePriority(path, LANG_PRIORITY)
     }
 
     private fun localisationScore(path: Path, rootScores: List<Pair<String, Int>>): Int {
@@ -962,7 +959,9 @@ class MapPreviewService(private val project: Project) {
         strategicRegionPaths: List<Path>,
         localisationPaths: List<Path>
     ): Long {
-        var result = fileStamp(provincesPath) * 31 + fileStamp(definitionPath)
+        var result = ParadoxLocalisationPreference.preferenceKey().hashCode().toLong()
+        result = result * 31 + fileStamp(provincesPath)
+        result = result * 31 + fileStamp(definitionPath)
         for (path in statePaths + countryPaths + strategicRegionPaths + localisationPaths) {
             result = result * 31 + fileStamp(path)
         }

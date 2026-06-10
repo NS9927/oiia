@@ -9,6 +9,7 @@ import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapi.vfs.newvfs.BulkFileListener
 import com.intellij.openapi.vfs.newvfs.events.VFileEvent
 import com.intellij.ui.JBColor
+import com.intellij.ui.LightweightHint
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPanel
 import com.intellij.ui.components.JBScrollPane
@@ -16,6 +17,7 @@ import com.intellij.ui.scale.JBUIScale
 import com.intellij.util.messages.MessageBusConnection
 import com.intellij.util.ui.JBFont
 import net.posdaca.OiiaBundle
+import net.posdaca.oiia.core.PreviewHintSupport
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Cursor
@@ -53,7 +55,6 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
     private val service = MapPreviewService(project)
     private val canvas = MapCanvas()
     private val statusLabel = JBLabel(OiiaBundle.message("toolwindow.MapPreview.loading"))
-    private val detailLabel = JBLabel(OiiaBundle.message("toolwindow.MapPreview.detail.empty"))
     private val loadVersion = AtomicInteger(0)
     private val changeCheckInProgress = AtomicBoolean(false)
     private var loadedData: LoadedMapData? = null
@@ -85,7 +86,6 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             }
         })
         add(scrollPane, BorderLayout.CENTER)
-        add(createDetailPanel(), BorderLayout.SOUTH)
 
         connectVfsListener()
         reloadTimer.start()
@@ -127,12 +127,10 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         val colorSelector = createModeSelector(colorMode) { nextMode ->
             colorMode = nextMode
             canvas.setColorMode(nextMode)
-            clearDetail()
         }
         val borderSelector = createModeSelector(borderMode) { nextMode ->
             borderMode = nextMode
             canvas.setBorderMode(nextMode)
-            clearDetail()
         }
 
         val borderToggle = JCheckBox(msg("borders"), showBorders)
@@ -187,27 +185,6 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         return selector
     }
 
-    private fun createDetailPanel(): JComponent {
-        val panel = JPanel(BorderLayout())
-        panel.background = JBColor.PanelBackground
-        panel.border = BorderFactory.createCompoundBorder(
-            BorderFactory.createMatteBorder(1, 0, 0, 0, JBColor.border()),
-            BorderFactory.createEmptyBorder(
-                JBUIScale.scale(8),
-                JBUIScale.scale(10),
-                JBUIScale.scale(8),
-                JBUIScale.scale(10)
-            )
-        )
-        detailLabel.font = JBFont.label()
-        panel.add(detailLabel, BorderLayout.CENTER)
-        return panel
-    }
-
-    private fun clearDetail() {
-        detailLabel.text = msg("detail.empty")
-    }
-
     private fun reloadIfChanged() {
         if (loading) return
         val current = loadedData
@@ -258,7 +235,6 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             is MapLoadResult.Loaded -> {
                 loadedData = result.data
                 canvas.setData(result.data)
-                clearDetail()
                 val image = result.data.provincesImage
                 val definitions = result.data.provinceByColor.size
                 val states = result.data.stateById.size
@@ -279,14 +255,12 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             is MapLoadResult.Missing -> {
                 loadedData = null
                 canvas.setData(null)
-                clearDetail()
                 statusLabel.text = msg("missing")
             }
 
             is MapLoadResult.Failed -> {
                 loadedData = null
                 canvas.setData(null)
-                clearDetail()
                 statusLabel.text = result.message
             }
         }
@@ -315,6 +289,8 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         private var hoverOverlay: HoverOverlay? = null
         private var dragStartScreenPoint: Point? = null
         private var dragStartScroll: Point? = null
+        private var lockedHint: LightweightHint? = null
+        private var singleClickTimer: Timer? = null
         private var recenteringScroll = false
         private var fitToMinimumAfterLayout = false
 
@@ -329,6 +305,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             addMouseListener(object : MouseAdapter() {
                 override fun mousePressed(e: MouseEvent) {
                     if (e.button != MouseEvent.BUTTON1) return
+                    if (e.clickCount > 1) cancelPendingSingleClick()
                     dragStartScreenPoint = Point(e.locationOnScreen)
                     dragStartScroll = Point(
                         scrollPane?.horizontalScrollBar?.value ?: 0,
@@ -345,17 +322,24 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
 
                 override fun mouseClicked(e: MouseEvent) {
                     if (e.button != MouseEvent.BUTTON1) return
-                    val sample = sampleProvince(e.point) ?: return
+                    val sample = sampleProvince(e.point)
+                    if (sample == null) {
+                        if (e.clickCount == 1) hideMapHint()
+                        return
+                    }
                     if (e.clickCount >= 2) {
+                        cancelPendingSingleClick()
+                        hideMapHint()
                         navigateToSource(sample)
                     } else if (e.clickCount == 1) {
-                        detailLabel.text = buildDetailText(sample)
+                        scheduleMapHint(sample, e.point)
                     }
                 }
             })
 
             addMouseMotionListener(object : MouseAdapter() {
                 override fun mouseDragged(e: MouseEvent) {
+                    cancelPendingSingleClick()
                     val startPoint = dragStartScreenPoint ?: return
                     val startScroll = dragStartScroll ?: return
                     val scroll = scrollPane ?: return
@@ -378,13 +362,48 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             }
         }
 
+        private fun scheduleMapHint(sample: ProvinceSample, point: Point) {
+            cancelPendingSingleClick()
+            val hintPoint = Point(point)
+            singleClickTimer = Timer(PreviewHintSupport.multiClickInterval()) {
+                singleClickTimer = null
+                if (isShowing) showMapHint(sample, hintPoint)
+            }.apply {
+                isRepeats = false
+                start()
+            }
+        }
+
+        private fun cancelPendingSingleClick() {
+            singleClickTimer?.stop()
+            singleClickTimer = null
+        }
+
+        private fun showMapHint(sample: ProvinceSample, point: Point) {
+            hideMapHint()
+            val hint = PreviewHintSupport.showHint(this, point, buildDetailText(sample)) { hiddenHint ->
+                if (lockedHint === hiddenHint) lockedHint = null
+            }
+            lockedHint = hint
+        }
+
+        private fun hideMapHint() {
+            val hint = lockedHint
+            lockedHint = null
+            PreviewHintSupport.hideHint(hint)
+        }
+
         fun setColorMode(nextMode: MapPreviewMode) {
+            cancelPendingSingleClick()
+            hideMapHint()
             fillMode = nextMode
             revalidate()
             repaint()
         }
 
         fun setBorderMode(nextMode: MapPreviewMode) {
+            cancelPendingSingleClick()
+            hideMapHint()
             outlineMode = nextMode
             hoverSelection = null
             hoverOverlay = null
@@ -393,6 +412,8 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         }
 
         fun setData(nextData: LoadedMapData?) {
+            cancelPendingSingleClick()
+            hideMapHint()
             data = nextData
             fitToMinimumAfterLayout = nextData != null
             zoom = nextData?.let { zoomInBounds(minZoom(it)) } ?: 1.0
@@ -936,6 +957,8 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
 
         override fun removeNotify() {
             ToolTipManager.sharedInstance().unregisterComponent(this)
+            cancelPendingSingleClick()
+            hideMapHint()
             super.removeNotify()
         }
     }

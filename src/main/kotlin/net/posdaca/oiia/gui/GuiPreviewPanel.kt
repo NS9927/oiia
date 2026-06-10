@@ -5,9 +5,7 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.vfs.LocalFileSystem
-import com.intellij.codeInsight.hint.HintUtil
 import com.intellij.ui.JBColor
-import com.intellij.ui.HintHint
 import com.intellij.ui.LightweightHint
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPanel
@@ -17,6 +15,7 @@ import com.intellij.util.ui.JBFont
 import net.posdaca.OiiaBundle
 import net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteInfo
 import net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteInsets
+import net.posdaca.oiia.core.PreviewHintSupport
 import net.posdaca.oiia.core.PreviewImageLoader
 import java.awt.BasicStroke
 import java.awt.BorderLayout
@@ -30,7 +29,6 @@ import java.awt.Point
 import java.awt.Rectangle
 import java.awt.RenderingHints
 import java.awt.Shape
-import java.awt.Toolkit
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.event.MouseWheelEvent
@@ -1258,7 +1256,7 @@ class GuiPreviewPanel(
         private fun scheduleNodeHint(node: GuiLayoutNode, point: Point) {
             cancelPendingSingleClick()
             val hintPoint = Point(point)
-            singleClickTimer = Timer(multiClickInterval()) {
+            singleClickTimer = Timer(PreviewHintSupport.multiClickInterval()) {
                 singleClickTimer = null
                 if (isShowing) showNodeHint(node, hintPoint)
             }.apply {
@@ -1277,38 +1275,13 @@ class GuiPreviewPanel(
             selected = node
             lockedNode = node
 
-            val content = HintUtil.createInformationLabel(buildDetailText(node))
-            content.border = BorderFactory.createCompoundBorder(
-                HintUtil.createHintBorder(),
-                BorderFactory.createEmptyBorder(
-                    JBUIScale.scale(10),
-                    JBUIScale.scale(12),
-                    JBUIScale.scale(10),
-                    JBUIScale.scale(12)
-                )
-            )
-            content.background = HintUtil.getInformationColor()
-            content.isOpaque = true
-
-            val hint = LightweightHint(content)
-            hint.setForceShowAsPopup(true)
-            hint.setCancelOnClickOutside(true)
-            hint.setCancelOnOtherWindowOpen(true)
-            hint.addHintListener {
-                if (lockedHint === hint) {
+            val hint = PreviewHintSupport.showHint(this, point, buildDetailText(node)) { hiddenHint ->
+                if (lockedHint === hiddenHint) {
                     lockedHint = null
                     lockedNode = null
                     repaint()
                 }
             }
-
-            val hintPoint = computeHintPoint(point, content)
-            val hintHint = HintHint(this, hintPoint)
-                .setTextBg(HintUtil.getInformationColor())
-                .setTextFg(JBColor.foreground())
-                .setBorderColor(HintUtil.getHintBorderColor())
-                .setShowImmediately(true)
-            hint.show(this, hintPoint.x, hintPoint.y, this, hintHint)
             lockedHint = hint
             repaint()
         }
@@ -1316,21 +1289,8 @@ class GuiPreviewPanel(
         private fun hideNodeHint(clearLocked: Boolean) {
             val hint = lockedHint
             lockedHint = null
-            if (hint?.isVisible == true) hint.hide()
+            PreviewHintSupport.hideHint(hint)
             if (clearLocked) lockedNode = null
-        }
-
-        private fun computeHintPoint(point: Point, content: JComponent): Point {
-            val gap = JBUIScale.scale(12)
-            val viewport = visibleRect
-            val size = content.preferredSize
-            val rightLimit = viewport.x + viewport.width - gap
-            val bottomLimit = viewport.y + viewport.height - gap
-            var x = point.x + gap
-            var y = point.y + gap
-            if (x + size.width > rightLimit) x = point.x - size.width - gap
-            if (y + size.height > bottomLimit) y = point.y - size.height - gap
-            return Point(x.coerceAtLeast(viewport.x + gap), y.coerceAtLeast(viewport.y + gap))
         }
 
         private fun buildTooltipText(node: GuiLayoutNode): String {
@@ -1404,10 +1364,5 @@ class GuiPreviewPanel(
             scrollBar.value = value.coerceIn(scrollBar.minimum, max.coerceAtLeast(scrollBar.minimum))
         }
 
-        @Suppress("unused")
-        private fun multiClickInterval(): Int {
-            val interval = Toolkit.getDefaultToolkit().getDesktopProperty("awt.multiClickInterval") as? Int
-            return (interval ?: 250).coerceAtLeast(150)
-        }
     }
 }

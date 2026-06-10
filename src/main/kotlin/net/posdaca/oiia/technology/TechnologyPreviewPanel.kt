@@ -1,15 +1,14 @@
 package net.posdaca.oiia.technology
 
-import com.intellij.codeInsight.hint.HintUtil
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
-import com.intellij.ui.HintHint
 import com.intellij.ui.JBColor
 import com.intellij.ui.LightweightHint
 import com.intellij.ui.components.JBPanel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.scale.JBUIScale
 import com.intellij.util.ui.JBFont
+import net.posdaca.oiia.core.PreviewHintSupport
 import net.posdaca.oiia.core.PreviewImageLoader
 import java.awt.*
 import java.awt.event.MouseAdapter
@@ -19,8 +18,6 @@ import java.awt.geom.AffineTransform
 import java.awt.geom.Path2D
 import java.awt.geom.RoundRectangle2D
 import java.awt.image.BufferedImage
-import javax.swing.BorderFactory
-import javax.swing.JComponent
 import javax.swing.Scrollable
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
@@ -220,7 +217,7 @@ class TechnologyPreviewPanel(
         private fun scheduleTechnologyHint(technology: TechnologyData, point: Point) {
             cancelPendingSingleClick()
             val hintPoint = Point(point)
-            singleClickTimer = Timer(multiClickInterval()) {
+            singleClickTimer = Timer(PreviewHintSupport.multiClickInterval()) {
                 singleClickTimer = null
                 if (isShowing) showTechnologyHint(technology, hintPoint)
             }.apply {
@@ -234,69 +231,26 @@ class TechnologyPreviewPanel(
             singleClickTimer = null
         }
 
-        private fun multiClickInterval(): Int {
-            val interval = Toolkit.getDefaultToolkit().getDesktopProperty("awt.multiClickInterval") as? Int
-            return (interval ?: 250).coerceAtLeast(150)
-        }
-
         private fun showTechnologyHint(technology: TechnologyData, point: Point) {
             hideTechnologyHint(clearLocked = false)
             selectedTechnologyId = technology.id
             lockedTechnologyId = technology.id
 
-            val content = HintUtil.createInformationLabel(buildTechnologyHintText(technology))
-            content.border = BorderFactory.createCompoundBorder(
-                HintUtil.createHintBorder(),
-                BorderFactory.createEmptyBorder(
-                    JBUIScale.scale(10),
-                    JBUIScale.scale(12),
-                    JBUIScale.scale(10),
-                    JBUIScale.scale(12)
-                )
-            )
-            content.background = HintUtil.getInformationColor()
-            content.isOpaque = true
-
-            val hint = LightweightHint(content)
-            hint.setForceShowAsPopup(true)
-            hint.setCancelOnClickOutside(true)
-            hint.setCancelOnOtherWindowOpen(true)
-            hint.addHintListener {
-                if (lockedHint === hint) {
+            val hint = PreviewHintSupport.showHint(this, point, buildTechnologyHintText(technology)) { hiddenHint ->
+                if (lockedHint === hiddenHint) {
                     lockedHint = null
                     lockedTechnologyId = null
                     repaint()
                 }
             }
-
-            val hintPoint = computeHintPoint(point, content)
-            val hintHint = HintHint(this, hintPoint)
-                .setTextBg(HintUtil.getInformationColor())
-                .setTextFg(JBColor.foreground())
-                .setBorderColor(HintUtil.getHintBorderColor())
-                .setShowImmediately(true)
-            hint.show(this, hintPoint.x, hintPoint.y, this, hintHint)
             lockedHint = hint
         }
 
         private fun hideTechnologyHint(clearLocked: Boolean) {
             val hint = lockedHint
             lockedHint = null
-            if (hint?.isVisible == true) hint.hide()
+            PreviewHintSupport.hideHint(hint)
             if (clearLocked) lockedTechnologyId = null
-        }
-
-        private fun computeHintPoint(point: Point, content: JComponent): Point {
-            val gap = JBUIScale.scale(12)
-            val viewport = visibleRect
-            val size = content.preferredSize
-            val rightLimit = viewport.x + viewport.width - gap
-            val bottomLimit = viewport.y + viewport.height - gap
-            var x = point.x + gap
-            var y = point.y + gap
-            if (x + size.width > rightLimit) x = point.x - size.width - gap
-            if (y + size.height > bottomLimit) y = point.y - size.height - gap
-            return Point(x.coerceAtLeast(viewport.x + gap), y.coerceAtLeast(viewport.y + gap))
         }
 
         private fun buildTechnologyHintText(technology: TechnologyData): String {

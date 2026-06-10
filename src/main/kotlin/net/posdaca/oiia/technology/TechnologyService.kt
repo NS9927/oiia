@@ -15,6 +15,7 @@ import icu.windea.pls.script.psi.ParadoxScriptBlock
 import icu.windea.pls.script.psi.ParadoxScriptFile
 import icu.windea.pls.script.psi.ParadoxScriptProperty
 import net.posdaca.oiia.core.HoI4ResourceRoots
+import net.posdaca.oiia.core.ParadoxLocalisationPreference
 import net.posdaca.oiia.core.ParadoxSpriteResolver
 import java.nio.file.Files
 import java.nio.file.Path
@@ -228,11 +229,7 @@ class TechnologyService(private val project: Project) {
     }
 
     private fun getLanguagePriority(path: String): Int {
-        val lower = path.lowercase()
-        for ((index, tag) in LANG_PRIORITY.withIndex()) {
-            if (tag in lower) return (LANG_PRIORITY.size - index) * LOCALISATION_LANGUAGE_WEIGHT
-        }
-        return 0
+        return ParadoxLocalisationPreference.languagePriority(path, LANG_PRIORITY, LOCALISATION_LANGUAGE_WEIGHT)
     }
 
     private fun getPlsRoots(): List<Path> {

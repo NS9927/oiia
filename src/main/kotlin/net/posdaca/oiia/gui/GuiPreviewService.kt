@@ -11,6 +11,7 @@ import icu.windea.pls.script.psi.ParadoxScriptFile
 import icu.windea.pls.script.psi.ParadoxScriptProperty
 import icu.windea.pls.script.psi.ParadoxScriptValue
 import net.posdaca.oiia.core.HoI4ResourceRoots
+import net.posdaca.oiia.core.ParadoxLocalisationPreference
 import net.posdaca.oiia.core.ParadoxSpriteResolver
 import net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteInfo
 import java.nio.file.Files
@@ -20,6 +21,7 @@ import kotlin.io.path.isRegularFile
 class GuiPreviewService(private val project: Project) {
 
     private val localisationCache = mutableMapOf<String, String?>()
+    private var localisationCachePreferenceKey: String? = null
     private val localisationFallbackLock = Any()
     private var localisationFallbackRootsKey: String? = null
     private var localisationFallbackCache: Map<String, String> = emptyMap()
@@ -37,6 +39,11 @@ class GuiPreviewService(private val project: Project) {
     fun resolveLocalisation(key: String?): String? {
         val trimmed = key?.trim()?.trim('"')?.takeIf { it.isNotBlank() } ?: return null
         synchronized(localisationCache) {
+            val preferenceKey = ParadoxLocalisationPreference.preferenceKey()
+            if (localisationCachePreferenceKey != preferenceKey) {
+                localisationCache.clear()
+                localisationCachePreferenceKey = preferenceKey
+            }
             if (localisationCache.containsKey(trimmed)) return localisationCache[trimmed]
             val plsResolved = runCatching {
                 val selector = ParadoxLocalisationSearch.selector(project, null).distinct()
@@ -332,7 +339,8 @@ class GuiPreviewService(private val project: Project) {
 
     private fun loadLocalisationFallbackCache(): Map<String, String> {
         val roots = HoI4ResourceRoots.resourceRoots(project, projectFirst = true, gameFirst = false)
-        val rootsKey = roots.joinToString("|") { HoI4ResourceRoots.normalizedKey(it) }
+        val rootsKey = ParadoxLocalisationPreference.preferenceKey() + "|" +
+                roots.joinToString("|") { HoI4ResourceRoots.normalizedKey(it) }
         synchronized(localisationFallbackLock) {
             if (localisationFallbackRootsKey == rootsKey) return localisationFallbackCache
 
@@ -406,11 +414,7 @@ class GuiPreviewService(private val project: Project) {
     }
 
     private fun languagePriority(path: String): Int {
-        val lower = path.lowercase()
-        for ((index, tag) in LANG_PRIORITY.withIndex()) {
-            if (tag in lower) return LANG_PRIORITY.size - index
-        }
-        return 0
+        return ParadoxLocalisationPreference.languagePriority(path, LANG_PRIORITY)
     }
 
     private fun unescapeLocalisation(value: String): String {
