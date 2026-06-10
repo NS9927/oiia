@@ -56,11 +56,9 @@ class MapPreviewService(private val project: Project) {
                     stateImage = renderData.stateImage,
                     countryImage = renderData.countryImage,
                     strategicRegionImage = renderData.strategicRegionImage,
-                    smoothStateImage = renderData.smoothStateImage,
-                    smoothCountryImage = renderData.smoothCountryImage,
-                    smoothStrategicRegionImage = renderData.smoothStrategicRegionImage,
                     borderImages = renderData.borderImages,
                     smoothBorderSegments = renderData.smoothBorderSegments,
+                    smoothColorSegments = renderData.smoothColorSegments,
                     pixelIndex = renderData.pixelIndex,
                     provinceByColor = provinces,
                     provinceById = provinceById,
@@ -477,11 +475,9 @@ class MapPreviewService(private val project: Project) {
         val stateImage: BufferedImage?,
         val countryImage: BufferedImage?,
         val strategicRegionImage: BufferedImage?,
-        val smoothStateImage: BufferedImage?,
-        val smoothCountryImage: BufferedImage?,
-        val smoothStrategicRegionImage: BufferedImage?,
         val borderImages: Map<MapPreviewMode, BufferedImage>,
-        val smoothBorderSegments: Map<MapPreviewMode, List<MapLineSegment>>
+        val smoothBorderSegments: Map<MapPreviewMode, List<MapLineSegment>>,
+        val smoothColorSegments: Map<MapPreviewMode, List<MapColorLineSegment>>
     )
 
     private fun buildRenderData(
@@ -563,18 +559,29 @@ class MapPreviewService(private val project: Project) {
             strategicRegionBounds = strategicRegionBounds.mapValues { it.value.toBounds() }
         )
         val borderImages = buildBorderImages(pixelIndex, width, height)
+        val smoothBorderSegments = buildSmoothBorderSegments(pixelIndex, width, height)
         return MapRenderData(
             pixelIndex = pixelIndex,
             stateImage = stateImage,
             countryImage = countryImage,
             strategicRegionImage = strategicRegionImage,
-            smoothStateImage = stateImage?.let { buildSmoothColorImage(it, stateKeys, width, height) },
-            smoothCountryImage = countryImage?.let { buildSmoothColorImage(it, countryKeys, width, height) },
-            smoothStrategicRegionImage = strategicRegionImage?.let {
-                buildSmoothColorImage(it, strategicRegionKeys, width, height)
-            },
             borderImages = borderImages,
-            smoothBorderSegments = buildSmoothBorderSegments(pixelIndex, width, height)
+            smoothBorderSegments = smoothBorderSegments,
+            smoothColorSegments = buildSmoothColorSegments(
+                mapOf(
+                    MapPreviewMode.PROVINCE to provincesImage,
+                    MapPreviewMode.STATE to stateImage,
+                    MapPreviewMode.COUNTRY to countryImage,
+                    MapPreviewMode.STRATEGIC_REGION to strategicRegionImage
+                ),
+                mapOf(
+                    MapPreviewMode.PROVINCE to provinceKeys,
+                    MapPreviewMode.STATE to stateKeys,
+                    MapPreviewMode.COUNTRY to countryKeys,
+                    MapPreviewMode.STRATEGIC_REGION to strategicRegionKeys
+                ),
+                smoothBorderSegments
+            )
         )
     }
 
@@ -655,81 +662,89 @@ class MapPreviewService(private val project: Project) {
         }
     }
 
-    private fun buildSmoothColorImage(source: BufferedImage, keys: IntArray, width: Int, height: Int): BufferedImage {
-        val image = ImageUtil.createImage(width, height, BufferedImage.TYPE_INT_RGB)
-        for (y in 0 until height) {
-            val rowOffset = y * width
-            for (x in 0 until width) {
-                val index = rowOffset + x
-                val key = keys[index]
-                val originalRgb = source.getRGB(x, y) and RGB_MASK
-                if (key == UNKNOWN_KEY || !isNearKeyBoundary(keys, width, height, x, y, index, key)) {
-                    image.setRGB(x, y, originalRgb)
-                    continue
-                }
-                image.setRGB(x, y, blendedNeighborColor(source, keys, width, height, x, y, key, originalRgb))
-            }
+    private fun buildSmoothColorSegments(
+        images: Map<MapPreviewMode, BufferedImage?>,
+        keysByMode: Map<MapPreviewMode, IntArray>,
+        segmentsByMode: Map<MapPreviewMode, List<MapLineSegment>>
+    ): Map<MapPreviewMode, List<MapColorLineSegment>> {
+        return mapOf(
+            MapPreviewMode.PROVINCE to buildSmoothColorSegments(
+                images[MapPreviewMode.PROVINCE],
+                keysByMode[MapPreviewMode.PROVINCE],
+                segmentsByMode[MapPreviewMode.PROVINCE].orEmpty()
+            ),
+            MapPreviewMode.STATE to buildSmoothColorSegments(
+                images[MapPreviewMode.STATE],
+                keysByMode[MapPreviewMode.STATE],
+                segmentsByMode[MapPreviewMode.STATE].orEmpty()
+            ),
+            MapPreviewMode.COUNTRY to buildSmoothColorSegments(
+                images[MapPreviewMode.COUNTRY],
+                keysByMode[MapPreviewMode.COUNTRY],
+                segmentsByMode[MapPreviewMode.COUNTRY].orEmpty()
+            ),
+            MapPreviewMode.STRATEGIC_REGION to buildSmoothColorSegments(
+                images[MapPreviewMode.STRATEGIC_REGION],
+                keysByMode[MapPreviewMode.STRATEGIC_REGION],
+                segmentsByMode[MapPreviewMode.STRATEGIC_REGION].orEmpty()
+            )
+        )
+    }
+
+    private fun buildSmoothColorSegments(
+        source: BufferedImage?,
+        keys: IntArray?,
+        segments: List<MapLineSegment>
+    ): List<MapColorLineSegment> {
+        if (source == null || keys == null || segments.isEmpty()) return emptyList()
+        return segments.mapNotNull { segment ->
+            val sides = smoothBoundarySides(source, keys, segment) ?: return@mapNotNull null
+            MapColorLineSegment(
+                x1 = segment.x1,
+                y1 = segment.y1,
+                x2 = segment.x2,
+                y2 = segment.y2,
+                positiveSideRgb = sides.positiveRgb,
+                negativeSideRgb = sides.negativeRgb
+            )
         }
-        return image
     }
 
-    private fun isNearKeyBoundary(
-        keys: IntArray,
-        width: Int,
-        height: Int,
-        x: Int,
-        y: Int,
-        index: Int,
-        key: Int
-    ): Boolean {
-        val rowOffset = y * width
-        val leftIndex = rowOffset + if (x == 0) width - 1 else x - 1
-        val rightIndex = rowOffset + if (x + 1 == width) 0 else x + 1
-        return keys[leftIndex] != key ||
-                keys[rightIndex] != key ||
-                y > 0 && keys[index - width] != key ||
-                y + 1 < height && keys[index + width] != key
+    private fun smoothBoundarySides(source: BufferedImage, keys: IntArray, segment: MapLineSegment): SmoothBoundarySides? {
+        val width = source.width
+        val height = source.height
+        val midX = (segment.x1 + segment.x2) / 2.0
+        val midY = (segment.y1 + segment.y2) / 2.0
+        val dx = segment.x2 - segment.x1
+        val dy = segment.y2 - segment.y1
+        val length = kotlin.math.sqrt(dx * dx + dy * dy)
+        if (length == 0.0) return null
+        val normalX = -dy / length
+        val normalY = dx / length
+        val positive = colorSample(source, keys, width, height, midX + normalX * SMOOTH_COLOR_SAMPLE_DISTANCE, midY + normalY * SMOOTH_COLOR_SAMPLE_DISTANCE)
+        val negative = colorSample(source, keys, width, height, midX - normalX * SMOOTH_COLOR_SAMPLE_DISTANCE, midY - normalY * SMOOTH_COLOR_SAMPLE_DISTANCE)
+        if (positive == null || negative == null || positive.key == negative.key) return null
+        return SmoothBoundarySides(positive.rgb, negative.rgb)
     }
 
-    private fun blendedNeighborColor(
+    private fun colorSample(
         source: BufferedImage,
         keys: IntArray,
         width: Int,
         height: Int,
-        x: Int,
-        y: Int,
-        key: Int,
-        originalRgb: Int
-    ): Int {
-        var red = (originalRgb shr 16 and 0xFF) * SMOOTH_COLOR_CENTER_WEIGHT
-        var green = (originalRgb shr 8 and 0xFF) * SMOOTH_COLOR_CENTER_WEIGHT
-        var blue = (originalRgb and 0xFF) * SMOOTH_COLOR_CENTER_WEIGHT
-        var weight = SMOOTH_COLOR_CENTER_WEIGHT
-        for (dy in -1..1) {
-            val ny = y + dy
-            if (ny !in 0 until height) continue
-            for (dx in -1..1) {
-                if (dx == 0 && dy == 0) continue
-                val nx = when {
-                    x + dx < 0 -> width + x + dx
-                    x + dx >= width -> x + dx - width
-                    else -> x + dx
-                }
-                val neighborIndex = ny * width + nx
-                val neighborKey = keys[neighborIndex]
-                if (neighborKey == UNKNOWN_KEY || neighborKey == key) continue
-                val neighborWeight = if (dx == 0 || dy == 0) 2 else 1
-                val rgb = source.getRGB(nx, ny) and RGB_MASK
-                red += (rgb shr 16 and 0xFF) * neighborWeight
-                green += (rgb shr 8 and 0xFF) * neighborWeight
-                blue += (rgb and 0xFF) * neighborWeight
-                weight += neighborWeight
-            }
-        }
-        return ((red / weight).coerceIn(0, 255) shl 16) or
-                ((green / weight).coerceIn(0, 255) shl 8) or
-                (blue / weight).coerceIn(0, 255)
+        x: Double,
+        y: Double
+    ): SmoothColorSample? {
+        val sampleY = kotlin.math.floor(y).toInt().coerceIn(0, height - 1)
+        val sampleX = Math.floorMod(kotlin.math.floor(x).toInt(), width)
+        val index = sampleY * width + sampleX
+        val key = keys[index]
+        if (key == UNKNOWN_KEY) return null
+        return SmoothColorSample(key, source.getRGB(sampleX, sampleY) and RGB_MASK)
     }
+
+    private data class SmoothColorSample(val key: Int, val rgb: Int)
+    private data class SmoothBoundarySides(val positiveRgb: Int, val negativeRgb: Int)
 
     private fun buildSmoothBorderSegments(
         pixelIndex: MapPixelIndex,
@@ -1213,7 +1228,7 @@ class MapPreviewService(private val project: Project) {
         private const val COUNTRIES_PATH = "common/countries"
         private const val RGB_MASK = 0xFFFFFF
         private const val UNKNOWN_KEY = -1
-        private const val SMOOTH_COLOR_CENTER_WEIGHT = 5
+        private const val SMOOTH_COLOR_SAMPLE_DISTANCE = 0.75
         private const val SMOOTH_EDGE_SIMPLIFY_TOLERANCE = 0.85
         private val COUNTRY_TAG_REGEX = Regex("""[A-Z0-9_]{3}""")
         private val COUNTRY_COLOR_OVERRIDE_PATHS = listOf(

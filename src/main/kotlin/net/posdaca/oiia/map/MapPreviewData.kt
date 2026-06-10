@@ -29,6 +29,15 @@ data class MapLineSegment(
     val y2: Double
 )
 
+data class MapColorLineSegment(
+    val x1: Double,
+    val y1: Double,
+    val x2: Double,
+    val y2: Double,
+    val positiveSideRgb: Int,
+    val negativeSideRgb: Int
+)
+
 enum class MapPreviewMode(val messageKey: String) {
     PROVINCE("toolwindow.MapPreview.mode.province"),
     STATE("toolwindow.MapPreview.mode.state"),
@@ -102,11 +111,9 @@ data class LoadedMapData(
     val stateImage: BufferedImage?,
     val countryImage: BufferedImage?,
     val strategicRegionImage: BufferedImage?,
-    val smoothStateImage: BufferedImage?,
-    val smoothCountryImage: BufferedImage?,
-    val smoothStrategicRegionImage: BufferedImage?,
     val borderImages: Map<MapPreviewMode, BufferedImage>,
     val smoothBorderSegments: Map<MapPreviewMode, List<MapLineSegment>>,
+    val smoothColorSegments: Map<MapPreviewMode, List<MapColorLineSegment>>,
     val pixelIndex: MapPixelIndex,
     val provinceByColor: Map<Int, ProvinceInfo>,
     val provinceById: Map<Int, ProvinceInfo>,
@@ -124,22 +131,20 @@ data class LoadedMapData(
     val localisations: Map<String, String>,
     val sourceStamp: Long
 ) {
-    fun imageFor(mode: MapPreviewMode, smooth: Boolean = false): BufferedImage {
+    fun imageFor(mode: MapPreviewMode): BufferedImage {
         return when (mode) {
             MapPreviewMode.PROVINCE -> provincesImage
-            MapPreviewMode.STATE -> if (smooth) smoothStateImage ?: stateImage ?: provincesImage else stateImage ?: provincesImage
-            MapPreviewMode.COUNTRY -> if (smooth) smoothCountryImage ?: countryImage ?: provincesImage else countryImage ?: provincesImage
-            MapPreviewMode.STRATEGIC_REGION -> if (smooth) {
-                smoothStrategicRegionImage ?: strategicRegionImage ?: provincesImage
-            } else {
-                strategicRegionImage ?: provincesImage
-            }
+            MapPreviewMode.STATE -> stateImage ?: provincesImage
+            MapPreviewMode.COUNTRY -> countryImage ?: provincesImage
+            MapPreviewMode.STRATEGIC_REGION -> strategicRegionImage ?: provincesImage
         }
     }
 
     fun borderImageFor(mode: MapPreviewMode): BufferedImage? = borderImages[mode]
 
     fun smoothBorderSegmentsFor(mode: MapPreviewMode): List<MapLineSegment> = smoothBorderSegments[mode].orEmpty()
+
+    fun smoothColorSegmentsFor(mode: MapPreviewMode): List<MapColorLineSegment> = smoothColorSegments[mode].orEmpty()
 }
 
 internal fun mapCountryKey(tag: String): Int {
