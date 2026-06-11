@@ -2,11 +2,14 @@
 <idea-plugin>
     <id>net.posdaca.oiia</id>
 
-    <name>oi</name>
+    <name>Oiia</name>
 
     <vendor url="https://github.com/NS9927/oiia">NS9927</vendor>
 
-    <description>oiiaioiiiai,oiiaioiiiai,oiiaioiiiai,oiiaioiiiai</description>
+    <description>
+        Oiia is a beta Hearts of Iron IV modding toolkit built on top of Paradox Language Support.
+        It adds visual previews for national focus trees, technology trees, GUI files, and map data.
+    </description>
 
     <depends>com.intellij.modules.platform</depends>
     <depends>icu.windea.pls</depends>
