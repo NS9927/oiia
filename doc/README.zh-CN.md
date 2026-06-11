@@ -1,6 +1,6 @@
 # Oiia
 
-[English](README.md)
+[English](../README.md)
 
 Oiia 是一个面向 IntelliJ IDEA 的 Hearts of Iron IV 模组开发工具包，目前处于 beta 测试阶段。
 它基于 [Paradox Language Support](https://plugins.jetbrains.com/plugin/16825-paradox-language-support)
@@ -37,7 +37,7 @@ Oiia 是一个面向 IntelliJ IDEA 的 Hearts of Iron IV 模组开发工具包�
 .\gradlew.bat buildPlugin
 ```
 
-生成的插件 zip 位于 `build/distributions`。
+生成的插件 zip 位于 `../build/distributions`。
 
 开发时常用命令：
 
@@ -63,4 +63,4 @@ https://github.com/NS9927/oiia/issues
 
 ## 许可证
 
-MIT。见 [LICENSE](LICENSE)。
+MIT。见 [LICENSE](../LICENSE)。
