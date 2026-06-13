@@ -1,6 +1,6 @@
 # Oiia Changelog
 
-## [1.0.0-beta.1] - 2026-06-11
+## [1.0.0] - 2026-06-11
 
 First public beta.
 
