@@ -13,7 +13,7 @@ Oiia 是一个面向 IntelliJ IDEA 的 Hearts of Iron IV 模组开发工具包�
 - 从源码构建需要 Java 21。
 - Paradox Language Support v2.1.9。
 - 一个 HOI4 模组项目。建议先在 Paradox Language Support 中配置好游戏目录和模组目录，这样 Oiia 能正确定位游戏与模组资源。
-## 安装 Beta 版本
+## 手动安装
 1. 从 GitHub Releases 下载最新的 `oiia-*.zip` 文件。
 2. 打开 IntelliJ IDEA。
 3. 进入 `设置 | 插件 | 从磁盘安装插件...`。
