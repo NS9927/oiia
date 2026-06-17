@@ -3,6 +3,7 @@ package net.posdaca.oiia.core
 import com.intellij.openapi.project.Project
 import icu.windea.pls.lang.settings.PlsProfilesSettings
 import icu.windea.pls.lang.settings.ParadoxGameSettingsState
+import icu.windea.pls.lang.settings.ParadoxModDescriptorSettingsState
 import icu.windea.pls.lang.settings.ParadoxModSettingsState
 import icu.windea.pls.model.ParadoxGameType
 import java.io.File
@@ -46,6 +47,23 @@ internal object HoI4ResourceRoots {
         )
         cacheResourceRoots(cacheKey, roots)
         return roots
+    }
+
+    fun currentModLoadOrder(project: Project): List<HoI4ModLoadOrderEntry> {
+        val projectRoot = directoryPath(project.basePath)
+        val state = PlsProfilesSettings.getInstance().state
+        val modRootPlan = orderedModRootPlan(state.modSettings.values, projectRoot)
+        val descriptorSettingsByDirectory = state.modDescriptorSettings.values
+            .filter { it.isHoi4Mod() }
+            .mapNotNull { settings ->
+                directoryPath(settings.modDirectory)?.let { normalizedKey(it) to settings }
+            }
+            .toMap()
+
+        return modRootPlan.roots.map { root ->
+            val descriptorSettings = descriptorSettingsByDirectory[normalizedKey(root)]
+            HoI4ModLoadOrderEntry(root, descriptorSettings?.remoteId?.takeIf { it.isNotBlank() })
+        }
     }
 
     fun normalizedKey(path: Path): String = path.toAbsolutePath().normalize().toString().lowercase()
@@ -192,6 +210,10 @@ internal object HoI4ResourceRoots {
         return gameType == ParadoxGameType.Hoi4 || finalGameType == ParadoxGameType.Hoi4
     }
 
+    private fun ParadoxModDescriptorSettingsState.isHoi4Mod(): Boolean {
+        return gameType == ParadoxGameType.Hoi4 || finalGameType == ParadoxGameType.Hoi4
+    }
+
     private data class ModRootPlan(
         val roots: List<Path>,
         val settings: List<ParadoxModSettingsState>
@@ -208,3 +230,8 @@ internal object HoI4ResourceRoots {
         val createdAtMs: Long
     )
 }
+
+internal data class HoI4ModLoadOrderEntry(
+    val modDirectory: Path,
+    val remoteId: String?,
+)

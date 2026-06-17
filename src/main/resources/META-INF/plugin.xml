@@ -12,11 +12,15 @@
     </description>
 
     <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.java</depends>
     <depends>icu.windea.pls</depends>
 
     <resource-bundle>messages.OiiaBundle</resource-bundle>
 
     <extensions defaultExtensionNs="com.intellij">
+        <notificationGroup id="Oiia" displayType="BALLOON"/>
+        <configurationType implementation="net.posdaca.oiia.shadow.ShadowRunConfigurationType"/>
+        <newProjectWizard.generator implementation="net.posdaca.oiia.project.HoI4ModProjectWizard"/>
         <toolWindow id="NationalFocusPreview" factoryClass="net.posdaca.oiia.focus.NationalFocusPreviewToolWindowFactory"
                     icon="/icons/focusPreview.svg"
                     anchor="right"
@@ -39,5 +43,12 @@
         <inferredGameTypeProvider implementation="net.posdaca.oiia.core.HoI4GameTypeProvider"/>
         <quickDocTextProvider implementation="net.posdaca.oiia.focus.NationalFocusQuickDocTextProvider"/>
     </extensions>
+
+    <actions>
+        <action id="Oiia.SyncShadowPlayset"
+                class="net.posdaca.oiia.shadow.SyncShadowPlaysetAction">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+    </actions>
 
 </idea-plugin>
