@@ -2,7 +2,7 @@
 
 ## [1.0.0] - 2026-06-11
 
-First public beta.
+First stable release.
 
 ### Added
 
@@ -13,7 +13,7 @@ First public beta.
 - Integration with Paradox Language Support for HOI4 project inference, resource roots, localisation, and sprite resolution.
 - English and Simplified Chinese UI messages.
 
-### Known Beta Limitations
+### Known Limitations
 
 - Large map and GUI previews can take time to load.
 - Some HOI4 GUI effect and sprite cases may render approximately rather than exactly.

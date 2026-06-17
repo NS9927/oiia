@@ -30,7 +30,7 @@ build/distributions
 ```
 ## Project Status
 Oiia is currently focused on improving preview and navigation workflows for HOI4 modding.  
-The initial beta version is intended for manual testing and feedback collection, especially regarding which preview features are most useful.
+Version 1.0.0 is the first stable release and is intended for regular use, with continued development driven by user feedback.
 ## Issue Tracking
 Please report issues here:
 https://github.com/NS9927/oiia/issues
