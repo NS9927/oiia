@@ -19,6 +19,7 @@ import com.intellij.util.ui.JBFont
 import net.posdaca.OiiaBundle
 import net.posdaca.oiia.core.PreviewHintSupport
 import java.awt.BorderLayout
+import java.awt.BasicStroke
 import java.awt.Color
 import java.awt.Cursor
 import java.awt.Dimension
@@ -27,14 +28,14 @@ import java.awt.Graphics2D
 import java.awt.Point
 import java.awt.Rectangle
 import java.awt.RenderingHints
-import java.awt.BasicStroke
-import java.awt.geom.Line2D
 import java.awt.geom.Path2D
 import java.awt.event.ComponentAdapter
 import java.awt.event.ComponentEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.event.MouseWheelEvent
+import java.awt.image.BufferedImage
+import java.util.LinkedHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import javax.swing.BorderFactory
@@ -44,6 +45,7 @@ import javax.swing.JCheckBox
 import javax.swing.JComponent
 import javax.swing.JList
 import javax.swing.JPanel
+import javax.swing.JViewport
 import javax.swing.Scrollable
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
@@ -81,6 +83,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         val scrollPane = JBScrollPane(canvas)
         scrollPane.border = null
         scrollPane.viewport.background = JBColor.PanelBackground
+        scrollPane.viewport.scrollMode = JViewport.BLIT_SCROLL_MODE
         scrollPane.horizontalScrollBar.addAdjustmentListener {
             if (!it.valueIsAdjusting) canvas.recenterHorizontalScrollIfNeeded()
         }
@@ -141,7 +144,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         borderToggle.isOpaque = false
         borderToggle.addActionListener {
             showBorders = borderToggle.isSelected
-            canvas.repaint()
+            canvas.setShowBorders(showBorders)
         }
         val smoothBorderToggle = JCheckBox(msg("smooth.borders"), smoothBorders)
         smoothBorderToggle.isOpaque = false
@@ -296,11 +299,25 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         private var zoom = 1.0
         private var fillMode = MapPreviewMode.PROVINCE
         private var outlineMode = MapPreviewMode.PROVINCE
+        private var bordersVisible = showBorders
         private var smoothBorders = false
         private var hoverSelection: HoverSelection? = null
         private var hoverOverlay: HoverOverlay? = null
         private var dragStartScreenPoint: Point? = null
         private var dragStartScroll: Point? = null
+        private val paintColorCache = mutableMapOf<Int, Color>()
+        private var renderChunkIndex: Map<MapTileKey, MapRenderChunk> = emptyMap()
+        private var borderChunkIndex: Map<MapPreviewMode, Map<MapTileKey, MapBorderChunk>> = emptyMap()
+        private val tileCache = object : LinkedHashMap<MapTileKey, BufferedImage>(64, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<MapTileKey, BufferedImage>?): Boolean {
+                return size > MAX_TILE_CACHE_SIZE
+            }
+        }
+        private val borderTileCache = object : LinkedHashMap<BorderTileKey, BufferedImage>(64, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<BorderTileKey, BufferedImage>?): Boolean {
+                return size > maxBorderTileCacheSize()
+            }
+        }
         private var lockedHint: LightweightHint? = null
         private var singleClickTimer: Timer? = null
         private var recenteringScroll = false
@@ -408,7 +425,9 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         fun setColorMode(nextMode: MapPreviewMode) {
             cancelPendingSingleClick()
             hideMapHint()
+            if (fillMode == nextMode) return
             fillMode = nextMode
+            clearTileCache()
             revalidate()
             repaint()
         }
@@ -416,15 +435,25 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         fun setBorderMode(nextMode: MapPreviewMode) {
             cancelPendingSingleClick()
             hideMapHint()
+            if (outlineMode == nextMode) return
             outlineMode = nextMode
             hoverSelection = null
             hoverOverlay = null
+            clearBorderTileCache()
             revalidate()
             repaint()
         }
 
+        fun setShowBorders(enabled: Boolean) {
+            if (bordersVisible == enabled) return
+            bordersVisible = enabled
+            repaint()
+        }
+
         fun setSmoothBorders(enabled: Boolean) {
+            if (smoothBorders == enabled) return
             smoothBorders = enabled
+            clearBorderTileCache()
             repaint()
         }
 
@@ -432,11 +461,23 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             cancelPendingSingleClick()
             hideMapHint()
             data = nextData
+            bordersVisible = this@MapPreviewPanel.showBorders
+            smoothBorders = this@MapPreviewPanel.smoothBorders
+            renderChunkIndex = nextData?.renderChunks
+                ?.associateBy { MapTileKey(it.x / MAP_TILE_SIZE, it.y / MAP_TILE_SIZE) }
+                .orEmpty()
+            borderChunkIndex = nextData?.borderChunks
+                ?.mapValues { (_, chunks) ->
+                    chunks.associateBy { MapTileKey(it.x / MAP_TILE_SIZE, it.y / MAP_TILE_SIZE) }
+                }
+                .orEmpty()
             fitToMinimumAfterLayout = nextData != null
             zoom = nextData?.let { zoomInBounds(minZoom(it)) } ?: 1.0
             hoverSelection = null
             hoverOverlay = null
-            clearSmoothBorderCache()
+            paintColorCache.clear()
+            clearTileCache()
+            clearBorderTileCache()
             revalidate()
             repaint()
             SwingUtilities.invokeLater {
@@ -448,25 +489,20 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             val oldZoom = zoom
             val clampedZoom = zoomInBounds(nextZoom)
             if (oldZoom == clampedZoom) return
-            val scroll = scrollPane
-            val viewport = scroll?.viewport
-            val viewPosition = viewport?.viewPosition ?: Point(0, 0)
-            val anchorInViewport = if (viewport != null) SwingUtilities.convertPoint(this, anchor, viewport) else anchor
+            val viewport = scrollPane?.viewport
+            val anchorInViewport = if (viewport != null) SwingUtilities.convertPoint(this, anchor, viewport) else Point(anchor)
             val anchorImageX = anchor.x / oldZoom
             val anchorImageY = anchor.y / oldZoom
             zoom = clampedZoom
+            clearBorderTileCache()
+            val nextSize = preferredSize
+            setSize(nextSize)
             revalidate()
-            if (scroll != null && viewport != null) {
-                val nextViewX = (anchorImageX * clampedZoom - anchorInViewport.x).toInt()
-                val nextViewY = (anchorImageY * clampedZoom - anchorInViewport.y).toInt()
-                setHorizontalScrollValue(nextViewX)
-                setScrollValue(scroll.verticalScrollBar, nextViewY)
-                viewport.viewPosition = Point(
-                    scroll.horizontalScrollBar.value,
-                    scroll.verticalScrollBar.value
-                )
-            } else {
-                scroll?.viewport?.viewPosition = viewPosition
+            if (viewport != null) {
+                val nextViewX = (anchorImageX * clampedZoom - anchorInViewport.x).roundToInt()
+                val nextViewY = (anchorImageY * clampedZoom - anchorInViewport.y).roundToInt()
+                viewport.viewPosition = clampedViewPosition(nextViewX, nextViewY, nextSize, viewport.extentSize)
+                recenterHorizontalScrollIfNeeded()
             }
             repaint()
         }
@@ -478,86 +514,119 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         }
 
         override fun getPreferredSize(): Dimension {
-            val image = data?.imageFor(fillMode) ?: return Dimension(JBUIScale.scale(600), JBUIScale.scale(360))
+            val image = data?.provincesImage ?: return Dimension(JBUIScale.scale(600), JBUIScale.scale(360))
             return Dimension((image.width * zoom * LOOP_COPIES).toInt(), (image.height * zoom).toInt())
         }
 
         override fun paintComponent(g: Graphics) {
             super.paintComponent(g)
-            val image = data?.imageFor(fillMode)
-            if (image == null) {
+            val current = data
+            val image = current?.provincesImage
+            if (current == null || image == null) {
                 paintEmptyMessage(g)
                 return
             }
 
             val g2 = g.create() as Graphics2D
-            g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR)
             g2.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_SPEED)
+            val paintClip = g2.clipBounds ?: visibleRect
             val scaledWidth = (image.width * zoom).toInt()
-            val scaledHeight = (image.height * zoom).toInt()
             for (copy in 0 until LOOP_COPIES) {
                 val offsetX = copy * scaledWidth
-                g2.drawImage(image, offsetX, 0, scaledWidth, scaledHeight, null)
-                if (smoothBorders) paintSmoothColorBands(g2, offsetX)
-                if (showBorders) {
-                    if (smoothBorders) {
-                        paintSmoothBorders(g2, offsetX)
-                    } else {
-                        data?.borderImageFor(outlineMode)?.let { borderImage ->
-                            g2.drawImage(borderImage, offsetX, 0, scaledWidth, scaledHeight, null)
-                        }
-                    }
-                }
+                paintCachedMapTiles(g2, current, offsetX, paintClip)
             }
-            paintHoverHighlight(g2)
-            if (showLabels) paintMapLabels(g2)
+            if (bordersVisible) paintCachedBorderTiles(g2, current, paintClip)
+            paintHoverHighlight(g2, paintClip)
+            if (showLabels) paintMapLabels(g2, paintClip)
             g2.dispose()
         }
 
-        private fun paintSmoothColorBands(g2: Graphics2D, offsetX: Int) {
-            val current = data ?: return
-            val visible = visibleImageRect(offsetX) ?: return
-            val segments = current.smoothColorSegmentsFor(fillMode)
-            if (segments.isEmpty()) return
-            val transform = g2.transform
-            val antialias = g2.getRenderingHint(RenderingHints.KEY_ANTIALIASING)
-            val rendering = g2.getRenderingHint(RenderingHints.KEY_RENDERING)
+        private fun paintCachedMapTiles(g2: Graphics2D, current: LoadedMapData, offsetX: Int, clip: Rectangle) {
+            val visible = visibleImageRect(offsetX, clip) ?: return
+            val range = visibleTileRange(current, visible) ?: return
+            val interpolation = g2.getRenderingHint(RenderingHints.KEY_INTERPOLATION)
             try {
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_OFF)
-                g2.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_SPEED)
-                g2.translate(offsetX.toDouble(), 0.0)
-                g2.scale(zoom, zoom)
-                for (segment in segments) {
-                    if (!visible.intersectsSegment(segment.x1, segment.y1, segment.x2, segment.y2, SMOOTH_COLOR_BAND_WIDTH)) continue
-                    g2.color = Color(segment.positiveSideRgb)
-                    g2.fill(sideBand(segment.x1, segment.y1, segment.x2, segment.y2, 1.0))
-                    g2.color = Color(segment.negativeSideRgb)
-                    g2.fill(sideBand(segment.x1, segment.y1, segment.x2, segment.y2, -1.0))
+                g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR)
+                for (tileY in range.minTileY..range.maxTileY) {
+                    for (tileX in range.minTileX..range.maxTileX) {
+                        val key = MapTileKey(tileX, tileY)
+                        val tile = tileCache[key] ?: renderMapTile(current, key).also { tileCache[key] = it }
+                        drawTile(g2, tile, tileX, tileY, offsetX)
+                    }
                 }
             } finally {
-                g2.transform = transform
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, antialias)
-                g2.setRenderingHint(RenderingHints.KEY_RENDERING, rendering)
+                if (interpolation != null) {
+                    g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION, interpolation)
+                }
             }
         }
 
-        private fun sideBand(x1: Double, y1: Double, x2: Double, y2: Double, normalSign: Double): java.awt.Shape {
-            val dx = x2 - x1
-            val dy = y2 - y1
-            val length = kotlin.math.sqrt(dx * dx + dy * dy)
-            val normalX = if (length == 0.0) 0.0 else -dy / length * normalSign * SMOOTH_COLOR_BAND_WIDTH
-            val normalY = if (length == 0.0) 0.0 else dx / length * normalSign * SMOOTH_COLOR_BAND_WIDTH
-            return Path2D.Double().apply {
-                moveTo(x1, y1)
-                lineTo(x2, y2)
-                lineTo(x2 + normalX, y2 + normalY)
-                lineTo(x1 + normalX, y1 + normalY)
-                closePath()
+        private fun visibleTileRange(current: LoadedMapData, visible: ImageRect): MapTileRange? {
+            val image = current.provincesImage
+            if (image.width <= 0 || image.height <= 0) return null
+            val maxTileX = (image.width - 1) / MAP_TILE_SIZE
+            val maxTileY = (image.height - 1) / MAP_TILE_SIZE
+            val minTileX = (visible.minX.toInt() / MAP_TILE_SIZE).coerceIn(0, maxTileX)
+            val minTileY = (visible.minY.toInt() / MAP_TILE_SIZE).coerceIn(0, maxTileY)
+            val lastX = visible.maxX.toInt().coerceIn(0, image.width - 1)
+            val lastY = visible.maxY.toInt().coerceIn(0, image.height - 1)
+            val rangeMaxTileX = (lastX / MAP_TILE_SIZE).coerceIn(0, maxTileX)
+            val rangeMaxTileY = (lastY / MAP_TILE_SIZE).coerceIn(0, maxTileY)
+            if (minTileX > rangeMaxTileX || minTileY > rangeMaxTileY) return null
+            return MapTileRange(minTileX, minTileY, rangeMaxTileX, rangeMaxTileY)
+        }
+
+        private fun paintColor(rgb: Int): Color {
+            val normalized = rgb and 0xFFFFFF
+            return paintColorCache.getOrPut(normalized) { Color(normalized) }
+        }
+
+        private fun drawTile(g2: Graphics2D, tile: BufferedImage, tileX: Int, tileY: Int, offsetX: Int) {
+            val sourceX = tileX * MAP_TILE_SIZE
+            val sourceY = tileY * MAP_TILE_SIZE
+            val destX1 = offsetX + (sourceX * zoom).roundToInt()
+            val destY1 = (sourceY * zoom).roundToInt()
+            val destX2 = (offsetX + ((sourceX + tile.width) * zoom).roundToInt()).coerceAtLeast(destX1 + 1)
+            val destY2 = (((sourceY + tile.height) * zoom).roundToInt()).coerceAtLeast(destY1 + 1)
+            g2.drawImage(tile, destX1, destY1, destX2, destY2, 0, 0, tile.width, tile.height, null)
+        }
+
+        private fun renderMapTile(current: LoadedMapData, key: MapTileKey): BufferedImage {
+            val image = current.provincesImage
+            val tileLeft = key.x * MAP_TILE_SIZE
+            val tileTop = key.y * MAP_TILE_SIZE
+            val tileWidth = minOf(MAP_TILE_SIZE, image.width - tileLeft)
+            val tileHeight = minOf(MAP_TILE_SIZE, image.height - tileTop)
+            val tile = BufferedImage(tileWidth, tileHeight, BufferedImage.TYPE_INT_RGB)
+            val g2 = tile.createGraphics()
+            try {
+                g2.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_SPEED)
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_OFF)
+                g2.color = background
+                g2.fillRect(0, 0, tileWidth, tileHeight)
+                g2.translate(-tileLeft, -tileTop)
+                paintTileAreas(g2, key)
+            } finally {
+                g2.dispose()
+            }
+            return tile
+        }
+
+        private fun paintTileAreas(g2: Graphics2D, key: MapTileKey) {
+            val chunk = renderChunkIndex[key] ?: return
+            var currentColor = Int.MIN_VALUE
+            for (cell in chunk.cells) {
+                val color = cell.colorFor(fillMode)
+                if (color != currentColor) {
+                    g2.color = paintColor(color)
+                    currentColor = color
+                }
+                val zone = cell.zone
+                g2.fillRect(zone.x, zone.y, zone.width, zone.height)
             }
         }
 
-        private fun visibleImageRect(offsetX: Int): ImageRect? {
-            val clip = visibleRect ?: return null
+        private fun visibleImageRect(offsetX: Int, clip: Rectangle): ImageRect? {
             val currentZoom = zoom.takeIf { it > 0.0 } ?: return null
             val minX = ((clip.x - offsetX).toDouble() / currentZoom).coerceAtLeast(0.0)
             val minY = (clip.y.toDouble() / currentZoom).coerceAtLeast(0.0)
@@ -573,38 +642,131 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             )
         }
 
-        private fun paintSmoothBorders(g2: Graphics2D, offsetX: Int) {
-            val current = data ?: return
-            val visible = visibleImageRect(offsetX) ?: return
-            val segments = current.smoothBorderSegmentsFor(outlineMode)
-            if (segments.isEmpty()) return
-            val transform = g2.transform
-            val antialias = g2.getRenderingHint(RenderingHints.KEY_ANTIALIASING)
-            val rendering = g2.getRenderingHint(RenderingHints.KEY_RENDERING)
-            try {
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                g2.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
-                g2.color = Color(0, 0, 0, 190)
-                g2.stroke = BasicStroke(
-                    1f,
-                    BasicStroke.CAP_ROUND,
-                    BasicStroke.JOIN_ROUND
-                )
-                g2.translate(offsetX.toDouble(), 0.0)
-                g2.scale(zoom, zoom)
-                for (segment in segments) {
-                    if (!visible.intersectsSegment(segment.x1, segment.y1, segment.x2, segment.y2, 1.0)) continue
-                    g2.draw(Line2D.Double(segment.x1, segment.y1, segment.x2, segment.y2))
+        private fun clearTileCache() {
+            tileCache.clear()
+        }
+
+        private fun paintCachedBorderTiles(g2: Graphics2D, current: LoadedMapData, clip: Rectangle) {
+            val imageWidth = current.provincesImage.width
+            val scaledWidth = (imageWidth * zoom).toInt()
+            for (copy in 0 until LOOP_COPIES) {
+                val offsetX = copy * scaledWidth
+                val visible = visibleImageRect(offsetX, clip) ?: continue
+                val range = visibleTileRange(current, visible) ?: continue
+                for (tileY in range.minTileY..range.maxTileY) {
+                    for (tileX in range.minTileX..range.maxTileX) {
+                        val tileKey = MapTileKey(tileX, tileY)
+                        val bounds = tileScreenBounds(current, tileKey)
+                        val cacheKey = BorderTileKey(tileX, tileY, outlineMode, smoothBorders, zoom.toBits())
+                        val tile = borderTileCache[cacheKey]
+                            ?: renderBorderTile(current, tileKey, bounds).also { borderTileCache[cacheKey] = it }
+                        g2.drawImage(
+                            tile,
+                            offsetX + bounds.x - BORDER_TILE_PADDING,
+                            bounds.y - BORDER_TILE_PADDING,
+                            null
+                        )
+                    }
                 }
-            } finally {
-                g2.transform = transform
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, antialias)
-                g2.setRenderingHint(RenderingHints.KEY_RENDERING, rendering)
             }
         }
 
-        private fun clearSmoothBorderCache() {
-            // Smooth overlays are drawn against the current viewport; no scaled full-map cache is retained.
+        private fun renderBorderTile(current: LoadedMapData, key: MapTileKey, bounds: Rectangle): BufferedImage {
+            val tile = BufferedImage(
+                bounds.width + BORDER_TILE_PADDING * 2,
+                bounds.height + BORDER_TILE_PADDING * 2,
+                BufferedImage.TYPE_INT_ARGB
+            )
+            val g2 = tile.createGraphics()
+            try {
+                g2.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_SPEED)
+                g2.translate(
+                    BORDER_TILE_PADDING.toDouble() - bounds.x.toDouble(),
+                    BORDER_TILE_PADDING.toDouble() - bounds.y.toDouble()
+                )
+                g2.scale(zoom, zoom)
+                if (smoothBorders) {
+                    paintSmoothBorderTile(g2, current, key)
+                } else {
+                    paintPixelBorderTile(g2, key)
+                }
+            } finally {
+                g2.dispose()
+            }
+            return tile
+        }
+
+        private fun paintPixelBorderTile(g2: Graphics2D, key: MapTileKey) {
+            val chunk = borderChunkIndex[outlineMode]?.get(key) ?: return
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_OFF)
+            g2.color = Color(0, 0, 0, 190)
+            g2.stroke = BasicStroke(
+                (1.0 / zoom).toFloat(),
+                BasicStroke.CAP_BUTT,
+                BasicStroke.JOIN_MITER
+            )
+            for (segment in chunk.segments) {
+                g2.drawLine(segment.x1, segment.y1, segment.x2, segment.y2)
+            }
+        }
+
+        private fun paintSmoothBorderTile(g2: Graphics2D, current: LoadedMapData, key: MapTileKey) {
+            val tileRect = tileImageRect(current, key, padding = 1.0 / zoom)
+            val path = Path2D.Double()
+            for (segment in current.smoothBorderSegmentsFor(outlineMode)) {
+                if (!tileRect.intersectsSegment(segment.x1, segment.y1, segment.x2, segment.y2, 1.0)) continue
+                path.moveTo(segment.x1, segment.y1)
+                path.lineTo(segment.x2, segment.y2)
+            }
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            g2.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
+            g2.color = Color(0, 0, 0, 190)
+            g2.stroke = BasicStroke(
+                (1.0 / zoom).coerceIn(0.25, 1.0).toFloat(),
+                BasicStroke.CAP_ROUND,
+                BasicStroke.JOIN_ROUND
+            )
+            g2.draw(path)
+        }
+
+        private fun tileScreenBounds(current: LoadedMapData, key: MapTileKey): Rectangle {
+            val image = current.provincesImage
+            val tileLeft = key.x * MAP_TILE_SIZE
+            val tileTop = key.y * MAP_TILE_SIZE
+            val tileWidth = minOf(MAP_TILE_SIZE, image.width - tileLeft)
+            val tileHeight = minOf(MAP_TILE_SIZE, image.height - tileTop)
+            val x1 = (tileLeft * zoom).roundToInt()
+            val y1 = (tileTop * zoom).roundToInt()
+            val x2 = ((tileLeft + tileWidth) * zoom).roundToInt().coerceAtLeast(x1 + 1)
+            val y2 = ((tileTop + tileHeight) * zoom).roundToInt().coerceAtLeast(y1 + 1)
+            return Rectangle(x1, y1, x2 - x1, y2 - y1)
+        }
+
+        private fun tileImageRect(current: LoadedMapData, key: MapTileKey, padding: Double = 0.0): ImageRect {
+            val image = current.provincesImage
+            val tileLeft = key.x * MAP_TILE_SIZE
+            val tileTop = key.y * MAP_TILE_SIZE
+            val tileWidth = minOf(MAP_TILE_SIZE, image.width - tileLeft)
+            val tileHeight = minOf(MAP_TILE_SIZE, image.height - tileTop)
+            return ImageRect(
+                minX = tileLeft.toDouble() - padding,
+                minY = tileTop.toDouble() - padding,
+                maxX = (tileLeft + tileWidth).toDouble() + padding,
+                maxY = (tileTop + tileHeight).toDouble() + padding
+            )
+        }
+
+        private fun clearBorderTileCache() {
+            borderTileCache.clear()
+        }
+
+        private fun maxBorderTileCacheSize(): Int {
+            return when {
+                zoom >= 4.0 -> 16
+                zoom >= 2.0 -> 32
+                zoom >= 1.0 -> 64
+                else -> MAX_BORDER_TILE_CACHE_SIZE
+            }
         }
 
         private fun paintEmptyMessage(g: Graphics) {
@@ -639,7 +801,11 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             val current = data ?: return false
             val viewportHeight = scrollPane?.viewport?.extentSize?.height ?: 0
             if (viewportHeight <= 0) return false
-            zoom = zoomInBounds(minZoom(current))
+            val nextZoom = zoomInBounds(minZoom(current))
+            if (zoom != nextZoom) {
+                zoom = nextZoom
+                clearBorderTileCache()
+            }
             fitToMinimumAfterLayout = false
             revalidate()
             repaint()
@@ -740,7 +906,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             }
         }
 
-        private fun paintHoverHighlight(g2: Graphics2D) {
+        private fun paintHoverHighlight(g2: Graphics2D, clip: Rectangle) {
             val overlay = hoverOverlay ?: return
             val highlight = JBColor(Color(255, 255, 255, 210), Color(255, 255, 255, 210))
             g2.color = highlight
@@ -754,12 +920,13 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
                     val nextX = copyOffset + ((span.x + span.length) * zoom).toInt()
                         .coerceAtLeast((span.x * zoom).toInt() + 1)
                     val nextY = ((span.y + 1) * zoom).toInt().coerceAtLeast(y + 1)
+                    if (nextX < clip.x || x > clip.x + clip.width || nextY < clip.y || y > clip.y + clip.height) continue
                     g2.fillRect(x, y, nextX - x, nextY - y)
                 }
             }
         }
 
-        private fun paintMapLabels(g2: Graphics2D) {
+        private fun paintMapLabels(g2: Graphics2D, clip: Rectangle) {
             val current = data ?: return
             val labels = labelsForMode(current, outlineMode)
             if (labels.isEmpty()) return
@@ -775,6 +942,11 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
                     val textWidth = metrics.stringWidth(label.text)
                     val x = copyOffset + (label.x * zoom).roundToInt() - textWidth / 2
                     val y = (label.y * zoom).roundToInt() + metrics.ascent / 2
+                    if (x + textWidth < clip.x || x > clip.x + clip.width ||
+                        y + metrics.descent < clip.y || y - metrics.ascent > clip.y + clip.height
+                    ) {
+                        continue
+                    }
                     g2.color = shadow
                     g2.drawString(label.text, x + 1, y + 1)
                     g2.color = foreground
@@ -1062,6 +1234,12 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             scrollBar.value = value.coerceIn(scrollBar.minimum, max.coerceAtLeast(scrollBar.minimum))
         }
 
+        private fun clampedViewPosition(x: Int, y: Int, viewSize: Dimension, extentSize: Dimension): Point {
+            val maxX = (viewSize.width - extentSize.width).coerceAtLeast(0)
+            val maxY = (viewSize.height - extentSize.height).coerceAtLeast(0)
+            return Point(x.coerceIn(0, maxX), y.coerceIn(0, maxY))
+        }
+
         override fun getPreferredScrollableViewportSize(): Dimension = preferredSize
         override fun getScrollableUnitIncrement(visibleRect: Rectangle, orientation: Int, direction: Int): Int =
             JBUIScale.scale(32)
@@ -1097,6 +1275,20 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
     private data class MapLabel(val text: String, val x: Int, val y: Int)
     private data class SourceTarget(val path: java.nio.file.Path?, val line: Int)
     private data class ImageRect(val minX: Double, val minY: Double, val maxX: Double, val maxY: Double)
+    private data class MapTileKey(val x: Int, val y: Int)
+    private data class BorderTileKey(
+        val x: Int,
+        val y: Int,
+        val mode: MapPreviewMode,
+        val smooth: Boolean,
+        val zoomBits: Long
+    )
+    private data class MapTileRange(
+        val minTileX: Int,
+        val minTileY: Int,
+        val maxTileX: Int,
+        val maxTileY: Int
+    )
 
     private fun PixelBounds.centerX(): Int = (minX + maxX) / 2
     private fun PixelBounds.centerY(): Int = (minY + maxY) / 2
@@ -1116,8 +1308,11 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
 
     private companion object {
         private const val LOOP_COPIES = 3
+        private const val MAP_TILE_SIZE = 256
+        private const val BORDER_TILE_PADDING = 2
+        private const val MAX_TILE_CACHE_SIZE = 512
+        private const val MAX_BORDER_TILE_CACHE_SIZE = 192
         private const val MIN_ZOOM_FALLBACK = 0.05
         private const val MAX_ZOOM = 8.0
-        private const val SMOOTH_COLOR_BAND_WIDTH = 0.75
     }
 }

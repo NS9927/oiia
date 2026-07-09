@@ -2,7 +2,6 @@ package net.posdaca.oiia.map
 
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
-import com.intellij.util.ui.ImageUtil
 import net.posdaca.oiia.core.HoI4LocalisationFiles
 import net.posdaca.oiia.core.HoI4ResourceRoots
 import net.posdaca.oiia.core.ParadoxLocalisationPreference
@@ -54,12 +53,9 @@ class MapPreviewService(private val project: Project) {
             MapLoadResult.Loaded(
                 LoadedMapData(
                     provincesImage = image,
-                    stateImage = renderData.stateImage,
-                    countryImage = renderData.countryImage,
-                    strategicRegionImage = renderData.strategicRegionImage,
-                    borderImages = renderData.borderImages,
+                    renderChunks = renderData.renderChunks,
+                    borderChunks = renderData.borderChunks,
                     smoothBorderSegments = renderData.smoothBorderSegments,
-                    smoothColorSegments = renderData.smoothColorSegments,
                     pixelIndex = renderData.pixelIndex,
                     provinceByColor = provinces,
                     provinceById = provinceById,
@@ -473,12 +469,9 @@ class MapPreviewService(private val project: Project) {
 
     private data class MapRenderData(
         val pixelIndex: MapPixelIndex,
-        val stateImage: BufferedImage?,
-        val countryImage: BufferedImage?,
-        val strategicRegionImage: BufferedImage?,
-        val borderImages: Map<MapPreviewMode, BufferedImage>,
-        val smoothBorderSegments: Map<MapPreviewMode, List<MapLineSegment>>,
-        val smoothColorSegments: Map<MapPreviewMode, List<MapColorLineSegment>>
+        val renderChunks: List<MapRenderChunk>,
+        val borderChunks: Map<MapPreviewMode, List<MapBorderChunk>>,
+        val smoothBorderSegments: Map<MapPreviewMode, List<MapLineSegment>>
     )
 
     private fun buildRenderData(
@@ -495,17 +488,11 @@ class MapPreviewService(private val project: Project) {
         val stateKeys = IntArray(size) { UNKNOWN_KEY }
         val countryKeys = IntArray(size) { UNKNOWN_KEY }
         val strategicRegionKeys = IntArray(size) { UNKNOWN_KEY }
+        val rgbKeys = IntArray(size)
         val provinceBounds = mutableMapOf<Int, MutablePixelBounds>()
         val stateBounds = mutableMapOf<Int, MutablePixelBounds>()
         val countryBounds = mutableMapOf<Int, MutablePixelBounds>()
         val strategicRegionBounds = mutableMapOf<Int, MutablePixelBounds>()
-        val stateImage = if (stateByProvinceId.isEmpty()) null else ImageUtil.createImage(width, height, BufferedImage.TYPE_INT_RGB)
-        val countryImage = if (stateByProvinceId.isEmpty()) null else ImageUtil.createImage(width, height, BufferedImage.TYPE_INT_RGB)
-        val strategicRegionImage = if (strategicRegionByProvinceId.isEmpty()) {
-            null
-        } else {
-            ImageUtil.createImage(width, height, BufferedImage.TYPE_INT_RGB)
-        }
         val states = stateByProvinceId.values.distinctBy { it.id }
         val stateColorById = states.associate { it.id to colorForId(it.id) }
         val countryColorByStateId = states.associate { state ->
@@ -521,13 +508,11 @@ class MapPreviewService(private val project: Project) {
             for (x in 0 until width) {
                 val index = rowOffset + x
                 val rgb = provincesImage.getRGB(x, y) and RGB_MASK
+                rgbKeys[index] = rgb
                 val province = provinceByColor[rgb]
                 val state = province?.let { stateByProvinceId[it.id] }
                 val strategicRegion = province?.let { strategicRegionByProvinceId[it.id] }
 
-                stateImage?.setRGB(x, y, state?.let { stateColorById[it.id] } ?: rgb)
-                countryImage?.setRGB(x, y, state?.let { countryColorByStateId[it.id] } ?: rgb)
-                strategicRegionImage?.setRGB(x, y, strategicRegion?.let { strategicRegionColorById[it.id] } ?: rgb)
                 if (province == null) continue
 
                 val provinceKey = province.id
@@ -559,30 +544,23 @@ class MapPreviewService(private val project: Project) {
             countryBounds = countryBounds.mapValues { it.value.toBounds() },
             strategicRegionBounds = strategicRegionBounds.mapValues { it.value.toBounds() }
         )
-        val borderImages = buildBorderImages(pixelIndex, width, height)
         val smoothBorderSegments = buildSmoothBorderSegments(pixelIndex, width, height)
+        val renderAreas = buildRenderAreas(
+            rgbKeys,
+            width,
+            height,
+            provinceByColor,
+            stateByProvinceId,
+            strategicRegionByProvinceId,
+            stateColorById,
+            countryColorByStateId,
+            strategicRegionColorById
+        )
         return MapRenderData(
             pixelIndex = pixelIndex,
-            stateImage = stateImage,
-            countryImage = countryImage,
-            strategicRegionImage = strategicRegionImage,
-            borderImages = borderImages,
-            smoothBorderSegments = smoothBorderSegments,
-            smoothColorSegments = buildSmoothColorSegments(
-                mapOf(
-                    MapPreviewMode.PROVINCE to provincesImage,
-                    MapPreviewMode.STATE to stateImage,
-                    MapPreviewMode.COUNTRY to countryImage,
-                    MapPreviewMode.STRATEGIC_REGION to strategicRegionImage
-                ),
-                mapOf(
-                    MapPreviewMode.PROVINCE to provinceKeys,
-                    MapPreviewMode.STATE to stateKeys,
-                    MapPreviewMode.COUNTRY to countryKeys,
-                    MapPreviewMode.STRATEGIC_REGION to strategicRegionKeys
-                ),
-                smoothBorderSegments
-            )
+            renderChunks = buildRenderChunks(renderAreas, width, height),
+            borderChunks = buildPixelBorderChunks(pixelIndex, width, height),
+            smoothBorderSegments = smoothBorderSegments
         )
     }
 
@@ -602,150 +580,332 @@ class MapPreviewService(private val project: Project) {
         fun toBounds(): PixelBounds = PixelBounds(minX, minY, maxX, maxY)
     }
 
-    private fun buildBorderImages(pixelIndex: MapPixelIndex, width: Int, height: Int): Map<MapPreviewMode, BufferedImage> {
-        val provinceImage = ImageUtil.createImage(width, height, BufferedImage.TYPE_INT_ARGB)
-        val stateImage = ImageUtil.createImage(width, height, BufferedImage.TYPE_INT_ARGB)
-        val countryImage = ImageUtil.createImage(width, height, BufferedImage.TYPE_INT_ARGB)
-        val strategicRegionImage = ImageUtil.createImage(width, height, BufferedImage.TYPE_INT_ARGB)
-        val border = 0xAA000000.toInt()
-        for (y in 0 until height) {
+    private fun buildRenderAreas(
+        rgbKeys: IntArray,
+        width: Int,
+        height: Int,
+        provinceByColor: Map<Int, ProvinceInfo>,
+        stateByProvinceId: Map<Int, StateInfo>,
+        strategicRegionByProvinceId: Map<Int, StrategicRegionInfo>,
+        stateColorById: Map<Int, Int>,
+        countryColorByStateId: Map<Int, Int>,
+        strategicRegionColorById: Map<Int, Int>
+    ): List<MapRenderArea> {
+        val areas = linkedMapOf<Int, MapRenderAreaBuilder>()
+        val pending = java.util.ArrayDeque<MapRenderZone>()
+        var y = 0
+        while (y < height) {
+            var x = 0
+            val blockHeight = minOf(RENDER_ZONE_BLOCK_SIZE, height - y)
+            while (x < width) {
+                val blockWidth = minOf(RENDER_ZONE_BLOCK_SIZE, width - x)
+                pending.add(MapRenderZone(x, y, blockWidth, blockHeight))
+                x += RENDER_ZONE_BLOCK_SIZE
+            }
+            y += RENDER_ZONE_BLOCK_SIZE
+        }
+
+        while (!pending.isEmpty()) {
+            val zone = pending.removeLast()
+            val rgb = sameRgbInZone(rgbKeys, width, zone)
+            if (rgb != null) {
+                areas.getOrPut(rgb) {
+                    createRenderAreaBuilder(
+                        rgb,
+                        provinceByColor,
+                        stateByProvinceId,
+                        strategicRegionByProvinceId,
+                        stateColorById,
+                        countryColorByStateId,
+                        strategicRegionColorById
+                    )
+                }.add(zone)
+            } else {
+                splitRenderZone(zone, pending)
+            }
+        }
+
+        return areas.values
+            .map { it.toArea() }
+            .sortedWith(compareBy<MapRenderArea> { it.provinceId ?: Int.MAX_VALUE }.thenBy { it.rgb })
+    }
+
+    private fun sameRgbInZone(rgbKeys: IntArray, width: Int, zone: MapRenderZone): Int? {
+        val first = rgbKeys[zone.y * width + zone.x]
+        val maxY = zone.y + zone.height
+        val maxX = zone.x + zone.width
+        for (y in zone.y until maxY) {
             val rowOffset = y * width
-            for (x in 0 until width) {
-                val leftIndex = rowOffset + if (x == 0) width - 1 else x - 1
-                val rightIndex = rowOffset + if (x + 1 == width) 0 else x + 1
-                val upIndex = if (y > 0) rowOffset - width + x else -1
-                val downIndex = if (y + 1 < height) rowOffset + width + x else -1
-                setBorderPixel(pixelIndex.provinceKeys, provinceImage, rowOffset + x, x, y, leftIndex, rightIndex, upIndex, downIndex, border)
-                setBorderPixel(pixelIndex.stateKeys, stateImage, rowOffset + x, x, y, leftIndex, rightIndex, upIndex, downIndex, border)
-                setBorderPixel(pixelIndex.countryKeys, countryImage, rowOffset + x, x, y, leftIndex, rightIndex, upIndex, downIndex, border)
-                setBorderPixel(
-                    pixelIndex.strategicRegionKeys,
-                    strategicRegionImage,
-                    rowOffset + x,
-                    x,
-                    y,
-                    leftIndex,
-                    rightIndex,
-                    upIndex,
-                    downIndex,
-                    border
+            for (x in zone.x until maxX) {
+                if (rgbKeys[rowOffset + x] != first) return null
+            }
+        }
+        return first
+    }
+
+    private fun splitRenderZone(zone: MapRenderZone, pending: java.util.ArrayDeque<MapRenderZone>) {
+        if (zone.width <= 1 && zone.height <= 1) {
+            pending.add(zone)
+            return
+        }
+        val splitWidth = zone.width > 1
+        val splitHeight = zone.height > 1
+        val leftWidth = if (splitWidth) zone.width / 2 else zone.width
+        val rightWidth = zone.width - leftWidth
+        val topHeight = if (splitHeight) zone.height / 2 else zone.height
+        val bottomHeight = zone.height - topHeight
+        addRenderZoneIfNotEmpty(pending, zone.x, zone.y, leftWidth, topHeight)
+        if (splitWidth) addRenderZoneIfNotEmpty(pending, zone.x + leftWidth, zone.y, rightWidth, topHeight)
+        if (splitHeight) addRenderZoneIfNotEmpty(pending, zone.x, zone.y + topHeight, leftWidth, bottomHeight)
+        if (splitWidth && splitHeight) {
+            addRenderZoneIfNotEmpty(pending, zone.x + leftWidth, zone.y + topHeight, rightWidth, bottomHeight)
+        }
+    }
+
+    private fun addRenderZoneIfNotEmpty(
+        pending: java.util.ArrayDeque<MapRenderZone>,
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int
+    ) {
+        if (width > 0 && height > 0) pending.add(MapRenderZone(x, y, width, height))
+    }
+
+    private fun createRenderAreaBuilder(
+        rgb: Int,
+        provinceByColor: Map<Int, ProvinceInfo>,
+        stateByProvinceId: Map<Int, StateInfo>,
+        strategicRegionByProvinceId: Map<Int, StrategicRegionInfo>,
+        stateColorById: Map<Int, Int>,
+        countryColorByStateId: Map<Int, Int>,
+        strategicRegionColorById: Map<Int, Int>
+    ): MapRenderAreaBuilder {
+        val province = provinceByColor[rgb]
+        val state = province?.let { stateByProvinceId[it.id] }
+        val strategicRegion = province?.let { strategicRegionByProvinceId[it.id] }
+        val stateKey = state?.id ?: UNKNOWN_KEY
+        val countryKey = state?.owner?.let { mapCountryKey(it) } ?: UNKNOWN_KEY
+        val strategicRegionKey = strategicRegion?.id ?: UNKNOWN_KEY
+        return MapRenderAreaBuilder(
+            rgb = rgb,
+            provinceId = province?.id,
+            stateKey = stateKey,
+            countryKey = countryKey,
+            strategicRegionKey = strategicRegionKey,
+            provinceColor = rgb,
+            stateColor = state?.let { stateColorById[it.id] } ?: rgb,
+            countryColor = state?.let { countryColorByStateId[it.id] } ?: rgb,
+            strategicRegionColor = strategicRegion?.let { strategicRegionColorById[it.id] } ?: rgb
+        )
+    }
+
+    private class MapRenderAreaBuilder(
+        private val rgb: Int,
+        private val provinceId: Int?,
+        private val stateKey: Int,
+        private val countryKey: Int,
+        private val strategicRegionKey: Int,
+        private val provinceColor: Int,
+        private val stateColor: Int,
+        private val countryColor: Int,
+        private val strategicRegionColor: Int
+    ) {
+        private val zones = mutableListOf<MapRenderZone>()
+        private val bounds = MutablePixelBounds()
+
+        fun add(zone: MapRenderZone) {
+            zones.add(zone)
+            bounds.include(zone.x, zone.y)
+            bounds.include(zone.x + zone.width - 1, zone.y + zone.height - 1)
+        }
+
+        fun toArea(): MapRenderArea {
+            return MapRenderArea(
+                rgb = rgb,
+                provinceId = provinceId,
+                stateKey = stateKey,
+                countryKey = countryKey,
+                strategicRegionKey = strategicRegionKey,
+                provinceColor = provinceColor,
+                stateColor = stateColor,
+                countryColor = countryColor,
+                strategicRegionColor = strategicRegionColor,
+                zones = zones,
+                bounds = bounds.toBounds()
+            )
+        }
+    }
+
+    private fun buildRenderChunks(renderAreas: List<MapRenderArea>, width: Int, height: Int): List<MapRenderChunk> {
+        val chunkColumns = (width + RENDER_ZONE_BLOCK_SIZE - 1) / RENDER_ZONE_BLOCK_SIZE
+        val cellsByChunk = linkedMapOf<Int, MutableList<MapRenderCell>>()
+        for (area in renderAreas) {
+            for (zone in area.zones) {
+                val chunkX = zone.x / RENDER_ZONE_BLOCK_SIZE
+                val chunkY = zone.y / RENDER_ZONE_BLOCK_SIZE
+                val chunkKey = chunkY * chunkColumns + chunkX
+                cellsByChunk.getOrPut(chunkKey) { mutableListOf() }.add(
+                    MapRenderCell(
+                        zone = zone,
+                        provinceId = area.provinceId,
+                        stateKey = area.stateKey,
+                        countryKey = area.countryKey,
+                        strategicRegionKey = area.strategicRegionKey,
+                        provinceColor = area.provinceColor,
+                        stateColor = area.stateColor,
+                        countryColor = area.countryColor,
+                        strategicRegionColor = area.strategicRegionColor
+                    )
                 )
             }
         }
-        return mapOf(
-            MapPreviewMode.PROVINCE to provinceImage,
-            MapPreviewMode.STATE to stateImage,
-            MapPreviewMode.COUNTRY to countryImage,
-            MapPreviewMode.STRATEGIC_REGION to strategicRegionImage
-        )
-    }
 
-    private fun setBorderPixel(
-        keys: IntArray,
-        image: BufferedImage,
-        index: Int,
-        x: Int,
-        y: Int,
-        leftIndex: Int,
-        rightIndex: Int,
-        upIndex: Int,
-        downIndex: Int,
-        border: Int
-    ) {
-        val key = keys[index]
-        if (key == UNKNOWN_KEY) return
-        if (keys[leftIndex] != key ||
-            keys[rightIndex] != key ||
-            upIndex >= 0 && keys[upIndex] != key ||
-            downIndex >= 0 && keys[downIndex] != key
-        ) {
-            image.setRGB(x, y, border)
-        }
-    }
-
-    private fun buildSmoothColorSegments(
-        images: Map<MapPreviewMode, BufferedImage?>,
-        keysByMode: Map<MapPreviewMode, IntArray>,
-        segmentsByMode: Map<MapPreviewMode, List<MapLineSegment>>
-    ): Map<MapPreviewMode, List<MapColorLineSegment>> {
-        return mapOf(
-            MapPreviewMode.PROVINCE to buildSmoothColorSegments(
-                images[MapPreviewMode.PROVINCE],
-                keysByMode[MapPreviewMode.PROVINCE],
-                segmentsByMode[MapPreviewMode.PROVINCE].orEmpty()
-            ),
-            MapPreviewMode.STATE to buildSmoothColorSegments(
-                images[MapPreviewMode.STATE],
-                keysByMode[MapPreviewMode.STATE],
-                segmentsByMode[MapPreviewMode.STATE].orEmpty()
-            ),
-            MapPreviewMode.COUNTRY to buildSmoothColorSegments(
-                images[MapPreviewMode.COUNTRY],
-                keysByMode[MapPreviewMode.COUNTRY],
-                segmentsByMode[MapPreviewMode.COUNTRY].orEmpty()
-            ),
-            MapPreviewMode.STRATEGIC_REGION to buildSmoothColorSegments(
-                images[MapPreviewMode.STRATEGIC_REGION],
-                keysByMode[MapPreviewMode.STRATEGIC_REGION],
-                segmentsByMode[MapPreviewMode.STRATEGIC_REGION].orEmpty()
-            )
-        )
-    }
-
-    private fun buildSmoothColorSegments(
-        source: BufferedImage?,
-        keys: IntArray?,
-        segments: List<MapLineSegment>
-    ): List<MapColorLineSegment> {
-        if (source == null || keys == null || segments.isEmpty()) return emptyList()
-        return segments.mapNotNull { segment ->
-            val sides = smoothBoundarySides(source, keys, segment) ?: return@mapNotNull null
-            MapColorLineSegment(
-                x1 = segment.x1,
-                y1 = segment.y1,
-                x2 = segment.x2,
-                y2 = segment.y2,
-                positiveSideRgb = sides.positiveRgb,
-                negativeSideRgb = sides.negativeRgb
+        return cellsByChunk.map { (chunkKey, cells) ->
+            val chunkX = chunkKey % chunkColumns
+            val chunkY = chunkKey / chunkColumns
+            val x = chunkX * RENDER_ZONE_BLOCK_SIZE
+            val y = chunkY * RENDER_ZONE_BLOCK_SIZE
+            MapRenderChunk(
+                x = x,
+                y = y,
+                width = minOf(RENDER_ZONE_BLOCK_SIZE, width - x),
+                height = minOf(RENDER_ZONE_BLOCK_SIZE, height - y),
+                cells = cells
             )
         }
     }
 
-    private fun smoothBoundarySides(source: BufferedImage, keys: IntArray, segment: MapLineSegment): SmoothBoundarySides? {
-        val width = source.width
-        val height = source.height
-        val midX = (segment.x1 + segment.x2) / 2.0
-        val midY = (segment.y1 + segment.y2) / 2.0
-        val dx = segment.x2 - segment.x1
-        val dy = segment.y2 - segment.y1
-        val length = kotlin.math.sqrt(dx * dx + dy * dy)
-        if (length == 0.0) return null
-        val normalX = -dy / length
-        val normalY = dx / length
-        val positive = colorSample(source, keys, width, height, midX + normalX * SMOOTH_COLOR_SAMPLE_DISTANCE, midY + normalY * SMOOTH_COLOR_SAMPLE_DISTANCE)
-        val negative = colorSample(source, keys, width, height, midX - normalX * SMOOTH_COLOR_SAMPLE_DISTANCE, midY - normalY * SMOOTH_COLOR_SAMPLE_DISTANCE)
-        if (positive == null || negative == null || positive.key == negative.key) return null
-        return SmoothBoundarySides(positive.rgb, negative.rgb)
+    private fun buildPixelBorderChunks(
+        pixelIndex: MapPixelIndex,
+        width: Int,
+        height: Int
+    ): Map<MapPreviewMode, List<MapBorderChunk>> {
+        return mapOf(
+            MapPreviewMode.PROVINCE to buildPixelBorderChunks(width, height, pixelIndex.provinceKeys),
+            MapPreviewMode.STATE to buildPixelBorderChunks(width, height, pixelIndex.stateKeys),
+            MapPreviewMode.COUNTRY to buildPixelBorderChunks(width, height, pixelIndex.countryKeys),
+            MapPreviewMode.STRATEGIC_REGION to buildPixelBorderChunks(width, height, pixelIndex.strategicRegionKeys)
+        )
     }
 
-    private fun colorSample(
-        source: BufferedImage,
-        keys: IntArray,
+    private fun buildPixelBorderChunks(width: Int, height: Int, keys: IntArray): List<MapBorderChunk> {
+        val chunkColumns = (width + RENDER_ZONE_BLOCK_SIZE - 1) / RENDER_ZONE_BLOCK_SIZE
+        val segmentsByChunk = linkedMapOf<Int, MutableList<MapBorderSegment>>()
+        collectHorizontalBorderSegments(segmentsByChunk, chunkColumns, width, height, keys)
+        collectVerticalBorderSegments(segmentsByChunk, chunkColumns, width, height, keys)
+        return segmentsByChunk.map { (chunkKey, segments) ->
+            val chunkX = chunkKey % chunkColumns
+            val chunkY = chunkKey / chunkColumns
+            val x = chunkX * RENDER_ZONE_BLOCK_SIZE
+            val y = chunkY * RENDER_ZONE_BLOCK_SIZE
+            MapBorderChunk(
+                x = x,
+                y = y,
+                width = minOf(RENDER_ZONE_BLOCK_SIZE, width - x),
+                height = minOf(RENDER_ZONE_BLOCK_SIZE, height - y),
+                segments = segments
+            )
+        }
+    }
+
+    private fun collectHorizontalBorderSegments(
+        segmentsByChunk: MutableMap<Int, MutableList<MapBorderSegment>>,
+        chunkColumns: Int,
         width: Int,
         height: Int,
-        x: Double,
-        y: Double
-    ): SmoothColorSample? {
-        val sampleY = kotlin.math.floor(y).toInt().coerceIn(0, height - 1)
-        val sampleX = Math.floorMod(kotlin.math.floor(x).toInt(), width)
-        val index = sampleY * width + sampleX
-        val key = keys[index]
-        if (key == UNKNOWN_KEY) return null
-        return SmoothColorSample(key, source.getRGB(sampleX, sampleY) and RGB_MASK)
+        keys: IntArray
+    ) {
+        for (edgeY in 0..height) {
+            var x = 0
+            while (x < width) {
+                if (!isHorizontalPixelBorder(keys, width, height, x, edgeY)) {
+                    x++
+                    continue
+                }
+                val startX = x
+                x++
+                while (x < width && isHorizontalPixelBorder(keys, width, height, x, edgeY)) x++
+                addHorizontalBorderSegment(segmentsByChunk, chunkColumns, width, height, startX, x, edgeY)
+            }
+        }
     }
 
-    private data class SmoothColorSample(val key: Int, val rgb: Int)
-    private data class SmoothBoundarySides(val positiveRgb: Int, val negativeRgb: Int)
+    private fun collectVerticalBorderSegments(
+        segmentsByChunk: MutableMap<Int, MutableList<MapBorderSegment>>,
+        chunkColumns: Int,
+        width: Int,
+        height: Int,
+        keys: IntArray
+    ) {
+        for (edgeX in 0 until width) {
+            var y = 0
+            while (y < height) {
+                if (!isVerticalPixelBorder(keys, width, edgeX, y)) {
+                    y++
+                    continue
+                }
+                val startY = y
+                y++
+                while (y < height && isVerticalPixelBorder(keys, width, edgeX, y)) y++
+                addVerticalBorderSegment(segmentsByChunk, chunkColumns, height, edgeX, startY, y)
+            }
+        }
+    }
+
+    private fun addHorizontalBorderSegment(
+        segmentsByChunk: MutableMap<Int, MutableList<MapBorderSegment>>,
+        chunkColumns: Int,
+        width: Int,
+        height: Int,
+        startX: Int,
+        endX: Int,
+        y: Int
+    ) {
+        var x = startX
+        val chunkY = (if (y == height) height - 1 else y).coerceAtLeast(0) / RENDER_ZONE_BLOCK_SIZE
+        while (x < endX) {
+            val chunkX = x / RENDER_ZONE_BLOCK_SIZE
+            val splitEndX = minOf(endX, (chunkX + 1) * RENDER_ZONE_BLOCK_SIZE, width)
+            val chunkKey = chunkY * chunkColumns + chunkX
+            segmentsByChunk.getOrPut(chunkKey) { mutableListOf() }
+                .add(MapBorderSegment(x, y, splitEndX, y))
+            x = splitEndX
+        }
+    }
+
+    private fun addVerticalBorderSegment(
+        segmentsByChunk: MutableMap<Int, MutableList<MapBorderSegment>>,
+        chunkColumns: Int,
+        height: Int,
+        x: Int,
+        startY: Int,
+        endY: Int
+    ) {
+        var y = startY
+        val chunkX = x / RENDER_ZONE_BLOCK_SIZE
+        while (y < endY) {
+            val chunkY = y / RENDER_ZONE_BLOCK_SIZE
+            val splitEndY = minOf(endY, (chunkY + 1) * RENDER_ZONE_BLOCK_SIZE, height)
+            val chunkKey = chunkY * chunkColumns + chunkX
+            segmentsByChunk.getOrPut(chunkKey) { mutableListOf() }
+                .add(MapBorderSegment(x, y, x, splitEndY))
+            y = splitEndY
+        }
+    }
+
+    private fun isHorizontalPixelBorder(keys: IntArray, width: Int, height: Int, x: Int, edgeY: Int): Boolean {
+        val upperKey = if (edgeY == 0) UNKNOWN_KEY else keys[(edgeY - 1) * width + x]
+        val lowerKey = if (edgeY == height) UNKNOWN_KEY else keys[edgeY * width + x]
+        return upperKey != lowerKey && (upperKey != UNKNOWN_KEY || lowerKey != UNKNOWN_KEY)
+    }
+
+    private fun isVerticalPixelBorder(keys: IntArray, width: Int, edgeX: Int, y: Int): Boolean {
+        val rowOffset = y * width
+        val leftKey = keys[rowOffset + if (edgeX == 0) width - 1 else edgeX - 1]
+        val rightKey = keys[rowOffset + edgeX]
+        return leftKey != rightKey && (leftKey != UNKNOWN_KEY || rightKey != UNKNOWN_KEY)
+    }
 
     private fun buildSmoothBorderSegments(
         pixelIndex: MapPixelIndex,
@@ -1207,7 +1367,7 @@ class MapPreviewService(private val project: Project) {
         private const val COUNTRIES_PATH = "common/countries"
         private const val RGB_MASK = 0xFFFFFF
         private const val UNKNOWN_KEY = -1
-        private const val SMOOTH_COLOR_SAMPLE_DISTANCE = 0.75
+        private const val RENDER_ZONE_BLOCK_SIZE = 256
         private const val SMOOTH_EDGE_SIMPLIFY_TOLERANCE = 0.85
         private val COUNTRY_TAG_REGEX = Regex("""[A-Z0-9_]{3}""")
         private val COUNTRY_COLOR_OVERRIDE_PATHS = listOf(

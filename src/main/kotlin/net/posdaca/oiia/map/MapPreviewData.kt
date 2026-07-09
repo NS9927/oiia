@@ -29,13 +29,78 @@ data class MapLineSegment(
     val y2: Double
 )
 
-data class MapColorLineSegment(
-    val x1: Double,
-    val y1: Double,
-    val x2: Double,
-    val y2: Double,
-    val positiveSideRgb: Int,
-    val negativeSideRgb: Int
+data class MapRenderZone(
+    val x: Int,
+    val y: Int,
+    val width: Int,
+    val height: Int
+)
+
+data class MapRenderArea(
+    val rgb: Int,
+    val provinceId: Int?,
+    val stateKey: Int,
+    val countryKey: Int,
+    val strategicRegionKey: Int,
+    val provinceColor: Int,
+    val stateColor: Int,
+    val countryColor: Int,
+    val strategicRegionColor: Int,
+    val zones: List<MapRenderZone>,
+    val bounds: PixelBounds
+) {
+    fun colorFor(mode: MapPreviewMode): Int {
+        return when (mode) {
+            MapPreviewMode.PROVINCE -> provinceColor
+            MapPreviewMode.STATE -> stateColor
+            MapPreviewMode.COUNTRY -> countryColor
+            MapPreviewMode.STRATEGIC_REGION -> strategicRegionColor
+        }
+    }
+}
+
+data class MapRenderCell(
+    val zone: MapRenderZone,
+    val provinceId: Int?,
+    val stateKey: Int,
+    val countryKey: Int,
+    val strategicRegionKey: Int,
+    val provinceColor: Int,
+    val stateColor: Int,
+    val countryColor: Int,
+    val strategicRegionColor: Int
+) {
+    fun colorFor(mode: MapPreviewMode): Int {
+        return when (mode) {
+            MapPreviewMode.PROVINCE -> provinceColor
+            MapPreviewMode.STATE -> stateColor
+            MapPreviewMode.COUNTRY -> countryColor
+            MapPreviewMode.STRATEGIC_REGION -> strategicRegionColor
+        }
+    }
+}
+
+data class MapRenderChunk(
+    val x: Int,
+    val y: Int,
+    val width: Int,
+    val height: Int,
+    val cells: List<MapRenderCell>
+)
+
+data class MapBorderSegment(
+    val x1: Int,
+    val y1: Int,
+    val x2: Int,
+    val y2: Int
+)
+
+data class MapBorderChunk(
+    val x: Int,
+    val y: Int,
+    val width: Int,
+    val height: Int,
+    val segments: List<MapBorderSegment>
 )
 
 enum class MapPreviewMode(val messageKey: String) {
@@ -108,12 +173,9 @@ data class StrategicRegionInfo(
 
 data class LoadedMapData(
     val provincesImage: BufferedImage,
-    val stateImage: BufferedImage?,
-    val countryImage: BufferedImage?,
-    val strategicRegionImage: BufferedImage?,
-    val borderImages: Map<MapPreviewMode, BufferedImage>,
+    val renderChunks: List<MapRenderChunk>,
+    val borderChunks: Map<MapPreviewMode, List<MapBorderChunk>>,
     val smoothBorderSegments: Map<MapPreviewMode, List<MapLineSegment>>,
-    val smoothColorSegments: Map<MapPreviewMode, List<MapColorLineSegment>>,
     val pixelIndex: MapPixelIndex,
     val provinceByColor: Map<Int, ProvinceInfo>,
     val provinceById: Map<Int, ProvinceInfo>,
@@ -131,20 +193,9 @@ data class LoadedMapData(
     val localisations: Map<String, String>,
     val sourceStamp: Long
 ) {
-    fun imageFor(mode: MapPreviewMode): BufferedImage {
-        return when (mode) {
-            MapPreviewMode.PROVINCE -> provincesImage
-            MapPreviewMode.STATE -> stateImage ?: provincesImage
-            MapPreviewMode.COUNTRY -> countryImage ?: provincesImage
-            MapPreviewMode.STRATEGIC_REGION -> strategicRegionImage ?: provincesImage
-        }
-    }
-
-    fun borderImageFor(mode: MapPreviewMode): BufferedImage? = borderImages[mode]
+    fun borderChunksFor(mode: MapPreviewMode): List<MapBorderChunk> = borderChunks[mode].orEmpty()
 
     fun smoothBorderSegmentsFor(mode: MapPreviewMode): List<MapLineSegment> = smoothBorderSegments[mode].orEmpty()
-
-    fun smoothColorSegmentsFor(mode: MapPreviewMode): List<MapColorLineSegment> = smoothColorSegments[mode].orEmpty()
 }
 
 internal fun mapCountryKey(tag: String): Int {
