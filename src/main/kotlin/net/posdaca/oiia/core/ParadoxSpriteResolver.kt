@@ -498,10 +498,12 @@ class ParadoxSpriteResolver(private val project: Project) {
 
     private fun resolveTexturePathWithPls(cleanPath: String): String? {
         return runCatching {
-            val selector = ParadoxFilePathSearch.selector(project, null).distinct()
-            val file = ParadoxFilePathSearch.searchIcon(cleanPath, selector, ignoreLocale = true).find()
-                ?: ParadoxFilePathSearch.search(cleanPath, selector = selector, ignoreLocale = true).find()
-            file?.let { ParadoxImageManager.resolveUrlByFile(it, project) ?: it.path }
+            ApplicationManager.getApplication().runReadAction<String?> {
+                val selector = ParadoxFilePathSearch.selector(project, null).distinct()
+                val file = ParadoxFilePathSearch.searchIcon(cleanPath, selector, ignoreLocale = true).find()
+                    ?: ParadoxFilePathSearch.search(cleanPath, selector = selector, ignoreLocale = true).find()
+                file?.let { ParadoxImageManager.resolveUrlByFile(it, project) ?: it.path }
+            }
         }.getOrNull()
     }
 

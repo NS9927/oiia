@@ -1,7 +1,7 @@
 package net.posdaca.oiia.core
 
 import com.intellij.openapi.project.Project
-import icu.windea.pls.lang.settings.PlsProfilesSettings
+import icu.windea.pls.lang.settings.ChronicleProfilesSettings
 import icu.windea.pls.lang.settings.ParadoxGameSettingsState
 import icu.windea.pls.lang.settings.ParadoxModDescriptorSettingsState
 import icu.windea.pls.lang.settings.ParadoxModSettingsState
@@ -17,7 +17,7 @@ internal object HoI4ResourceRoots {
     private val resourceRootsCache = mutableMapOf<ResourceRootCacheKey, CachedRoots>()
 
     fun plsRoots(gameFirst: Boolean = true): List<Path> {
-        val state = PlsProfilesSettings.getInstance().state
+        val state = ChronicleProfilesSettings.getInstance().state
         val modSettings = state.modSettings.values.filter { it.isHoi4Mod() }
         val gameRoots = gameRoots(modSettings)
         val modRoots = allModRoots(modSettings)
@@ -37,7 +37,7 @@ internal object HoI4ResourceRoots {
         val projectKey = projectRoot?.let { normalizedKey(it) } ?: project.basePath.orEmpty()
         val cacheKey = ResourceRootCacheKey(projectKey, projectFirst, gameFirst)
         cachedResourceRoots(cacheKey)?.let { return it }
-        val state = PlsProfilesSettings.getInstance().state
+        val state = ChronicleProfilesSettings.getInstance().state
         val modRootPlan = orderedModRootPlan(state.modSettings.values, projectRoot)
         val gameRoots = gameRoots(modRootPlan.settings)
         val modRoots = modRootPlan.roots
@@ -51,7 +51,7 @@ internal object HoI4ResourceRoots {
 
     fun currentModLoadOrder(project: Project): List<HoI4ModLoadOrderEntry> {
         val projectRoot = directoryPath(project.basePath)
-        val state = PlsProfilesSettings.getInstance().state
+        val state = ChronicleProfilesSettings.getInstance().state
         val modRootPlan = orderedModRootPlan(state.modSettings.values, projectRoot)
         val descriptorSettingsByDirectory = state.modDescriptorSettings.values
             .filter { it.isHoi4Mod() }
@@ -101,7 +101,7 @@ internal object HoI4ResourceRoots {
             addModDirectory(modDirectory, visited, result)
             if (settingsKey != null && !processedSettings.add(settingsKey)) return
             resultSettings.add(settings)
-            for (dependency in settings.modDependencies.orEmpty()) {
+            for (dependency in settings.modDependencies) {
                 if (!dependency.enabled) continue
                 val dependencyPath = directoryPath(dependency.modDirectory)
                 addModDirectory(dependencyPath, visited, result)
@@ -118,7 +118,7 @@ internal object HoI4ResourceRoots {
         val result = mutableListOf<Path>()
         for (settings in modSettings) {
             addModDirectory(directoryPath(settings.modDirectory), visited, result)
-            for (dependency in settings.modDependencies.orEmpty()) {
+            for (dependency in settings.modDependencies) {
                 if (dependency.enabled) addModDirectory(directoryPath(dependency.modDirectory), visited, result)
             }
         }
@@ -126,7 +126,7 @@ internal object HoI4ResourceRoots {
     }
 
     private fun gameRoots(modSettings: Collection<ParadoxModSettingsState>): List<Path> {
-        val state = PlsProfilesSettings.getInstance().state
+        val state = ChronicleProfilesSettings.getInstance().state
         val settingsGameRoots = modSettings.flatMap {
             listOfNotNull(directoryPath(it.finalGameDirectory), directoryPath(it.gameDirectory))
         }

@@ -377,6 +377,7 @@ class GuiPreviewPanel(
             try {
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
                 g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+                g2.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS, RenderingHints.VALUE_FRACTIONALMETRICS_ON)
                 g2.scale(zoomFactor, zoomFactor)
                 paintBackgroundGrid(g2)
                 for (node in nodes) paintNode(g2, node)
@@ -617,53 +618,77 @@ class GuiPreviewPanel(
                 if (image != null) {
                     g.drawImage(image, paintBounds.x, paintBounds.y, null)
                 }
-                paintElementText(g, element, bounds)
+                paintElementText(g, element, bounds, clipBounds)
             } finally {
                 g.clip = oldClip
             }
         }
 
-        private fun paintElementText(g: Graphics2D, element: GuiElement, bounds: Rectangle) {
+        private fun paintElementText(
+            g: Graphics2D,
+            element: GuiElement,
+            bounds: Rectangle,
+            clipBounds: Rectangle
+        ) {
             val value = cachedLocalizedText(element.text) ?: element.text?.trim()?.trim('"') ?: return
             if (value.isBlank()) return
-            val oldClip = g.clip
+            val textBounds = logicalToScreen(bounds)
+            val textClip = intersectRect(clipBounds, bounds)?.let(::logicalToScreen) ?: return
+            if (textBounds.width <= 0 || textBounds.height <= 0) return
+            val textGraphics = g.create() as Graphics2D
             try {
-                g.clip = intersectClip(oldClip, bounds)
-                g.font = textFont(element)
-                g.color = JBColor.foreground()
-                val metrics = g.fontMetrics
-                val lines = wrapText(metrics, value, bounds.width - JBUIScale.scale(8))
+                textGraphics.scale(1.0 / zoomFactor, 1.0 / zoomFactor)
+                textGraphics.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+                textGraphics.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS, RenderingHints.VALUE_FRACTIONALMETRICS_ON)
+                textGraphics.clip = textClip
+                textGraphics.font = textFont(element, zoomFactor)
+                textGraphics.color = JBColor.foreground()
+                val metrics = textGraphics.fontMetrics
+                val horizontalPadding = screenLength(JBUIScale.scale(4))
+                val lines = wrapText(metrics, value, textBounds.width - horizontalPadding * 2)
                 if (lines.isEmpty()) return
                 val lineHeight = metrics.height
                 val textHeight = lineHeight * lines.size
                 var y = when (normalized(element.verticalAlignment)) {
-                    "center", "centre" -> bounds.y + ((bounds.height - textHeight) / 2).coerceAtLeast(0) + metrics.ascent
-                    "bottom", "lower" -> bounds.y + (bounds.height - textHeight).coerceAtLeast(0) + metrics.ascent
-                    else -> bounds.y + JBUIScale.scale(3) + metrics.ascent
+                    "center", "centre" -> textBounds.y + ((textBounds.height - textHeight) / 2).coerceAtLeast(0) + metrics.ascent
+                    "bottom", "lower" -> textBounds.y + (textBounds.height - textHeight).coerceAtLeast(0) + metrics.ascent
+                    else -> textBounds.y + screenLength(JBUIScale.scale(3)) + metrics.ascent
                 }
                 for (line in lines) {
                     val textWidth = metrics.stringWidth(line)
                     val x = when (normalized(element.format)) {
-                        "right" -> bounds.x + bounds.width - textWidth - JBUIScale.scale(4)
-                        "center", "centre" -> bounds.x + (bounds.width - textWidth) / 2
-                        else -> bounds.x + JBUIScale.scale(4)
+                        "right" -> textBounds.x + textBounds.width - textWidth - horizontalPadding
+                        "center", "centre" -> textBounds.x + (textBounds.width - textWidth) / 2
+                        else -> textBounds.x + horizontalPadding
                     }
-                    g.drawString(line, x, y)
+                    textGraphics.drawString(line, x, y)
                     y += lineHeight
-                    if (y - metrics.ascent > bounds.y + bounds.height) break
+                    if (y - metrics.ascent > textBounds.y + textBounds.height) break
                 }
             } finally {
-                g.clip = oldClip
+                textGraphics.dispose()
             }
         }
 
-        private fun textFont(element: GuiElement): Font {
+        private fun textFont(element: GuiElement, scale: Double = 1.0): Font {
             val size = when {
                 (element.buttonFont ?: element.font)?.contains("18") == true -> 13f
                 (element.buttonFont ?: element.font)?.contains("22") == true -> 16f
                 else -> 12f
             }
-            return JBFont.label().deriveFont(size)
+            return JBFont.label().deriveFont((size * scale).coerceAtLeast(1.0).toFloat())
+        }
+
+        private fun logicalToScreen(rectangle: Rectangle): Rectangle {
+            val x = (rectangle.x * zoomFactor).roundToInt()
+            val y = (rectangle.y * zoomFactor).roundToInt()
+            val maxX = ((rectangle.x + rectangle.width) * zoomFactor).roundToInt()
+            val maxY = ((rectangle.y + rectangle.height) * zoomFactor).roundToInt()
+            return Rectangle(x, y, (maxX - x).coerceAtLeast(1), (maxY - y).coerceAtLeast(1))
+        }
+
+        private fun screenLength(logicalLength: Int): Int {
+            return (logicalLength * zoomFactor).roundToInt().coerceAtLeast(1)
         }
 
         private fun wrapText(metrics: java.awt.FontMetrics, text: String, maxWidth: Int): List<String> {

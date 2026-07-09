@@ -31,6 +31,6 @@ dependencies {
 
         // Add plugin dependencies for compilation here, for example:
         bundledPlugin("com.intellij.java")
-        plugin("icu.windea.pls", "2.1.9")   // Paradox Language Support
+        plugin("icu.windea.pls", "2.2.0")   // Paradox Language Support
     }
 }

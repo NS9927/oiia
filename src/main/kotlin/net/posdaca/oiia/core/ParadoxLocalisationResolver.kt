@@ -1,5 +1,6 @@
 package net.posdaca.oiia.core
 
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
 import icu.windea.pls.lang.resolve.ParadoxLocalisationService
 import icu.windea.pls.lang.search.ParadoxLocalisationSearch
@@ -17,12 +18,14 @@ internal class ParadoxLocalisationResolver(
         }
 
         val resolved = runCatching {
-            val selector = ParadoxLocalisationSearch.selector(project, null).distinct()
-            ParadoxLocalisationSearch.searchNormal(normalized, selector)
-                .findAll()
-                .maxByOrNull { localisationPriority(it.containingFile?.virtualFile?.path) }
-                ?.let { ParadoxLocalisationService.resolveLocalizedText(it) ?: it.value }
-                ?.takeIf { it.isNotBlank() && it != normalized }
+            ApplicationManager.getApplication().runReadAction<String?> {
+                val selector = ParadoxLocalisationSearch.selector(project, null).distinct()
+                ParadoxLocalisationSearch.searchNormal(normalized, selector)
+                    .findAll()
+                    .maxByOrNull { localisationPriority(it.containingFile?.virtualFile?.path) }
+                    ?.let { ParadoxLocalisationService.resolveLocalizedText(it) ?: it.value }
+                    ?.takeIf { it.isNotBlank() && it != normalized }
+            }
         }.getOrNull()
 
         synchronized(cache) {

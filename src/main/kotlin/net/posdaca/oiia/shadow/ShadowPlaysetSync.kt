@@ -7,6 +7,7 @@ import com.intellij.openapi.project.Project
 import net.posdaca.oiia.core.HoI4ModLoadOrderEntry
 import net.posdaca.oiia.core.HoI4ResourceRoots
 import java.io.IOException
+import java.io.File
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.InvalidPathException
@@ -80,16 +81,17 @@ internal object ShadowPlaysetSync {
         requestedMods: List<ShadowRequestedMod>,
         indexMods: List<ShadowModIndexEntry>,
     ): ShadowModMatchResult {
+        val byIdentityKey = buildIdentityLookup(indexMods)
         val byRemoteId = indexMods
             .asSequence()
             .filter { it.id.isNotBlank() && it.remoteFileId.isNotBlank() }
-            .groupBy { it.remoteFileId.trim().lowercase(Locale.ROOT) }
+            .groupBy { canonicalIdentityKey(it.remoteFileId) }
             .mapValues { it.value.first() }
 
         val byContentPath = indexMods
             .asSequence()
             .filter { it.id.isNotBlank() && it.contentPath.isNotBlank() }
-            .mapNotNull { mod -> normalizePath(mod.contentPath)?.let { it to mod } }
+            .mapNotNull { mod -> normalizeComparablePath(mod.contentPath)?.let { it to mod } }
             .groupBy({ it.first }, { it.second })
             .mapValues { it.value.first() }
 
@@ -98,12 +100,8 @@ internal object ShadowPlaysetSync {
         val seenIds = mutableSetOf<String>()
 
         for (requestedMod in requestedMods) {
-            val matchedMod = requestedMod.remoteId
-                ?.trim()
-                ?.takeIf { it.isNotBlank() }
-                ?.lowercase(Locale.ROOT)
-                ?.let { byRemoteId[it] }
-                ?: normalizePath(requestedMod.modDirectory.toString())?.let { byContentPath[it] }
+            val matchedMod = matchByRemoteId(requestedMod.remoteId, byIdentityKey, byRemoteId)
+                ?: matchByContentPath(requestedMod.modDirectory, byIdentityKey, byContentPath)
 
             if (matchedMod == null) {
                 missingMods.add(requestedMod)
@@ -116,6 +114,45 @@ internal object ShadowPlaysetSync {
         }
 
         return ShadowModMatchResult(matchedIds, missingMods)
+    }
+
+    private fun buildIdentityLookup(indexMods: List<ShadowModIndexEntry>): Map<String, ShadowModIndexEntry> {
+        val result = linkedMapOf<String, ShadowModIndexEntry>()
+
+        fun add(key: String?, mod: ShadowModIndexEntry) {
+            if (mod.id.isBlank() || key.isNullOrBlank()) return
+            result.putIfAbsent(canonicalIdentityKey(key), mod)
+        }
+
+        for (mod in indexMods) {
+            add(mod.id, mod)
+            if (mod.remoteFileId.isNotBlank()) add("steam:${mod.remoteFileId.trim()}", mod)
+            for (identityKey in mod.identityKeys) {
+                add(identityKey, mod)
+            }
+        }
+
+        return result
+    }
+
+    private fun matchByRemoteId(
+        remoteId: String?,
+        byIdentityKey: Map<String, ShadowModIndexEntry>,
+        byRemoteId: Map<String, ShadowModIndexEntry>,
+    ): ShadowModIndexEntry? {
+        val cleanRemoteId = remoteId?.trim()?.takeIf { it.isNotBlank() } ?: return null
+        return byIdentityKey[canonicalIdentityKey("steam:$cleanRemoteId")]
+            ?: byRemoteId[canonicalIdentityKey(cleanRemoteId)]
+            ?: byIdentityKey[canonicalIdentityKey(cleanRemoteId)]
+    }
+
+    private fun matchByContentPath(
+        modDirectory: Path,
+        byIdentityKey: Map<String, ShadowModIndexEntry>,
+        byContentPath: Map<String, ShadowModIndexEntry>,
+    ): ShadowModIndexEntry? {
+        return normalizeComparablePath(modDirectory.toString())?.let { byContentPath[it] }
+            ?: localContentIdentityKey(modDirectory)?.let { byIdentityKey[canonicalIdentityKey(it)] }
     }
 
     fun writePlayset(workspaceDirectory: Path, playset: ShadowPlaysetDocument): Path {
@@ -163,6 +200,11 @@ internal object ShadowPlaysetSync {
         }
     }
 
+    internal fun localContentIdentityKey(path: Path): String? {
+        val normalizedPath = normalizeShadowIdentityPath(path.toString()) ?: return null
+        return "local-content:${sha256(normalizedPath)}"
+    }
+
     private fun HoI4ModLoadOrderEntry.toRequest(): ShadowRequestedMod {
         return ShadowRequestedMod(modDirectory, remoteId ?: readRemoteFileId(modDirectory))
     }
@@ -186,11 +228,11 @@ internal object ShadowPlaysetSync {
     }
 
     private fun stableProjectId(project: Project): String {
-        val projectKey = project.basePath?.let { normalizePath(it) } ?: project.name
+        val projectKey = project.basePath?.let { normalizeComparablePath(it) } ?: project.name
         return sha256(projectKey).take(16)
     }
 
-    private fun normalizePath(value: String): String? {
+    private fun normalizeComparablePath(value: String): String? {
         if (value.isBlank()) return null
         val expanded = value.trim()
             .replace("\$USER_HOME\$", System.getProperty("user.home"))
@@ -200,10 +242,35 @@ internal object ShadowPlaysetSync {
                 .normalize()
                 .toString()
                 .replace('\\', '/')
+                .trimEnd('/')
                 .lowercase(Locale.ROOT)
         } catch (_: InvalidPathException) {
             null
         }
+    }
+
+    private fun normalizeShadowIdentityPath(value: String): String? {
+        if (value.isBlank()) return null
+        val expanded = value.trim()
+            .replace("\$USER_HOME\$", System.getProperty("user.home"))
+        return try {
+            Path.of(expanded)
+                .toAbsolutePath()
+                .normalize()
+                .toString()
+                .trimEnd('\\', '/')
+                .lowercase(Locale.ROOT)
+        } catch (_: InvalidPathException) {
+            expanded
+                .replace('/', File.separatorChar)
+                .trim()
+                .trimEnd('\\', '/')
+                .lowercase(Locale.ROOT)
+        }
+    }
+
+    private fun canonicalIdentityKey(value: String): String {
+        return value.trim().lowercase(Locale.ROOT)
     }
 
     private fun isInvalidFileNameCharacter(character: Char): Boolean {
@@ -244,6 +311,7 @@ internal class ShadowModIndex {
 
 internal class ShadowModIndexEntry {
     var id: String = ""
+    var shadowId: String = ""
     var name: String = ""
     var source: String = ""
     var remoteFileId: String = ""
@@ -251,6 +319,7 @@ internal class ShadowModIndexEntry {
     var launcherPath: String = ""
     var contentPath: String = ""
     var version: String = ""
+    var identityKeys: List<String> = emptyList()
 }
 
 internal data class ShadowPlaysetDocument(
