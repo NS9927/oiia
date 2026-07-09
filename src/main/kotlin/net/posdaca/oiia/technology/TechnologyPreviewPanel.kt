@@ -41,7 +41,7 @@ class TechnologyPreviewPanel(
         scrollPane.viewport.background = JBColor.PanelBackground
         add(scrollPane, BorderLayout.CENTER)
 
-        val allTechnologies = technologyTrees.flatMap { it.technologies }
+        val allTechnologies = technologyTrees.flatMap { it.technologies }.distinctBy { it.id }
         service.scheduleResolution(allTechnologies) { canvas.repaint() }
     }
 
@@ -64,13 +64,13 @@ class TechnologyPreviewPanel(
         private var lockedHint: LightweightHint? = null
         private var dragPressScreenPoint: Point? = null
         private var dragScrollStart: Point? = null
-        private var pressedTechnologyId: String? = null
+        private var pressedTechnologyKey: String? = null
         private var draggingView = false
         private var singleClickTimer: Timer? = null
 
         private val logicalPositions = mutableMapOf<String, Point>()
         private val logicalNodeBounds = mutableMapOf<String, Rectangle>()
-        private val allTechnologiesList = mutableListOf<TechnologyData>()
+        private val logicalNodeHits = mutableMapOf<String, TechnologyHit>()
         private val iconCache = mutableMapOf<String, BufferedImage>()
 
         private val scrollableHsb: javax.swing.JScrollBar?
@@ -95,7 +95,7 @@ class TechnologyPreviewPanel(
                     if (e.button == MouseEvent.BUTTON1) {
                         if (e.clickCount > 1) cancelPendingSingleClick()
                         val logicalPt = screenToLogical(e)
-                        pressedTechnologyId = findTechnologyAt(logicalPt)?.id
+                        pressedTechnologyKey = findTechnologyAt(logicalPt)?.nodeKey
                         dragPressScreenPoint = Point(e.locationOnScreen)
                         dragScrollStart = Point(scrollableHsb?.value ?: 0, scrollableVsb?.value ?: 0)
                         draggingView = false
@@ -112,12 +112,12 @@ class TechnologyPreviewPanel(
 
                     if (!wasDragging) {
                         val clicked = findTechnologyAt(screenToLogical(e))
-                        if (clicked != null && clicked.id == pressedTechnologyId) {
-                            selectedTechnologyId = clicked.id
+                        if (clicked != null && clicked.nodeKey == pressedTechnologyKey) {
+                            selectedTechnologyId = clicked.technology.id
                             if (e.clickCount >= 2) {
                                 cancelPendingSingleClick()
                                 hideTechnologyHint(clearLocked = true)
-                                navigateToTechnology(clicked)
+                                navigateToTechnology(clicked.technology)
                             } else {
                                 scheduleTechnologyHint(clicked, e.point)
                             }
@@ -128,7 +128,7 @@ class TechnologyPreviewPanel(
                         }
                         repaint()
                     }
-                    pressedTechnologyId = null
+                    pressedTechnologyKey = null
                 }
 
                 override fun mouseExited(e: MouseEvent) {
@@ -143,7 +143,7 @@ class TechnologyPreviewPanel(
                 override fun mouseMoved(e: MouseEvent) {
                     val hovered = findTechnologyAt(screenToLogical(e))
                     val prevId = hoveredTechnologyId
-                    hoveredTechnologyId = hovered?.id
+                    hoveredTechnologyId = hovered?.technology?.id
                     if (prevId != hoveredTechnologyId) repaint()
                 }
 
@@ -214,12 +214,12 @@ class TechnologyPreviewPanel(
             }
         }
 
-        private fun scheduleTechnologyHint(technology: TechnologyData, point: Point) {
+        private fun scheduleTechnologyHint(hit: TechnologyHit, point: Point) {
             cancelPendingSingleClick()
             val hintPoint = Point(point)
             singleClickTimer = Timer(PreviewHintSupport.multiClickInterval()) {
                 singleClickTimer = null
-                if (isShowing) showTechnologyHint(technology, hintPoint)
+                if (isShowing) showTechnologyHint(hit, hintPoint)
             }.apply {
                 isRepeats = false
                 start()
@@ -231,12 +231,12 @@ class TechnologyPreviewPanel(
             singleClickTimer = null
         }
 
-        private fun showTechnologyHint(technology: TechnologyData, point: Point) {
+        private fun showTechnologyHint(hit: TechnologyHit, point: Point) {
             hideTechnologyHint(clearLocked = false)
-            selectedTechnologyId = technology.id
-            lockedTechnologyId = technology.id
+            selectedTechnologyId = hit.technology.id
+            lockedTechnologyId = hit.technology.id
 
-            val hint = PreviewHintSupport.showHint(this, point, buildTechnologyHintText(technology)) { hiddenHint ->
+            val hint = PreviewHintSupport.showHint(this, point, buildTechnologyHintText(hit)) { hiddenHint ->
                 if (lockedHint === hiddenHint) {
                     lockedHint = null
                     lockedTechnologyId = null
@@ -253,8 +253,9 @@ class TechnologyPreviewPanel(
             if (clearLocked) lockedTechnologyId = null
         }
 
-        private fun buildTechnologyHintText(technology: TechnologyData): String {
-            val resolved = service.resolveTechnologyData(technology)
+        private fun buildTechnologyHintText(hit: TechnologyHit): String {
+            val resolved = service.resolveTechnologyData(hit.technology)
+            val folderPosition = resolved.positionIn(hit.folderName) ?: hit.technology.positionIn(hit.folderName)
             val sb = StringBuilder()
             sb.append("<html><table width='").append(HINT_WIDTH).append("' cellspacing='0' cellpadding='2'>")
             sb.append("<tr><td><font color='#808080'>&lt;technology&gt;</font> ")
@@ -267,15 +268,21 @@ class TechnologyPreviewPanel(
                     .append("</i></font></td></tr>")
             }
             sb.append("<tr><td><br><table cellspacing='0' cellpadding='2'>")
-            resolved.folderName?.let { appendHintRow(sb, "Folder", esc(it)) }
+            appendHintRow(sb, "Folder", esc(hit.folderName))
             resolved.startYear?.let { appendHintRow(sb, "Year", it.toString()) }
-            appendHintRow(sb, "Pos", "(${resolved.x.toInt()}, ${resolved.y.toInt()})")
+            if (folderPosition != null) {
+                appendHintRow(sb, "Pos", "(${folderPosition.x.toInt()}, ${folderPosition.y.toInt()})")
+            }
             if (resolved.categories.isNotEmpty()) appendHintRow(
                 sb,
                 "Categories",
                 esc(resolved.categories.joinToString(", "))
             )
             if (resolved.leadsTo.isNotEmpty()) appendHintRow(sb, "Path", esc(resolved.leadsTo.joinToString(", ")))
+            if (resolved.xor.isNotEmpty()) appendHintRow(sb, "Xor", esc(resolved.xor.joinToString(", ")))
+            if (resolved.subTechnologies.isNotEmpty()) {
+                appendHintRow(sb, "Sub techs", esc(resolved.subTechnologies.joinToString(", ")))
+            }
             sb.append("</table></td></tr>")
             sb.append("</table></html>")
             return sb.toString()
@@ -318,7 +325,7 @@ class TechnologyPreviewPanel(
             var currentY = padding
             for (tree in technologyTrees) {
                 if (tree.technologies.isEmpty()) continue
-                val positions = computeRawPositions(tree.technologies)
+                val positions = computeRawPositions(tree)
                 val minX = positions.values.minOfOrNull { it.x } ?: 0
                 val maxX = positions.values.maxOfOrNull { it.x } ?: 0
                 val minY = positions.values.minOfOrNull { it.y } ?: 0
@@ -330,9 +337,9 @@ class TechnologyPreviewPanel(
             return Dimension(maxW, currentY.coerceAtLeast(300))
         }
 
-        private fun findTechnologyAt(p: Point): TechnologyData? {
-            for ((id, bounds) in logicalNodeBounds) {
-                if (bounds.contains(p)) return allTechnologiesList.find { it.id == id }
+        private fun findTechnologyAt(p: Point): TechnologyHit? {
+            for ((nodeKey, bounds) in logicalNodeBounds) {
+                if (bounds.contains(p)) return logicalNodeHits[nodeKey]
             }
             return null
         }
@@ -352,12 +359,11 @@ class TechnologyPreviewPanel(
             g2d.transform(at)
             logicalPositions.clear()
             logicalNodeBounds.clear()
-            allTechnologiesList.clear()
+            logicalNodeHits.clear()
             var offsetY = padding
             for (tree in technologyTrees) {
                 if (tree.technologies.isEmpty()) continue
-                allTechnologiesList.addAll(tree.technologies)
-                val rawPositions = computeRawPositions(tree.technologies)
+                val rawPositions = computeRawPositions(tree)
                 val minRawX = rawPositions.values.minOfOrNull { it.x } ?: 0
                 val minRawY = rawPositions.values.minOfOrNull { it.y } ?: 0
                 val shiftX = padding - minRawX
@@ -365,12 +371,17 @@ class TechnologyPreviewPanel(
                 for ((technologyId, rawPos) in rawPositions) {
                     val px = rawPos.x + shiftX
                     val py = rawPos.y + treeOffsetY
-                    logicalPositions[technologyId] = Point(px, py)
-                    logicalNodeBounds[technologyId] = Rectangle(px, py, nodeWidth, nodeHeight)
+                    val nodeKey = nodeKey(tree.folderName, technologyId)
+                    logicalPositions[nodeKey] = Point(px, py)
+                    logicalNodeBounds[nodeKey] = Rectangle(px, py, nodeWidth, nodeHeight)
+                    tree.technologies.firstOrNull { it.id == technologyId }?.let {
+                        logicalNodeHits[nodeKey] = TechnologyHit(nodeKey, tree.folderName, it)
+                    }
                 }
                 drawTreeTitle(g2d, tree.folderName, padding, offsetY + JBUIScale.scale(14))
-                drawPathConnections(g2d, tree.technologies)
-                drawTechnologyNodes(g2d, tree.technologies)
+                drawPathConnections(g2d, tree)
+                drawXorConnections(g2d, tree)
+                drawTechnologyNodes(g2d, tree)
                 val maxRawY = rawPositions.values.maxOfOrNull { it.y } ?: 0
                 offsetY += (maxRawY - minRawY) + nodeHeight + padding * 2
             }
@@ -378,12 +389,13 @@ class TechnologyPreviewPanel(
             g2d.dispose()
         }
 
-        private fun computeRawPositions(technologies: List<TechnologyData>): Map<String, Point> {
+        private fun computeRawPositions(tree: TechnologyTreeData): Map<String, Point> {
             val positions = mutableMapOf<String, Point>()
-            for (technology in technologies) {
+            for (technology in tree.technologies) {
+                val folderPosition = technology.positionIn(tree.folderName) ?: continue
                 positions[technology.id] = Point(
-                    technology.x.toInt() * (nodeWidth + hGap),
-                    technology.y.toInt() * (nodeHeight + vGap)
+                    folderPosition.x.toInt() * (nodeWidth + hGap),
+                    folderPosition.y.toInt() * (nodeHeight + vGap)
                 )
             }
             return positions
@@ -395,13 +407,14 @@ class TechnologyPreviewPanel(
             g2d.drawString(title, x, y)
         }
 
-        private fun drawPathConnections(g2d: Graphics2D, technologies: List<TechnologyData>) {
-            for (technology in technologies) {
-                val startPt = logicalPositions[technology.id] ?: continue
+        private fun drawPathConnections(g2d: Graphics2D, tree: TechnologyTreeData) {
+            val technologyIdsInFolder = tree.technologies.mapTo(hashSetOf()) { it.id }
+            for (technology in tree.technologies) {
+                val startPt = logicalPositions[nodeKey(tree.folderName, technology.id)] ?: continue
                 val sx = startPt.x + nodeWidth / 2
                 val sy = startPt.y + nodeHeight
-                for (nextId in technology.leadsTo) {
-                    val endPt = logicalPositions[nextId] ?: continue
+                for (nextId in technology.leadsTo.filter { it in technologyIdsInFolder }) {
+                    val endPt = logicalPositions[nodeKey(tree.folderName, nextId)] ?: continue
                     val endCx = endPt.x + nodeWidth / 2
                     val endTop = endPt.y
                     val isActive = technology.id == selectedTechnologyId || nextId == selectedTechnologyId ||
@@ -425,13 +438,48 @@ class TechnologyPreviewPanel(
             }
         }
 
+        private fun drawXorConnections(g2d: Graphics2D, tree: TechnologyTreeData) {
+            val technologyIdsInFolder = tree.technologies.mapTo(hashSetOf()) { it.id }
+            val drawnPairs = hashSetOf<String>()
+            for (technology in tree.technologies) {
+                val startPt = logicalPositions[nodeKey(tree.folderName, technology.id)] ?: continue
+                val startCx = startPt.x + nodeWidth / 2
+                val startCy = startPt.y + nodeHeight / 2
+                for (xorId in technology.xor.filter { it in technologyIdsInFolder }) {
+                    val pairKey = listOf(technology.id, xorId).sorted().joinToString("\u0000")
+                    if (!drawnPairs.add(pairKey)) continue
+                    val endPt = logicalPositions[nodeKey(tree.folderName, xorId)] ?: continue
+                    val endCx = endPt.x + nodeWidth / 2
+                    val endCy = endPt.y + nodeHeight / 2
+                    val isActive = technology.id == selectedTechnologyId || xorId == selectedTechnologyId ||
+                            technology.id == hoveredTechnologyId || xorId == hoveredTechnologyId
+                    g2d.color = if (isActive) XOR_ACTIVE_COLOR else XOR_COLOR
+                    g2d.stroke = BasicStroke(
+                        if (isActive) JBUIScale.scale(2.2f) else JBUIScale.scale(1.3f),
+                        BasicStroke.CAP_ROUND,
+                        BasicStroke.JOIN_ROUND,
+                        10f,
+                        floatArrayOf(JBUIScale.scale(5f), JBUIScale.scale(4f)),
+                        0f
+                    )
+                    val path = Path2D.Double()
+                    path.moveTo(startCx.toDouble(), startCy.toDouble())
+                    val midX = (startCx + endCx) / 2
+                    path.lineTo(midX.toDouble(), startCy.toDouble())
+                    path.lineTo(midX.toDouble(), endCy.toDouble())
+                    path.lineTo(endCx.toDouble(), endCy.toDouble())
+                    g2d.draw(path)
+                }
+            }
+        }
+
         private fun loadIcon(path: String): BufferedImage? {
             return PreviewImageLoader.load(path, iconCache)
         }
 
-        private fun drawTechnologyNodes(g2d: Graphics2D, technologies: List<TechnologyData>) {
-            for (technology in technologies.map { service.resolveTechnologyData(it) }) {
-                val pos = logicalPositions[technology.id] ?: continue
+        private fun drawTechnologyNodes(g2d: Graphics2D, tree: TechnologyTreeData) {
+            for (technology in tree.technologies.map { service.resolveTechnologyData(it) }) {
+                val pos = logicalPositions[nodeKey(tree.folderName, technology.id)] ?: continue
                 val isSel = technology.id == selectedTechnologyId
                 val isHov = technology.id == hoveredTechnologyId
                 val bgColor = when {
@@ -562,9 +610,19 @@ class TechnologyPreviewPanel(
             iconCache.clear()
         }
 
+        private fun nodeKey(folderName: String, technologyId: String): String = "$folderName\u0000$technologyId"
+
+        private data class TechnologyHit(
+            val nodeKey: String,
+            val folderName: String,
+            val technology: TechnologyData
+        )
+
         companion object {
             private val PATH_COLOR = JBColor(0x4F6F8A, 0x508CB4)
             private val PATH_ACTIVE_COLOR = JBColor(0x1676B8, 0x78C8FF)
+            private val XOR_COLOR = JBColor(0xA85D62, 0xD87880)
+            private val XOR_ACTIVE_COLOR = JBColor(0xC72E38, 0xFF98A0)
             private val TREE_TITLE_COLOR = JBColor(0x345A7C, 0xA6C8E8)
             private val NODE_BACKGROUND = JBColor(0xEEF3F8, 0x374150)
             private val NODE_HOVER_BACKGROUND = JBColor(0xE2EEF8, 0x3C4B5A)
