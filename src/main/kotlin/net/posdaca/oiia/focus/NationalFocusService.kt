@@ -32,6 +32,10 @@ class NationalFocusService(private val project: Project) {
         )
         private const val LOCALISATION_LANGUAGE_WEIGHT = 10000
         private val ICON_EXTENSIONS = setOf(".dds", ".tga", ".png")
+
+        fun localisationCacheKey(): String {
+            return ParadoxLocalisationPreference.cacheKey(LANG_PRIORITY)
+        }
     }
 
     private data class SpriteDefinition(val name: String, val textureFile: String, val root: Path)
@@ -45,6 +49,7 @@ class NationalFocusService(private val project: Project) {
     private val spriteResolver = ParadoxSpriteResolver(project)
     private val localisationResolver = ParadoxLocalisationResolver(project, LANG_PRIORITY)
     private var cachesValid = false
+    private var lastLocalisationCacheKey: String? = null
 
     fun parseFocusTreeFromFile(psiFile: PsiFile): List<NationalFocusTreeData> {
         val focusTrees = mutableListOf<NationalFocusTreeData>()
@@ -379,6 +384,7 @@ class NationalFocusService(private val project: Project) {
     fun resolveFocusData(focus: FocusData): FocusData = resolvedData[focus.id] ?: focus
 
     fun scheduleResolution(allFocuses: List<FocusData>, onDone: () -> Unit) {
+        refreshLocalisationPreference()
         val version = resolutionVersion.incrementAndGet()
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
@@ -436,6 +442,15 @@ class NationalFocusService(private val project: Project) {
 
     private fun getLanguagePriority(path: String): Int {
         return ParadoxLocalisationPreference.languagePriority(path, LANG_PRIORITY, LOCALISATION_LANGUAGE_WEIGHT)
+    }
+
+    private fun refreshLocalisationPreference() {
+        val currentKey = localisationCacheKey()
+        if (lastLocalisationCacheKey != currentKey) {
+            resolvedData.clear()
+            localisationResolver.clearCache()
+            lastLocalisationCacheKey = currentKey
+        }
     }
 
     private fun neededLocalisationKeys(focuses: List<FocusData>): Set<String> {
@@ -735,9 +750,12 @@ class NationalFocusService(private val project: Project) {
 
     fun clearCache() {
         resolvedData.clear()
+        localisationResolver.clearCache()
+        lastLocalisationCacheKey = null
         cachedRoots.clear()
         cachedIconFiles.clear()
         cachedSpriteIconFiles.clear()
         cachesValid = false
     }
+
 }

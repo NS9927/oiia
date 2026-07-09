@@ -41,6 +41,7 @@ class NationalFocusPreviewToolWindowFactory : ToolWindowFactory {
         private var currentPanel: JBPanel<JBPanel<*>> = createEmptyPanel()
         private var messageBusConnection: MessageBusConnection? = null
         private var renderedFilePath: String? = null
+        private var renderedLocalisationKey: String? = null
         private val service = NationalFocusService(project)
         private val refreshTimer = Timer(350) {
             if (isShowing) refreshFromCurrentFileIfChanged()
@@ -83,17 +84,25 @@ class NationalFocusPreviewToolWindowFactory : ToolWindowFactory {
 
         private fun refreshFromCurrentFileIfChanged() {
             val selectedFile = getSelectedFile()
-            if (selectedFile?.path != renderedFilePath) refreshFromFile(selectedFile)
+            val localisationKey = NationalFocusService.localisationCacheKey()
+            if (selectedFile?.path != renderedFilePath || localisationKey != renderedLocalisationKey) {
+                refreshFromFile(selectedFile, localisationKey = localisationKey)
+            }
         }
 
         private fun refreshFromCurrentFile() {
             refreshFromFile(getSelectedFile(), force = true)
         }
 
-        private fun refreshFromFile(file: VirtualFile?, force: Boolean = false) {
+        private fun refreshFromFile(
+            file: VirtualFile?,
+            force: Boolean = false,
+            localisationKey: String = NationalFocusService.localisationCacheKey()
+        ) {
             val filePath = file?.path
-            if (!force && filePath == renderedFilePath) return
+            if (!force && filePath == renderedFilePath && localisationKey == renderedLocalisationKey) return
             renderedFilePath = filePath
+            renderedLocalisationKey = localisationKey
 
             val selectedFile = file ?: run {
                 updatePanel(createEmptyPanel())
