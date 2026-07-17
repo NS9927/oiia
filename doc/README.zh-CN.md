@@ -11,7 +11,7 @@ Oiia 是一个面向 IntelliJ IDEA 的 Hearts of Iron IV 模组开发工具包�
 - 在 Paradox Chronicle 能解析的范围内显示本地化名称、图标和详细信息。
 - 单击查看详细信息，双击跳转回对应源码文件。
 ## 环境要求
-- IntelliJ IDEA 2026.1 或更高版本。
+- IntelliJ IDEA 2026.2 或更高版本。
 - 从源码构建需要 Java 21。
 - Paradox Chronicle v3.0.0（原 Paradox Language Support）。
 - 一个 HOI4 模组项目。建议先在 Paradox Chronicle 中配置好游戏目录和模组目录，这样 Oiia 能正确定位游戏与模组资源。

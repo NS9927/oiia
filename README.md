@@ -12,7 +12,7 @@ It is based on [Paradox Chronicle](https://plugins.jetbrains.com/plugin/16825-pa
 - Displays localisation-aware names, icons, and metadata when supported by Paradox Chronicle.
 - Click to view details, double-click to navigate back to source files.
 ## Requirements
-- IntelliJ IDEA 2026.1 or later.
+- IntelliJ IDEA 2026.2 or later.
 - Java 21 (required for building from source).
 - Paradox Chronicle 3.0.0 (formerly Paradox Language Support).
 - A HOI4 mod project.
