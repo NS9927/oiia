@@ -150,6 +150,11 @@ class GuiPreviewPanel(
         private var dragScrollStart: Point? = null
         private var pressedNode: GuiLayoutNode? = null
         private var draggingView = false
+        private var draggingElement = false
+        private var dragStartLogicalPoint: Point? = null
+        private var dragBasePosition: GuiPoint? = null
+        private var dragDeltaX = 0
+        private var dragDeltaY = 0
         private var singleClickTimer: Timer? = null
         private val preloadVersion = AtomicInteger()
         private var ready = false
@@ -228,20 +233,37 @@ class GuiPreviewPanel(
                     pressedNode = findNodeAt(logicalPoint)
                     dragPressScreenPoint = Point(e.locationOnScreen)
                     dragScrollStart = Point(scrollableHsb?.value ?: 0, scrollableVsb?.value ?: 0)
+                    dragStartLogicalPoint = logicalPoint
+                    dragBasePosition = pressedNode?.element?.position
+                    dragDeltaX = 0
+                    dragDeltaY = 0
                     draggingView = false
+                    draggingElement = false
                 }
 
                 override fun mouseReleased(e: MouseEvent) {
                     if (e.button != MouseEvent.BUTTON1) return
-                    val wasDragging = draggingView
+                    val wasDraggingView = draggingView
+                    val wasDraggingElement = draggingElement
+                    val draggedNode = pressedNode
+                    val finalDx = dragDeltaX
+                    val finalDy = dragDeltaY
+                    val basePosition = dragBasePosition
                     cursor = Cursor.getDefaultCursor()
                     dragPressScreenPoint = null
                     dragScrollStart = null
+                    dragStartLogicalPoint = null
+                    dragBasePosition = null
+                    dragDeltaX = 0
+                    dragDeltaY = 0
                     draggingView = false
+                    draggingElement = false
 
-                    if (!wasDragging) {
+                    if (wasDraggingElement && draggedNode != null && basePosition != null && (finalDx != 0 || finalDy != 0)) {
+                        commitElementDrag(draggedNode, basePosition, finalDx, finalDy)
+                    } else if (!wasDraggingView && !wasDraggingElement) {
                         val clicked = findNodeAt(screenToLogical(e.point))
-                        if (clicked != null && clicked.element == pressedNode?.element) {
+                        if (clicked != null && clicked.element == draggedNode?.element) {
                             selected = clicked
                             if (e.clickCount >= 2) {
                                 cancelPendingSingleClick()
@@ -261,6 +283,7 @@ class GuiPreviewPanel(
                 }
 
                 override fun mouseExited(e: MouseEvent) {
+                    if (draggingElement || draggingView) return
                     if (hovered != null) {
                         hovered = null
                         repaint()
@@ -275,20 +298,43 @@ class GuiPreviewPanel(
                         hovered = next
                         repaint()
                     }
+                    cursor = if (next != null && canDragNode(next)) {
+                        Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                    } else {
+                        Cursor.getDefaultCursor()
+                    }
                 }
 
                 override fun mouseDragged(e: MouseEvent) {
                     val pressPoint = dragPressScreenPoint ?: return
-                    val scrollStart = dragScrollStart ?: return
-                    val dx = e.locationOnScreen.x - pressPoint.x
-                    val dy = e.locationOnScreen.y - pressPoint.y
                     val threshold = JBUIScale.scale(4)
-                    if (!draggingView && dx * dx + dy * dy < threshold * threshold) return
+                    val screenDx = e.locationOnScreen.x - pressPoint.x
+                    val screenDy = e.locationOnScreen.y - pressPoint.y
+                    if (!draggingView && !draggingElement && screenDx * screenDx + screenDy * screenDy < threshold * threshold) return
+
+                    val node = pressedNode
+                    if (node != null && canDragNode(node) && dragStartLogicalPoint != null && dragBasePosition != null) {
+                        if (!draggingElement) {
+                            cancelPendingSingleClick()
+                            hideNodeHint(clearLocked = true)
+                            selected = node
+                            draggingElement = true
+                        }
+                        val logicalPoint = screenToLogical(e.point)
+                        val start = dragStartLogicalPoint ?: return
+                        dragDeltaX = logicalPoint.x - start.x
+                        dragDeltaY = logicalPoint.y - start.y
+                        cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
+                        repaint()
+                        return
+                    }
+
+                    val scrollStart = dragScrollStart ?: return
                     if (!draggingView) cancelPendingSingleClick()
                     draggingView = true
                     cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
-                    setScrollBarValue(scrollableHsb, scrollStart.x - dx)
-                    setScrollBarValue(scrollableVsb, scrollStart.y - dy)
+                    setScrollBarValue(scrollableHsb, scrollStart.x - screenDx)
+                    setScrollBarValue(scrollableVsb, scrollStart.y - screenDy)
                 }
             })
 
@@ -380,9 +426,29 @@ class GuiPreviewPanel(
                 g2.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS, RenderingHints.VALUE_FRACTIONALMETRICS_ON)
                 g2.scale(zoomFactor, zoomFactor)
                 paintBackgroundGrid(g2)
-                for (node in nodes) paintNode(g2, node)
-                selected?.let { paintSelection(g2, it, JBColor.BLUE) }
-                hovered?.let { paintSelection(g2, it, JBColor(0xDA8B00, 0xE0A13A)) }
+                for (node in nodes) {
+                    val boundsOffset = dragPaintOffset(node)
+                    if (boundsOffset != null) {
+                        val shifted = node.copy(
+                            bounds = Rectangle(
+                                node.bounds.x + boundsOffset.x,
+                                node.bounds.y + boundsOffset.y,
+                                node.bounds.width,
+                                node.bounds.height
+                            ),
+                            clipBounds = node.clipBounds?.let {
+                                Rectangle(it.x + boundsOffset.x, it.y + boundsOffset.y, it.width, it.height)
+                            }
+                        )
+                        paintNode(g2, shifted)
+                    } else {
+                        paintNode(g2, node)
+                    }
+                }
+                val selectedPaint = selected?.let { offsetNodeForPaint(it) }
+                selectedPaint?.let { paintSelection(g2, it, JBColor.BLUE) }
+                val hoveredPaint = hovered?.let { offsetNodeForPaint(it) }
+                hoveredPaint?.let { paintSelection(g2, it, JBColor(0xDA8B00, 0xE0A13A)) }
             } finally {
                 g2.dispose()
             }
@@ -1473,6 +1539,106 @@ class GuiPreviewPanel(
                 .replace("<", "&lt;")
                 .replace(">", "&gt;")
                 .replace("\"", "&quot;")
+        }
+
+        private fun canDragNode(node: GuiLayoutNode): Boolean {
+            if (node.depth <= 0) return false
+            if (node.element.sourceOffset < 0) return false
+            if (node.element.sourceFilePath.isNullOrBlank()) return false
+            if (node.element.fullscreen) return false
+            if (node.element.type.equals("background", ignoreCase = true)) return false
+            // v1: only support absolute pixel positions
+            if (node.element.position.xValue.percent || node.element.position.yValue.percent) return false
+            return true
+        }
+
+        private fun isDescendantOfDragged(node: GuiLayoutNode): Boolean {
+            val dragged = pressedNode ?: return false
+            if (!draggingElement) return false
+            if (sameElement(node.element, dragged.element)) return true
+            return containsElement(dragged.element, node.element)
+        }
+
+        private fun containsElement(parent: GuiElement, target: GuiElement): Boolean {
+            for (child in parent.children) {
+                if (sameElement(child, target) || containsElement(child, target)) return true
+            }
+            return false
+        }
+
+        private fun dragPaintOffset(node: GuiLayoutNode): Point? {
+            if (!draggingElement || pressedNode == null) return null
+            if (!isDescendantOfDragged(node)) return null
+            if (dragDeltaX == 0 && dragDeltaY == 0) return null
+            return Point(dragDeltaX, dragDeltaY)
+        }
+
+        private fun offsetNodeForPaint(node: GuiLayoutNode): GuiLayoutNode {
+            val offset = dragPaintOffset(node) ?: return node
+            return node.copy(
+                bounds = Rectangle(
+                    node.bounds.x + offset.x,
+                    node.bounds.y + offset.y,
+                    node.bounds.width,
+                    node.bounds.height
+                ),
+                clipBounds = node.clipBounds?.let {
+                    Rectangle(it.x + offset.x, it.y + offset.y, it.width, it.height)
+                }
+            )
+        }
+
+        private fun commitElementDrag(node: GuiLayoutNode, basePosition: GuiPoint, dx: Int, dy: Int) {
+            if (dx == 0 && dy == 0) return
+            if (basePosition.xValue.percent || basePosition.yValue.percent) {
+                repaint()
+                return
+            }
+            val writeX = basePosition.xValue.asFallbackPixels() + dx
+            val writeY = basePosition.yValue.asFallbackPixels() + dy
+            val ok = service.updateElementPosition(node.element, writeX, writeY)
+            if (!ok) {
+                repaint()
+                return
+            }
+            applyLocalPositionUpdate(node.element, GuiPoint(GuiValue.pixels(writeX), GuiValue.pixels(writeY)))
+            val selectedElement = selected?.element
+            val hoveredElement = hovered?.element
+            val currentRoot = root
+            if (currentRoot != null) {
+                nodes = layout(currentRoot)
+                logicalSize = computeLogicalSize(nodes)
+                selected = selectedElement?.let { el -> nodes.firstOrNull { it.element === el || sameElement(it.element, el) } }
+                hovered = hoveredElement?.let { el -> nodes.firstOrNull { it.element === el || sameElement(it.element, el) } }
+                revalidate()
+            }
+            repaint()
+        }
+
+        private fun sameElement(a: GuiElement, b: GuiElement): Boolean {
+            if (a.sourceOffset >= 0 && b.sourceOffset >= 0 && a.sourceOffset == b.sourceOffset && a.sourceFilePath == b.sourceFilePath) {
+                return true
+            }
+            return a.type == b.type && a.name == b.name && a.sourceLine == b.sourceLine && a.sourceFilePath == b.sourceFilePath
+        }
+
+        private fun applyLocalPositionUpdate(target: GuiElement, position: GuiPoint) {
+            val currentRoot = root ?: return
+            root = replaceElementPosition(currentRoot, target, position)
+        }
+
+        private fun replaceElementPosition(element: GuiElement, target: GuiElement, position: GuiPoint): GuiElement {
+            if (sameElement(element, target)) {
+                return element.copy(position = position)
+            }
+            if (element.children.isEmpty()) return element
+            var changed = false
+            val nextChildren = element.children.map { child ->
+                val updated = replaceElementPosition(child, target, position)
+                if (updated !== child) changed = true
+                updated
+            }
+            return if (changed) element.copy(children = nextChildren) else element
         }
 
         private fun setScrollBarValue(scrollBar: javax.swing.JScrollBar?, value: Int) {

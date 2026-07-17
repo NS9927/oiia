@@ -7,7 +7,7 @@
     <vendor url="https://github.com/NS9927/oiia">NS9927</vendor>
 
     <description>
-        Oiia is a Hearts of Iron IV modding toolkit built on top of Paradox Language Support.
+        Oiia is a Hearts of Iron IV modding toolkit built on top of Paradox Chronicle (formerly Paradox Language Support).
         It adds visual previews for national focus trees, technology trees, GUI files, and map data.
     </description>
 

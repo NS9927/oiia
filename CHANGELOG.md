@@ -1,5 +1,15 @@
 # Oiia Changelog
 
+## [1.0.2] - 2026-07-15
+
+Adapts Oiia to Paradox Chronicle 3.0.0.
+
+### Changed
+
+- Depends on Paradox Chronicle 3.0.0 (formerly Paradox Language Support; plugin id remains `icu.windea.pls`).
+- Updates locale preference handling for the renamed `CwtLocaleConfig` API (`id` -> `name`).
+- Updates English and Simplified Chinese documentation for the plugin rename and version requirement.
+
 ## [1.0.1] - 2026-06-17
 
 Adds project creation and Shadow launcher workflows.

@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "net.posdaca"
-version = "1.0.1"
+version = "1.0.2"
 
 kotlin {
     jvmToolchain(21)
@@ -31,6 +31,6 @@ dependencies {
 
         // Add plugin dependencies for compilation here, for example:
         bundledPlugin("com.intellij.java")
-        plugin("icu.windea.pls", "2.2.0")   // Paradox Language Support
+        plugin("icu.windea.pls", "3.0.0")   // Paradox Chronicle (formerly Paradox Language Support)
     }
 }

@@ -49,6 +49,7 @@ data class GuiElement(
     val maxHeight: GuiValue? = null,
     val fixedSize: Boolean = false,
     val sourceFilePath: String? = null,
+    val sourceOffset: Int = -1,
     val sourceLine: Int = 0,
     val properties: Map<String, String> = emptyMap(),
     val spriteCandidates: List<String> = emptyList(),

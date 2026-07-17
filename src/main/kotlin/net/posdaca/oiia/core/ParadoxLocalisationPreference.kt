@@ -41,7 +41,7 @@ object ParadoxLocalisationPreference {
     private fun preferredLocaleTags(): List<String> {
         val locale = preferredLocaleConfig() ?: return emptyList()
         val localeIds = buildList {
-            add(locale.id)
+            add(locale.name)
             add(locale.shortId)
             addAll(locale.codes)
             add(locale.text)

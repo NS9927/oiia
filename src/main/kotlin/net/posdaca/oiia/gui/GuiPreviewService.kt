@@ -1,10 +1,13 @@
 package net.posdaca.oiia.gui
 
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
+import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
+import com.intellij.psi.util.PsiTreeUtil
 import icu.windea.pls.lang.resolve.ParadoxLocalisationService
 import icu.windea.pls.lang.search.ParadoxLocalisationSearch
 import icu.windea.pls.lang.search.util.locale
@@ -286,6 +289,7 @@ class GuiPreviewService(private val project: Project) {
             maxHeight = maxHeight,
             fixedSize = fixedSize,
             sourceFilePath = vf?.path,
+            sourceOffset = prop.textOffset,
             sourceLine = line,
             properties = properties,
             spriteCandidates = spriteCandidates.distinct(),
@@ -492,6 +496,134 @@ class GuiPreviewService(private val project: Project) {
         }
     }
 
+    fun updateElementPosition(element: GuiElement, x: Int, y: Int): Boolean {
+        val path = element.sourceFilePath ?: return false
+        if (element.sourceOffset < 0) return false
+        val vf = com.intellij.openapi.vfs.LocalFileSystem.getInstance().findFileByPath(path) ?: return false
+        val psiFile = PsiManager.getInstance(project).findFile(vf) as? ParadoxScriptFile ?: return false
+        return WriteCommandAction.writeCommandAction(project, psiFile).withName("Update GUI position").compute<Boolean, RuntimeException> {
+            val documentManager = PsiDocumentManager.getInstance(project)
+            val document = documentManager.getDocument(psiFile) ?: return@compute false
+            documentManager.commitDocument(document)
+            val target = findElementProperty(psiFile, element) ?: return@compute false
+            val block = target.block ?: return@compute false
+            val positionProp = block.propertyList.firstOrNull { it.propertyKey.text == "position" }
+            val positionText = formatPositionBlock(x, y, positionProp)
+            if (positionProp != null) {
+                replacePropertyText(positionProp, positionText)
+            } else {
+                insertPositionProperty(block, positionText)
+            }
+            val updatedDocument = documentManager.getDocument(psiFile) ?: return@compute false
+            documentManager.commitDocument(updatedDocument)
+            true
+        }
+    }
+
+    private fun findElementProperty(psiFile: ParadoxScriptFile, element: GuiElement): ParadoxScriptProperty? {
+        val candidates = PsiTreeUtil.collectElementsOfType(psiFile, ParadoxScriptProperty::class.java)
+            .filter { it.propertyKey.text == element.type }
+            .filter { it.block != null }
+        if (candidates.isEmpty()) return null
+
+        val offsetMatches = candidates.filter { it.textOffset == element.sourceOffset }
+        if (offsetMatches.size == 1) return offsetMatches.first()
+
+        val lineMatches = if (element.sourceLine > 0) {
+            val document = PsiDocumentManager.getInstance(project).getDocument(psiFile)
+            if (document != null) {
+                candidates.filter { document.getLineNumber(it.textOffset) + 1 == element.sourceLine }
+            } else emptyList()
+        } else emptyList()
+        if (lineMatches.size == 1) return lineMatches.first()
+
+        val nameMatches = if (!element.name.isNullOrBlank()) {
+            candidates.filter { prop ->
+                prop.block?.propertyList?.any {
+                    it.propertyKey.text == "name" && scalarValue(it)?.trim()?.trim('"') == element.name
+                } == true
+            }
+        } else emptyList()
+        if (nameMatches.size == 1) return nameMatches.first()
+
+        return offsetMatches.firstOrNull()
+            ?: lineMatches.firstOrNull()
+            ?: nameMatches.firstOrNull()
+            ?: candidates.minByOrNull { kotlin.math.abs(it.textOffset - element.sourceOffset) }
+    }
+
+    private fun formatPositionBlock(x: Int, y: Int, existing: ParadoxScriptProperty?): String {
+        val block = existing?.block
+        val properties = block?.propertyList.orEmpty()
+        val usesNamedAxes = properties.any { it.propertyKey.text == "x" || it.propertyKey.text == "y" }
+        val compact = block?.text?.let { !it.contains('\n') } ?: true
+        return if (usesNamedAxes || existing == null) {
+            if (compact) {
+                "position = { x = $x y = $y }"
+            } else {
+                buildString {
+                    append("position = {")
+                    append('\n')
+                    append("\t\tx = ")
+                    append(x)
+                    append('\n')
+                    append("\t\ty = ")
+                    append(y)
+                    append('\n')
+                    append("\t}")
+                }
+            }
+        } else {
+            if (compact) {
+                "position = { $x $y }"
+            } else {
+                buildString {
+                    append("position = {")
+                    append('\n')
+                    append("\t\t")
+                    append(x)
+                    append(' ')
+                    append(y)
+                    append('\n')
+                    append("\t}")
+                }
+            }
+        }
+    }
+
+    private fun replacePropertyText(property: ParadoxScriptProperty, newText: String) {
+        val document = PsiDocumentManager.getInstance(project).getDocument(property.containingFile) ?: return
+        val range = property.textRange
+        document.replaceString(range.startOffset, range.endOffset, newText)
+    }
+
+    private fun insertPositionProperty(block: ParadoxScriptBlock, positionText: String) {
+        val document = PsiDocumentManager.getInstance(project).getDocument(block.containingFile) ?: return
+        val leftBound = block.leftBound ?: return
+        val insertOffset = leftBound.textRange.endOffset
+        val indent = detectInnerIndent(block)
+        val insertion = buildString {
+            append('\n')
+            append(indent)
+            append(positionText)
+        }
+        document.insertString(insertOffset, insertion)
+    }
+
+    private fun detectInnerIndent(block: ParadoxScriptBlock): String {
+        val firstProperty = block.propertyList.firstOrNull()
+        if (firstProperty != null) {
+            val document = PsiDocumentManager.getInstance(project).getDocument(firstProperty.containingFile)
+            if (document != null) {
+                val line = document.getLineNumber(firstProperty.textOffset)
+                val lineStart = document.getLineStartOffset(line)
+                val prefix = document.charsSequence.subSequence(lineStart, firstProperty.textOffset).toString()
+                val indent = prefix.takeWhile { it == ' ' || it == '\t' }
+                if (indent.isNotEmpty()) return indent
+            }
+        }
+        return "\t"
+    }
     companion object {
         private val LOG = Logger.getInstance(GuiPreviewService::class.java)
         private const val ROOT_TYPE = "containerWindowType"
