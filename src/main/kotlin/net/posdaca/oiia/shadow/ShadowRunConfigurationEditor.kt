@@ -6,7 +6,7 @@ import com.intellij.openapi.ui.TextFieldWithBrowseButton
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.dsl.builder.AlignX
 import com.intellij.ui.dsl.builder.panel
-import net.posdaca.OiiaBundle
+import OiiaBundle
 import javax.swing.JComponent
 
 internal class ShadowRunConfigurationEditor : SettingsEditor<ShadowRunConfiguration>() {
@@ -17,16 +17,14 @@ internal class ShadowRunConfigurationEditor : SettingsEditor<ShadowRunConfigurat
 
     init {
         executableField.addBrowseFolderListener(
-            OiiaBundle.message("run.shadow.executable.chooser.title"),
             null,
-            null,
-            FileChooserDescriptorFactory.createSingleFileDescriptor("exe"),
+            FileChooserDescriptorFactory.createSingleFileDescriptor("exe")
+                .withTitle(OiiaBundle.message("run.shadow.executable.chooser.title")),
         )
         errorLogPathField.addBrowseFolderListener(
-            OiiaBundle.message("run.shadow.error.log.chooser.title"),
             null,
-            null,
-            FileChooserDescriptorFactory.createSingleFileDescriptor("log"),
+            FileChooserDescriptorFactory.createSingleFileDescriptor("log")
+                .withTitle(OiiaBundle.message("run.shadow.error.log.chooser.title")),
         )
     }
 

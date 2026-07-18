@@ -15,7 +15,7 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.scale.JBUIScale
 import com.intellij.util.ui.ImageUtil
 import com.intellij.util.ui.JBFont
-import net.posdaca.OiiaBundle
+import OiiaBundle
 import net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteInfo
 import net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteInsets
 import net.posdaca.oiia.core.PreviewHintSupport
@@ -868,20 +868,33 @@ class GuiPreviewPanel(
             val frame = resolveFrameIndex(element.frame ?: spriteInfo.defaultFrame, frames)
             return when (direction) {
                 FrameDirection.HORIZONTAL -> {
-                    val frameWidth = (image.width / frames).coerceAtLeast(1)
-                    val sx = (frame * frameWidth).coerceAtMost(image.width - 1)
-                    val width = if (frame == frames - 1) image.width - sx else frameWidth.coerceAtMost(image.width - sx)
-                    LOG.info("GUI sprite frame crop: sprite=${spriteInfo.name} element=${element.name} raw=${image.width}x${image.height} frames=$frames frame=${element.frame} index=$frame direction=$direction crop=$sx,0 ${width}x${image.height}")
-                    image.getSubimage(sx, 0, width.coerceAtLeast(1), image.height)
+                    cropFrame(image, spriteInfo, element, frames, frame, direction, horizontal = true)
                 }
                 FrameDirection.VERTICAL -> {
-                    val frameHeight = (image.height / frames).coerceAtLeast(1)
-                    val sy = (frame * frameHeight).coerceAtMost(image.height - 1)
-                    val height = if (frame == frames - 1) image.height - sy else frameHeight.coerceAtMost(image.height - sy)
-                    LOG.info("GUI sprite frame crop: sprite=${spriteInfo.name} element=${element.name} raw=${image.width}x${image.height} frames=$frames frame=${element.frame} index=$frame direction=$direction crop=0,$sy ${image.width}x$height")
-                    image.getSubimage(0, sy, image.width, height.coerceAtLeast(1))
+                    cropFrame(image, spriteInfo, element, frames, frame, direction, horizontal = false)
                 }
             }
+        }
+
+        private fun cropFrame(
+            image: BufferedImage,
+            spriteInfo: SpriteInfo,
+            element: GuiElement,
+            frames: Int,
+            frame: Int,
+            direction: FrameDirection,
+            horizontal: Boolean
+        ): BufferedImage {
+            val total = if (horizontal) image.width else image.height
+            val frameSize = (total / frames).coerceAtLeast(1)
+            val start = (frame * frameSize).coerceAtMost(total - 1)
+            val span = if (frame == frames - 1) total - start else frameSize.coerceAtMost(total - start).coerceAtLeast(1)
+            val sx = if (horizontal) start else 0
+            val sy = if (horizontal) 0 else start
+            val width = if (horizontal) span else image.width
+            val height = if (horizontal) image.height else span
+            LOG.info("GUI sprite frame crop: sprite=${spriteInfo.name} element=${element.name} raw=${image.width}x${image.height} frames=$frames frame=${element.frame} index=$frame direction=$direction crop=$sx,$sy ${width}x$height")
+            return image.getSubimage(sx, sy, width, height)
         }
 
         private fun frameDirection(image: BufferedImage, frames: Int): FrameDirection {
@@ -997,6 +1010,20 @@ class GuiPreviewPanel(
             return SpriteInsets(left, top, right, bottom)
         }
 
+        private fun paintProgressLayers(
+            g: Graphics2D,
+            fallbackImage: BufferedImage,
+            bounds: Rectangle,
+            spriteInfo: SpriteInfo
+        ): BufferedImage {
+            val foreground = spriteInfo.imagePath1?.let { imageCache[it] } ?: fallbackImage
+            val background = spriteInfo.imagePath2?.let { imageCache[it] }
+            if (background != null) {
+                g.drawImage(background, bounds.x, bounds.y, bounds.width, bounds.height, null)
+            }
+            return foreground
+        }
+
         private fun paintProgressBar(
             g: Graphics2D,
             fallbackImage: BufferedImage,
@@ -1004,11 +1031,7 @@ class GuiPreviewPanel(
             element: GuiElement,
             spriteInfo: SpriteInfo
         ) {
-            val foreground = spriteInfo.imagePath1?.let { imageCache[it] } ?: fallbackImage
-            val background = spriteInfo.imagePath2?.let { imageCache[it] }
-            if (background != null) {
-                g.drawImage(background, bounds.x, bounds.y, bounds.width, bounds.height, null)
-            }
+            val foreground = paintProgressLayers(g, fallbackImage, bounds, spriteInfo)
 
             val ratio = steppedProgressRatio(element, spriteInfo)
             if (ratio <= 0.0) return
@@ -1030,11 +1053,7 @@ class GuiPreviewPanel(
             bounds: Rectangle,
             spriteInfo: SpriteInfo
         ) {
-            val foreground = spriteInfo.imagePath1?.let { imageCache[it] } ?: fallbackImage
-            val background = spriteInfo.imagePath2?.let { imageCache[it] }
-            if (background != null) {
-                g.drawImage(background, bounds.x, bounds.y, bounds.width, bounds.height, null)
-            }
+            val foreground = paintProgressLayers(g, fallbackImage, bounds, spriteInfo)
 
             val ratio = ((spriteInfo.amount ?: 50).toDouble() / 100.0).coerceIn(0.0, 1.0)
             if (ratio <= 0.0) return
@@ -1395,21 +1414,7 @@ class GuiPreviewPanel(
         }
 
         private fun spriteCandidates(element: GuiElement): List<String> {
-            val result = linkedSetOf<String>()
-            element.spriteCandidates.mapNotNullTo(result) { normalisedSpriteName(it) }
-            listOf(
-                element.sprite,
-                element.quadTextureSprite,
-                element.background,
-                element.buttonSprite,
-                element.hoverSprite,
-                element.disabledSprite
-            ).mapNotNullTo(result) { normalisedSpriteName(it) }
-            return result.toList()
-        }
-
-        private fun normalisedSpriteName(value: String?): String? {
-            return value?.trim()?.trim('"')?.takeIf { it.isNotBlank() }
+            return element.resolvedSpriteCandidates()
         }
 
         private fun normalisedLocalisationKey(value: String?): String? {
@@ -1616,10 +1621,16 @@ class GuiPreviewPanel(
         }
 
         private fun sameElement(a: GuiElement, b: GuiElement): Boolean {
-            if (a.sourceOffset >= 0 && b.sourceOffset >= 0 && a.sourceOffset == b.sourceOffset && a.sourceFilePath == b.sourceFilePath) {
-                return true
+            return when {
+                a.sourceOffset >= 0 &&
+                    b.sourceOffset >= 0 &&
+                    a.sourceOffset == b.sourceOffset &&
+                    a.sourceFilePath == b.sourceFilePath -> true
+                else -> a.type == b.type &&
+                    a.name == b.name &&
+                    a.sourceLine == b.sourceLine &&
+                    a.sourceFilePath == b.sourceFilePath
             }
-            return a.type == b.type && a.name == b.name && a.sourceLine == b.sourceLine && a.sourceFilePath == b.sourceFilePath
         }
 
         private fun applyLocalPositionUpdate(target: GuiElement, position: GuiPoint) {

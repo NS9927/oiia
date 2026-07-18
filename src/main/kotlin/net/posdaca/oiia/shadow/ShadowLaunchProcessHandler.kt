@@ -3,8 +3,8 @@ package net.posdaca.oiia.shadow
 import com.intellij.execution.ExecutionException
 import com.intellij.execution.configurations.GeneralCommandLine
 import com.intellij.execution.process.OSProcessHandler
-import com.intellij.execution.process.ProcessAdapter
 import com.intellij.execution.process.ProcessEvent
+import com.intellij.execution.process.ProcessListener
 import com.intellij.execution.process.ProcessHandler
 import com.intellij.execution.process.ProcessOutputTypes
 import com.intellij.openapi.util.Key
@@ -97,7 +97,7 @@ internal class ShadowLaunchProcessHandler(
         shadowHandler = handler
         val finished = CountDownLatch(1)
         var exitCode = -1
-        handler.addProcessListener(object : ProcessAdapter() {
+        handler.addProcessListener(object : ProcessListener {
             override fun onTextAvailable(event: ProcessEvent, outputType: Key<*>) {
                 notifyTextAvailable(event.text, outputType)
             }

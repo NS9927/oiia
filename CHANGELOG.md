@@ -1,5 +1,11 @@
 # Oiia Changelog
 
+## [Unreleased]
+
+### Changed
+
+- Updates the `HOI4 via Shadow` run configuration to Shadow's `PDXGameLauncher hoi4 -playset <id>` CLI entry (replacing `--shadow-command hoi4.launch`).
+
 ## [1.0.2] - 2026-07-15
 
 Adapts Oiia to Paradox Chronicle 3.0.0.
@@ -19,14 +25,12 @@ Adds project creation and Shadow launcher workflows.
 - HOI4 Mod project wizard under `New Project | Game Modding | HOI4 Mod`, generating `descriptor.mod`, optional launcher `.mod` descriptor, README, and `.gitignore`.
 - Shadow playset sync action under `Tools | Sync Shadow Playset`, matching PLS HOI4 mod load order against Shadow's mod index by remote file ID or normalized content path.
 - `HOI4 via Shadow` run configuration that launches HOI4 through Shadow using the synced playset.
-- Optional HOI4 `error.log` console tailing after Shadow launch.
-- English and Simplified Chinese UI messages for project creation and Shadow workflows.
+- Optional console streaming of HOI4 `error.log` after launch.
+- English and Simplified Chinese messages for the new project wizard and Shadow tooling.
+
+### Tests
+
 - Unit tests for project template generation, Shadow playset matching/writing, Shadow log handling, and Shadow run configuration defaults.
-
-### Changed
-
-- Declared IntelliJ Java plugin dependency for project/module creation support.
-- Added Gson dependency for reading and writing Shadow workspace JSON.
 
 ## [1.0.0] - 2026-06-11
 

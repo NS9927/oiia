@@ -13,7 +13,7 @@ import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPanel
 import com.intellij.ui.content.ContentFactory
 import com.intellij.util.messages.MessageBusConnection
-import net.posdaca.OiiaBundle
+import OiiaBundle
 import net.posdaca.oiia.core.PreviewToolWindowSupport
 import java.awt.BorderLayout
 import javax.swing.SwingConstants

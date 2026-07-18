@@ -4,7 +4,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.content.ContentFactory
-import net.posdaca.OiiaBundle
+import OiiaBundle
 import net.posdaca.oiia.core.PreviewToolWindowSupport
 
 class MapPreviewToolWindowFactory : ToolWindowFactory {

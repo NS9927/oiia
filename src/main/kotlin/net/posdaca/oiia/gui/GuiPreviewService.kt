@@ -461,21 +461,7 @@ class GuiPreviewService(private val project: Project) {
     }
 
     private fun spriteCandidates(element: GuiElement): List<String> {
-        val result = linkedSetOf<String>()
-        element.spriteCandidates.mapNotNullTo(result) { normalisedSpriteName(it) }
-        listOf(
-            element.sprite,
-            element.quadTextureSprite,
-            element.background,
-            element.buttonSprite,
-            element.hoverSprite,
-            element.disabledSprite
-        ).mapNotNullTo(result) { normalisedSpriteName(it) }
-        return result.toList()
-    }
-
-    private fun normalisedSpriteName(value: String?): String? {
-        return value?.trim()?.trim('"')?.takeIf { it.isNotBlank() }
+        return element.resolvedSpriteCandidates()
     }
 
     private fun normalisedLocalisationKey(value: String?): String? {

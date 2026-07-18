@@ -62,13 +62,21 @@ data class GuiElement(
         get() = size ?: defaultSize(type)
 
     val primarySprite: String?
-        get() = spriteCandidates.firstOrNull()
-            ?: sprite
-            ?: quadTextureSprite
-            ?: background
-            ?: buttonSprite
-            ?: hoverSprite
-            ?: disabledSprite
+        get() = resolvedSpriteCandidates().firstOrNull()
+
+    fun resolvedSpriteCandidates(): List<String> {
+        val result = linkedSetOf<String>()
+        spriteCandidates.mapNotNullTo(result) { normalisedToken(it) }
+        listOf(
+            sprite,
+            quadTextureSprite,
+            background,
+            buttonSprite,
+            hoverSprite,
+            disabledSprite
+        ).mapNotNullTo(result) { normalisedToken(it) }
+        return result.toList()
+    }
 
     companion object {
         fun defaultSize(type: String): GuiSize {
@@ -164,4 +172,8 @@ data class GuiPreviewIssue(
 enum class GuiIssueSeverity {
     INFO,
     WARNING
+}
+
+private fun normalisedToken(value: String?): String? {
+    return value?.trim()?.trim('"')?.takeIf { it.isNotBlank() }
 }

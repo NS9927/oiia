@@ -1,6 +1,7 @@
-.codex
-.gradle
-.idea
-.intellijPlatform
-.kotlin
-build
+.codex/
+.gradle/
+.idea/
+.intellijPlatform/
+.kotlin/
+build/
+AGENTS.md

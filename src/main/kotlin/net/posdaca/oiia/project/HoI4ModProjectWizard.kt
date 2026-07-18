@@ -18,7 +18,7 @@ import com.intellij.ui.dsl.builder.AlignX
 import com.intellij.ui.dsl.builder.bindSelected
 import com.intellij.ui.dsl.builder.bindText
 import com.intellij.util.IconUtil
-import net.posdaca.OiiaBundle
+import OiiaBundle
 import java.nio.file.InvalidPathException
 import java.nio.file.Path
 import javax.swing.Icon

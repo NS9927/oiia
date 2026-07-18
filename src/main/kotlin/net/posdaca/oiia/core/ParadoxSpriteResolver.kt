@@ -554,28 +554,20 @@ class ParadoxSpriteResolver(private val project: Project) {
                 bottom = sideBottom ?: sideTop ?: 0
             )
         }
-        val x = block.propertyValue("x")?.toDoubleOrNull()?.toInt()
-        val y = block.propertyValue("y")?.toDoubleOrNull()?.toInt()
-        val width = block.propertyValue("width")?.toDoubleOrNull()?.toInt()
-        val height = block.propertyValue("height")?.toDoubleOrNull()?.toInt()
-        val values = block.valueList.mapNotNull { it.text.trim().trim('"').toDoubleOrNull()?.toInt() }
+        val dimensions = block.dimensionValues()
         return SpriteInsets(
-            left = x ?: width ?: values.getOrNull(0) ?: 0,
-            top = y ?: height ?: values.getOrNull(1) ?: values.getOrNull(0) ?: 0,
-            right = x ?: width ?: values.getOrNull(2) ?: values.getOrNull(0) ?: 0,
-            bottom = y ?: height ?: values.getOrNull(3) ?: values.getOrNull(1) ?: values.getOrNull(0) ?: 0
+            left = dimensions.horizontalOrFirst,
+            top = dimensions.verticalOrSecond,
+            right = dimensions.horizontalOrThird,
+            bottom = dimensions.verticalOrFourth
         )
     }
 
     private fun parseSize(block: icu.windea.pls.script.psi.ParadoxScriptBlock): SpriteSize {
-        val x = block.propertyValue("x")?.toDoubleOrNull()?.toInt()
-        val y = block.propertyValue("y")?.toDoubleOrNull()?.toInt()
-        val width = block.propertyValue("width")?.toDoubleOrNull()?.toInt()
-        val height = block.propertyValue("height")?.toDoubleOrNull()?.toInt()
-        val values = block.valueList.mapNotNull { it.text.trim().trim('"').toDoubleOrNull()?.toInt() }
+        val dimensions = block.dimensionValues()
         return SpriteSize(
-            width = x ?: width ?: values.getOrNull(0) ?: 0,
-            height = y ?: height ?: values.getOrNull(1) ?: values.getOrNull(0) ?: 0
+            width = dimensions.horizontalOrFirst,
+            height = dimensions.verticalOrSecond
         )
     }
 
@@ -594,30 +586,22 @@ class ParadoxSpriteResolver(private val project: Project) {
                 bottom = sideBottom ?: sideTop ?: 0
             )
         }
-        val x = parseAssignmentValue(block, "x")?.toDoubleOrNull()?.toInt()
-        val y = parseAssignmentValue(block, "y")?.toDoubleOrNull()?.toInt()
-        val width = parseAssignmentValue(block, "width")?.toDoubleOrNull()?.toInt()
-        val height = parseAssignmentValue(block, "height")?.toDoubleOrNull()?.toInt()
-        val values = NUMBER_REGEX.findAll(block).mapNotNull { it.value.toDoubleOrNull()?.toInt() }.toList()
+        val dimensions = bodyDimensionValues(block)
         return SpriteInsets(
-            left = x ?: width ?: values.getOrNull(0) ?: 0,
-            top = y ?: height ?: values.getOrNull(1) ?: values.getOrNull(0) ?: 0,
-            right = x ?: width ?: values.getOrNull(2) ?: values.getOrNull(0) ?: 0,
-            bottom = y ?: height ?: values.getOrNull(3) ?: values.getOrNull(1) ?: values.getOrNull(0) ?: 0
+            left = dimensions.horizontalOrFirst,
+            top = dimensions.verticalOrSecond,
+            right = dimensions.horizontalOrThird,
+            bottom = dimensions.verticalOrFourth
         )
     }
 
     private fun parseSpriteSize(body: String): SpriteSize? {
         val block = Regex("""(?is)\bsize\s*=\s*\{(.*?)\}""").find(body)?.groupValues?.getOrNull(1)
             ?: return null
-        val x = parseAssignmentValue(block, "x")?.toDoubleOrNull()?.toInt()
-        val y = parseAssignmentValue(block, "y")?.toDoubleOrNull()?.toInt()
-        val width = parseAssignmentValue(block, "width")?.toDoubleOrNull()?.toInt()
-        val height = parseAssignmentValue(block, "height")?.toDoubleOrNull()?.toInt()
-        val values = NUMBER_REGEX.findAll(block).mapNotNull { it.value.toDoubleOrNull()?.toInt() }.toList()
+        val dimensions = bodyDimensionValues(block)
         return SpriteSize(
-            width = x ?: width ?: values.getOrNull(0) ?: 0,
-            height = y ?: height ?: values.getOrNull(1) ?: values.getOrNull(0) ?: 0
+            width = dimensions.horizontalOrFirst,
+            height = dimensions.verticalOrSecond
         )
     }
 
@@ -627,6 +611,43 @@ class ParadoxSpriteResolver(private val project: Project) {
             ?.groupValues
             ?.getOrNull(1)
             ?.let(::cleanToken)
+    }
+
+    private fun icu.windea.pls.script.psi.ParadoxScriptBlock.dimensionValues(): DimensionValues {
+        return DimensionValues(
+            x = propertyValue("x")?.toDoubleOrNull()?.toInt(),
+            y = propertyValue("y")?.toDoubleOrNull()?.toInt(),
+            width = propertyValue("width")?.toDoubleOrNull()?.toInt(),
+            height = propertyValue("height")?.toDoubleOrNull()?.toInt(),
+            values = valueList.mapNotNull { it.text.trim().trim('"').toDoubleOrNull()?.toInt() }
+        )
+    }
+
+    private fun bodyDimensionValues(body: String): DimensionValues {
+        return DimensionValues(
+            x = parseAssignmentValue(body, "x")?.toDoubleOrNull()?.toInt(),
+            y = parseAssignmentValue(body, "y")?.toDoubleOrNull()?.toInt(),
+            width = parseAssignmentValue(body, "width")?.toDoubleOrNull()?.toInt(),
+            height = parseAssignmentValue(body, "height")?.toDoubleOrNull()?.toInt(),
+            values = NUMBER_REGEX.findAll(body).mapNotNull { it.value.toDoubleOrNull()?.toInt() }.toList()
+        )
+    }
+
+    private data class DimensionValues(
+        val x: Int?,
+        val y: Int?,
+        val width: Int?,
+        val height: Int?,
+        val values: List<Int>
+    ) {
+        val horizontalOrFirst: Int
+            get() = x ?: width ?: values.getOrNull(0) ?: 0
+        val verticalOrSecond: Int
+            get() = y ?: height ?: values.getOrNull(1) ?: values.getOrNull(0) ?: 0
+        val horizontalOrThird: Int
+            get() = x ?: width ?: values.getOrNull(2) ?: values.getOrNull(0) ?: 0
+        val verticalOrFourth: Int
+            get() = y ?: height ?: values.getOrNull(3) ?: values.getOrNull(1) ?: values.getOrNull(0) ?: 0
     }
 
     private fun cleanToken(value: String): String {

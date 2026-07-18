@@ -4,7 +4,7 @@ import com.intellij.execution.configurations.ConfigurationFactory
 import com.intellij.execution.configurations.ConfigurationTypeBase
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.NotNullLazyValue
-import net.posdaca.OiiaBundle
+import OiiaBundle
 import net.posdaca.oiia.core.PreviewToolWindowSupport
 
 internal class ShadowRunConfigurationType : ConfigurationTypeBase(

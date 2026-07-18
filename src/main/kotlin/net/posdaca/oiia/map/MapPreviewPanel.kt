@@ -16,7 +16,7 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.scale.JBUIScale
 import com.intellij.util.messages.MessageBusConnection
 import com.intellij.util.ui.JBFont
-import net.posdaca.OiiaBundle
+import OiiaBundle
 import net.posdaca.oiia.core.PreviewHintSupport
 import java.awt.BorderLayout
 import java.awt.BasicStroke

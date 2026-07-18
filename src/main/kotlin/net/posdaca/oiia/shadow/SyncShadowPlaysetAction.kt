@@ -7,7 +7,7 @@ import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
-import net.posdaca.OiiaBundle
+import OiiaBundle
 import javax.swing.Icon
 
 internal class SyncShadowPlaysetAction : AnAction(

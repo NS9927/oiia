@@ -10,6 +10,7 @@ import com.intellij.ui.scale.JBUIScale
 import com.intellij.util.ui.JBFont
 import net.posdaca.oiia.core.PreviewHintSupport
 import net.posdaca.oiia.core.PreviewImageLoader
+import net.posdaca.oiia.core.PreviewTextLayout
 import java.awt.*
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
@@ -735,48 +736,7 @@ class NationalFocusPreviewPanel(
         private fun focusIconFallbackFont(): Font = JBFont.label().deriveFont(Font.PLAIN, 10f)
 
         private fun drawCenteredTitle(g2d: Graphics2D, text: String, rect: Rectangle) {
-            val lines = splitTextToLines(g2d, text, rect.width)
-            val fm = g2d.fontMetrics
-            val lineHeight = fm.height - fm.leading
-            var y = rect.y + (rect.height - lineHeight * lines.size) / 2 + fm.ascent
-            for (line in lines) {
-                val x = rect.x + (rect.width - fm.stringWidth(line)) / 2
-                g2d.drawString(line, x, y)
-                y += lineHeight
-            }
-        }
-
-        private fun splitTextToLines(g2d: Graphics2D, text: String, maxW: Int): List<String> {
-            val chars = text.trim().codePoints().toArray().map { String(Character.toChars(it)) }
-            if (chars.isEmpty()) return emptyList()
-
-            val lines = mutableListOf<String>()
-            var line = ""
-            var index = 0
-            while (index < chars.size) {
-                val next = line + chars[index]
-                if (line.isNotEmpty() && g2d.fontMetrics.stringWidth(next) > maxW) {
-                    lines.add(line.trim())
-                    line = ""
-                    if (lines.size == TITLE_MAX_LINES - 1) break
-                } else {
-                    line = next
-                    index++
-                }
-            }
-
-            val rest = (line + chars.drop(index).joinToString("")).trim()
-            if (rest.isNotEmpty() && lines.size < TITLE_MAX_LINES) {
-                lines.add(if (g2d.fontMetrics.stringWidth(rest) > maxW) truncateStr(g2d, rest, maxW) else rest)
-            }
-            return lines.ifEmpty { listOf(truncateStr(g2d, text, maxW)) }
-        }
-
-        private fun truncateStr(g2d: Graphics2D, text: String, maxW: Int): String {
-            if (g2d.fontMetrics.stringWidth(text) <= maxW) return text
-            var r = text
-            while (r.isNotEmpty() && g2d.fontMetrics.stringWidth("$r...") > maxW) r = r.dropLast(1)
-            return "$r..."
+            PreviewTextLayout.drawCenteredTitle(g2d, text, rect, TITLE_MAX_LINES)
         }
 
         override fun removeNotify() {

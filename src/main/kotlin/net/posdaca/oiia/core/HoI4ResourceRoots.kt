@@ -192,7 +192,7 @@ internal object HoI4ResourceRoots {
         var result = value.trim()
         val userHome = System.getProperty("user.home")
         if (!userHome.isNullOrBlank()) {
-            result = result.replace("\$USER_HOME\$", userHome)
+            result = result.replace("${'$'}USER_HOME${'$'}", userHome)
             if (result == "~") {
                 result = userHome
             } else if (result.startsWith("~/") || result.startsWith("~\\")) {
