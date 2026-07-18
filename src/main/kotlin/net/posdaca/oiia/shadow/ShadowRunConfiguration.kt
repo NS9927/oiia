@@ -17,7 +17,7 @@ import com.intellij.execution.runners.ExecutionEnvironment
 import com.intellij.openapi.components.StoredProperty
 import com.intellij.openapi.options.SettingsEditor
 import com.intellij.openapi.project.Project
-import net.posdaca.OiiaBundle
+import OiiaBundle
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
@@ -120,11 +120,10 @@ private class ShadowRunProfileState(
             throw ExecutionException(e.message ?: e.javaClass.simpleName, e)
         }
 
-        val shadowArguments = mutableListOf("--shadow-command", "hoi4.launch", "--playset-id", syncResult.playsetId)
-        if (configuration.allowMissingMods) {
-            shadowArguments.add("--allow-missing-mods")
-            shadowArguments.add("true")
-        }
+        val shadowArguments = buildShadowLaunchArguments(
+            playsetId = syncResult.playsetId,
+            allowMissingMods = configuration.allowMissingMods,
+        )
 
         val executable = Path.of(configuration.shadowExecutablePath)
         return if (configuration.showErrorLog) {
@@ -144,6 +143,14 @@ private class ShadowRunProfileState(
             handler
         }
     }
+}
+
+internal fun buildShadowLaunchArguments(playsetId: String, allowMissingMods: Boolean): List<String> {
+    val shadowArguments = mutableListOf("PDXGameLauncher", "hoi4", "-playset", playsetId)
+    if (allowMissingMods) {
+        shadowArguments.add("-allow-missing-mods")
+    }
+    return shadowArguments
 }
 
 internal fun defaultShadowExecutablePath(): String {
