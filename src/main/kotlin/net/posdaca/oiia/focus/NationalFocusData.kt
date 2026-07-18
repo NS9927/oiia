@@ -5,6 +5,7 @@ data class NationalFocusTreeData(
     val country: String? = null,
     val focuses: List<FocusData> = emptyList(),
     val sharedFocuses: List<FocusData> = emptyList(),
+    val sharedFocusReferences: List<String> = emptyList(),
     val defaultFocus: Boolean = false
 )
 
@@ -29,6 +30,7 @@ data class FocusData(
     val completeTooltip: String? = null,
     val prerequisitesText: String? = null,
     val sourceFilePath: String? = null,
+    val sourceOffset: Int = -1,
     val sourceLine: Int = 0
 ) {
     val displayName: String get() = localizedName ?: id

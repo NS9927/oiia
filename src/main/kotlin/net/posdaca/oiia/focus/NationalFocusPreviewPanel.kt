@@ -48,9 +48,11 @@ class NationalFocusPreviewPanel(
 
     private class FocusCanvas(
         private val project: Project,
-        private val focusTrees: List<NationalFocusTreeData>,
+        focusTrees: List<NationalFocusTreeData>,
         private val service: NationalFocusService
     ) : JBPanel<JBPanel<*>>(null), Scrollable {
+
+        private var workingTrees: List<NationalFocusTreeData> = focusTrees
 
         private val nodeWidth = JBUIScale.scale(132)
         private val nodeHeight = JBUIScale.scale(116)
@@ -67,6 +69,12 @@ class NationalFocusPreviewPanel(
         private var dragScrollStart: Point? = null
         private var pressedFocusId: String? = null
         private var draggingView = false
+        private var draggingFocus = false
+        private var dragStartLogicalPoint: Point? = null
+        private var dragBaseGridX = 0
+        private var dragBaseGridY = 0
+        private var dragGridDeltaX = 0
+        private var dragGridDeltaY = 0
         private var singleClickTimer: Timer? = null
 
         private val logicalPositions = mutableMapOf<String, Point>()
@@ -96,24 +104,53 @@ class NationalFocusPreviewPanel(
                     if (e.button == MouseEvent.BUTTON1) {
                         if (e.clickCount > 1) cancelPendingSingleClick()
                         val logicalPt = screenToLogical(e)
-                        pressedFocusId = findFocusAt(logicalPt)?.id
+                        val pressed = findFocusAt(logicalPt)
+                        pressedFocusId = pressed?.id
                         dragPressScreenPoint = Point(e.locationOnScreen)
                         dragScrollStart = Point(scrollableHsb?.value ?: 0, scrollableVsb?.value ?: 0)
+                        dragStartLogicalPoint = logicalPt
+                        if (pressed != null) {
+                            dragBaseGridX = pressed.x.toInt()
+                            dragBaseGridY = pressed.y.toInt()
+                        } else {
+                            dragBaseGridX = 0
+                            dragBaseGridY = 0
+                        }
+                        dragGridDeltaX = 0
+                        dragGridDeltaY = 0
                         draggingView = false
+                        draggingFocus = false
                     }
                 }
 
                 override fun mouseReleased(e: MouseEvent) {
                     if (e.button != MouseEvent.BUTTON1) return
-                    val wasDragging = draggingView
+                    val wasDraggingView = draggingView
+                    val wasDraggingFocus = draggingFocus
+                    val draggedId = pressedFocusId
+                    val gridDx = dragGridDeltaX
+                    val gridDy = dragGridDeltaY
+                    val baseX = dragBaseGridX
+                    val baseY = dragBaseGridY
                     cursor = Cursor.getDefaultCursor()
                     dragPressScreenPoint = null
                     dragScrollStart = null
+                    dragStartLogicalPoint = null
+                    dragGridDeltaX = 0
+                    dragGridDeltaY = 0
                     draggingView = false
+                    draggingFocus = false
 
-                    if (!wasDragging) {
+                    if (wasDraggingFocus && draggedId != null && (gridDx != 0 || gridDy != 0)) {
+                        val focus = findFocusData(draggedId)
+                        if (focus != null) {
+                            commitFocusDrag(focus, baseX + gridDx, baseY + gridDy)
+                        } else {
+                            repaint()
+                        }
+                    } else if (!wasDraggingView && !wasDraggingFocus) {
                         val clicked = findFocusAt(screenToLogical(e))
-                        if (clicked != null && clicked.id == pressedFocusId) {
+                        if (clicked != null && clicked.id == draggedId) {
                             selectedFocusId = clicked.id
                             if (e.clickCount >= 2) {
                                 cancelPendingSingleClick()
@@ -133,6 +170,7 @@ class NationalFocusPreviewPanel(
                 }
 
                 override fun mouseExited(e: MouseEvent) {
+                    if (draggingFocus || draggingView) return
                     if (hoveredFocusId != null) {
                         hoveredFocusId = null
                         repaint()
@@ -147,21 +185,49 @@ class NationalFocusPreviewPanel(
                     val prevId = hoveredFocusId
                     hoveredFocusId = hovered?.id
                     if (prevId != hoveredFocusId) repaint()
+                    cursor = if (hovered != null && canDragFocus(hovered)) {
+                        Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                    } else {
+                        Cursor.getDefaultCursor()
+                    }
                 }
 
                 override fun mouseDragged(e: MouseEvent) {
                     val pressPoint = dragPressScreenPoint ?: return
-                    val scrollStart = dragScrollStart ?: return
+                    val threshold = JBUIScale.scale(4)
                     val currentPoint = e.locationOnScreen
-                    val dx = currentPoint.x - pressPoint.x
-                    val dy = currentPoint.y - pressPoint.y
-                    if (!draggingView && dx * dx + dy * dy < JBUIScale.scale(4) * JBUIScale.scale(4)) return
+                    val screenDx = currentPoint.x - pressPoint.x
+                    val screenDy = currentPoint.y - pressPoint.y
+                    if (!draggingView && !draggingFocus &&
+                        screenDx * screenDx + screenDy * screenDy < threshold * threshold
+                    ) return
 
+                    val pressedId = pressedFocusId
+                    val startLogical = dragStartLogicalPoint
+                    val pressedFocus = pressedId?.let { findFocusData(it) }
+                    if (pressedFocus != null && canDragFocus(pressedFocus) && startLogical != null) {
+                        if (!draggingFocus) {
+                            cancelPendingSingleClick()
+                            hideFocusHint(clearLocked = true)
+                            selectedFocusId = pressedFocus.id
+                            draggingFocus = true
+                        }
+                        val logicalPt = screenToLogical(e)
+                        val cellW = (nodeWidth + hGap).coerceAtLeast(1)
+                        val cellH = (nodeHeight + vGap).coerceAtLeast(1)
+                        dragGridDeltaX = Math.round((logicalPt.x - startLogical.x).toDouble() / cellW).toInt()
+                        dragGridDeltaY = Math.round((logicalPt.y - startLogical.y).toDouble() / cellH).toInt()
+                        cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
+                        repaint()
+                        return
+                    }
+
+                    val scrollStart = dragScrollStart ?: return
                     if (!draggingView) cancelPendingSingleClick()
                     draggingView = true
                     cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
-                    setScrollBarValue(scrollableHsb, scrollStart.x - dx)
-                    setScrollBarValue(scrollableVsb, scrollStart.y - dy)
+                    setScrollBarValue(scrollableHsb, scrollStart.x - screenDx)
+                    setScrollBarValue(scrollableVsb, scrollStart.y - screenDy)
                 }
             })
 
@@ -198,6 +264,50 @@ class NationalFocusPreviewPanel(
             val logicalPt = screenToLogical(event)
             val focus = findFocusAt(logicalPt) ?: return null
             return buildFocusHintText(focus)
+        }
+
+        private fun canDragFocus(focus: FocusData): Boolean {
+            if (focus.sourceFilePath.isNullOrBlank()) return false
+            if (focus.id.isBlank()) return false
+            return true
+        }
+
+        private fun findFocusData(id: String): FocusData? {
+            for (tree in workingTrees) {
+                tree.focuses.firstOrNull { it.id == id }?.let { return it }
+                tree.sharedFocuses.firstOrNull { it.id == id }?.let { return it }
+            }
+            return null
+        }
+
+        private fun effectiveGrid(focus: FocusData): Point {
+            val baseX = focus.x.toInt()
+            val baseY = focus.y.toInt()
+            if (draggingFocus && focus.id == pressedFocusId) {
+                return Point(baseX + dragGridDeltaX, baseY + dragGridDeltaY)
+            }
+            return Point(baseX, baseY)
+        }
+
+        private fun commitFocusDrag(focus: FocusData, newX: Int, newY: Int) {
+            if (focus.x.toInt() == newX && focus.y.toInt() == newY) {
+                repaint()
+                return
+            }
+            val ok = service.updateFocusPosition(focus, newX, newY)
+            if (!ok) {
+                repaint()
+                return
+            }
+            workingTrees = workingTrees.map { tree ->
+                tree.copy(
+                    focuses = tree.focuses.map { if (it.id == focus.id) it.copy(x = newX.toDouble(), y = newY.toDouble()) else it },
+                    sharedFocuses = tree.sharedFocuses.map { if (it.id == focus.id) it.copy(x = newX.toDouble(), y = newY.toDouble()) else it }
+                )
+            }
+            selectedFocusId = focus.id
+            revalidate()
+            repaint()
         }
 
         private fun setScrollBarValue(scrollBar: javax.swing.JScrollBar?, value: Int) {
@@ -326,7 +436,7 @@ class NationalFocusPreviewPanel(
         override fun getScrollableTracksViewportHeight(): Boolean = false
 
         override fun getPreferredSize(): Dimension {
-            if (focusTrees.isEmpty()) return Dimension(400, 300)
+            if (workingTrees.isEmpty()) return Dimension(400, 300)
             val logicalSize = computeLogicalSize()
             val w = ((logicalSize.width + padding) * zoomFactor + padding).toInt() + 50
             val h = ((logicalSize.height + padding) * zoomFactor + padding).toInt() + 50
@@ -337,7 +447,7 @@ class NationalFocusPreviewPanel(
             var maxW = 400
             var maxH = 300
             var currentY = padding
-            for (tree in focusTrees) {
+            for (tree in workingTrees) {
                 val allFocuses = tree.focuses + tree.sharedFocuses
                 if (allFocuses.isEmpty()) continue
                 val positions = computeRawPositions(allFocuses)
@@ -377,7 +487,7 @@ class NationalFocusPreviewPanel(
             logicalNodeBounds.clear()
             allFocusesList.clear()
             var offsetY = padding
-            for (tree in focusTrees) {
+            for (tree in workingTrees) {
                 val allFocuses = tree.focuses + tree.sharedFocuses
                 if (allFocuses.isEmpty()) continue
                 allFocusesList.addAll(allFocuses)
@@ -412,16 +522,18 @@ class NationalFocusPreviewPanel(
                     val relFocus = focuses.find { it.id == relId }
                     if (relFocus != null) {
                         val relPos = resolveWithRelative(relFocus)
+                        val grid = effectiveGrid(focus)
                         val pt = Point(
-                            relPos.x + focus.x.toInt() * (nodeWidth + hGap),
-                            relPos.y + focus.y.toInt() * (nodeHeight + vGap)
+                            relPos.x + grid.x * (nodeWidth + hGap),
+                            relPos.y + grid.y * (nodeHeight + vGap)
                         )
                         positions[focus.id] = pt
                         resolved.add(focus.id)
                         return pt
                     }
                 }
-                val pt = Point(focus.x.toInt() * (nodeWidth + hGap), focus.y.toInt() * (nodeHeight + vGap))
+                val grid = effectiveGrid(focus)
+                val pt = Point(grid.x * (nodeWidth + hGap), grid.y * (nodeHeight + vGap))
                 positions[focus.id] = pt
                 resolved.add(focus.id)
                 return pt

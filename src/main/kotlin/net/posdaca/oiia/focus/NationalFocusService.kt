@@ -1,10 +1,14 @@
 package net.posdaca.oiia.focus
 
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
+import com.intellij.psi.util.PsiTreeUtil
 import icu.windea.pls.script.psi.ParadoxScriptBlock
 import icu.windea.pls.script.psi.ParadoxScriptFile
 import icu.windea.pls.script.psi.ParadoxScriptProperty
@@ -53,37 +57,74 @@ class NationalFocusService(private val project: Project) {
 
     fun parseFocusTreeFromFile(psiFile: PsiFile): List<NationalFocusTreeData> {
         val focusTrees = mutableListOf<NationalFocusTreeData>()
+        val standaloneSharedFocuses = mutableListOf<FocusData>()
 
         if (psiFile is ParadoxScriptFile) {
-            parseFocusTreeFromPlsPsi(psiFile, focusTrees)
+            parseFocusTreeFromPlsPsi(psiFile, focusTrees, standaloneSharedFocuses)
         }
 
-        if (focusTrees.isEmpty()) {
-            parseFocusTreeFromText(psiFile.virtualFile?.path, focusTrees)
+        if (focusTrees.isEmpty() && standaloneSharedFocuses.isEmpty()) {
+            parseFocusTreeFromText(psiFile.virtualFile?.path, focusTrees, standaloneSharedFocuses)
         }
 
-        return focusTrees
+        if (focusTrees.isEmpty() && standaloneSharedFocuses.isNotEmpty()) {
+            return listOf(
+                NationalFocusTreeData(
+                    id = "shared_focuses",
+                    sharedFocuses = standaloneSharedFocuses
+                )
+            )
+        }
+
+        return expandSharedFocusReferences(focusTrees)
     }
 
-    private fun parseFocusTreeFromPlsPsi(psiFile: ParadoxScriptFile, focusTrees: MutableList<NationalFocusTreeData>) {
+    fun expandSharedFocusReferences(focusTrees: List<NationalFocusTreeData>): List<NationalFocusTreeData> {
+        if (focusTrees.isEmpty()) return focusTrees
+        val needsExpansion = focusTrees.any { it.sharedFocusReferences.isNotEmpty() }
+        if (!needsExpansion) return focusTrees
+
+        val definitionsByFile = loadSharedFocusDefinitionsByFile()
+        return focusTrees.map { tree ->
+            if (tree.sharedFocusReferences.isEmpty()) return@map tree
+            val expanded = SharedFocusChainResolver.expand(
+                referencedIds = tree.sharedFocusReferences,
+                definitionsByFile = definitionsByFile,
+                inlineSharedFocuses = tree.sharedFocuses
+            )
+            tree.copy(sharedFocuses = expanded)
+        }
+    }
+
+    private fun parseFocusTreeFromPlsPsi(
+        psiFile: ParadoxScriptFile,
+        focusTrees: MutableList<NationalFocusTreeData>,
+        standaloneSharedFocuses: MutableList<FocusData>
+    ) {
         val rootBlock = psiFile.block
         if (rootBlock != null) {
-            for (prop in rootBlock.propertyList) parseRootProperty(prop, focusTrees)
+            for (prop in rootBlock.propertyList) parseRootProperty(prop, focusTrees, standaloneSharedFocuses)
         }
-        if (focusTrees.isEmpty()) {
+        if (focusTrees.isEmpty() && standaloneSharedFocuses.isEmpty()) {
             for (child in psiFile.children) {
-                if (child is ParadoxScriptProperty) parseRootProperty(child, focusTrees)
+                if (child is ParadoxScriptProperty) parseRootProperty(child, focusTrees, standaloneSharedFocuses)
             }
         }
-        if (focusTrees.isEmpty()) {
+        if (focusTrees.isEmpty() && standaloneSharedFocuses.isEmpty()) {
             for (member in psiFile.block?.members ?: emptyList()) {
-                if (member is ParadoxScriptProperty) parseRootProperty(member, focusTrees)
+                if (member is ParadoxScriptProperty) parseRootProperty(member, focusTrees, standaloneSharedFocuses)
             }
         }
-        LOG.info("PLS PSI parsed ${focusTrees.size} trees from ${psiFile.virtualFile?.path ?: "?"}")
+        LOG.info(
+            "PLS PSI parsed ${focusTrees.size} trees and ${standaloneSharedFocuses.size} shared focuses from ${psiFile.virtualFile?.path ?: "?"}"
+        )
     }
 
-    private fun parseFocusTreeFromText(filePath: String?, focusTrees: MutableList<NationalFocusTreeData>) {
+    private fun parseFocusTreeFromText(
+        filePath: String?,
+        focusTrees: MutableList<NationalFocusTreeData>,
+        standaloneSharedFocuses: MutableList<FocusData>
+    ) {
         if (filePath == null) return
         val path = Path.of(filePath)
         if (!Files.isRegularFile(path)) return
@@ -91,33 +132,63 @@ class NationalFocusService(private val project: Project) {
         try {
             val content = Files.readString(path)
             val lines = content.lines()
-            var inFocusTree = false
+            var inBlock = false
+            var blockKind: String? = null
             var braceDepth = 0
-            val treeLines = mutableListOf<TextLine>()
+            val blockLines = mutableListOf<TextLine>()
 
             for ((index, line) in lines.withIndex()) {
                 val lineNumber = index + 1
                 val trimmed = line.trim()
                 if (trimmed.startsWith("#") || trimmed.isEmpty()) continue
                 val stripped = stripLineComment(trimmed).trim()
-                if (stripped == "focus_tree = {" || stripped == "shared_focus = {") {
-                    inFocusTree = true
-                    braceDepth = stripped.count { it == '{' } - stripped.count { it == '}' }
-                    treeLines.clear()
-                    treeLines.add(TextLine(lineNumber, stripped))
+                if (!inBlock && Regex("""^focus_tree\s*=\s*\{""").containsMatchIn(stripped)) {
+                    inBlock = true
+                    blockKind = "focus_tree"
+                    braceDepth = braceDelta(stripped)
+                    blockLines.clear()
+                    blockLines.add(TextLine(lineNumber, stripped))
+                    if (braceDepth <= 0) {
+                        parseTextFocusTree(filePath, blockLines, focusTrees)
+                        inBlock = false
+                        blockKind = null
+                        blockLines.clear()
+                    }
                     continue
                 }
-                if (inFocusTree) {
-                    treeLines.add(TextLine(lineNumber, stripped))
-                    braceDepth += stripped.count { it == '{' } - stripped.count { it == '}' }
+                if (!inBlock && Regex("""^shared_focus\s*=\s*\{""").containsMatchIn(stripped)) {
+                    inBlock = true
+                    blockKind = "shared_focus"
+                    braceDepth = braceDelta(stripped)
+                    blockLines.clear()
+                    blockLines.add(TextLine(lineNumber, stripped))
                     if (braceDepth <= 0) {
-                        parseTextFocusTree(filePath, treeLines, focusTrees)
-                        inFocusTree = false
-                        treeLines.clear()
+                        parseTextSharedFocus(filePath, blockLines)?.let { standaloneSharedFocuses.add(it) }
+                        inBlock = false
+                        blockKind = null
+                        blockLines.clear()
+                    }
+                    continue
+                }
+                if (inBlock) {
+                    blockLines.add(TextLine(lineNumber, stripped))
+                    braceDepth += braceDelta(stripped)
+                    if (braceDepth <= 0) {
+                        when (blockKind) {
+                            "focus_tree" -> parseTextFocusTree(filePath, blockLines, focusTrees)
+                            "shared_focus" -> parseTextSharedFocus(filePath, blockLines)?.let {
+                                standaloneSharedFocuses.add(it)
+                            }
+                        }
+                        inBlock = false
+                        blockKind = null
+                        blockLines.clear()
                     }
                 }
             }
-            LOG.info("Text parser found ${focusTrees.size} trees in $filePath")
+            LOG.info(
+                "Text parser found ${focusTrees.size} trees and ${standaloneSharedFocuses.size} shared focuses in $filePath"
+            )
         } catch (e: Exception) {
             LOG.warn("Text parsing failed for $filePath", e)
         }
@@ -135,32 +206,54 @@ class NationalFocusService(private val project: Project) {
 
         val focuses = mutableListOf<FocusData>()
         val sharedFocuses = mutableListOf<FocusData>()
+        val sharedFocusReferences = mutableListOf<String>()
 
         var inFocus = false
+        var focusIsShared = false
         var focusBraceDepth = 0
         var focusStartLine = 0
         val focusBlockLines = mutableListOf<String>()
 
         for (line in lines) {
             val trimmed = line.text.trim()
-            if (trimmed.startsWith("focus = {") || trimmed.startsWith("shared_focus = {")) {
-                inFocus = true
-                focusStartLine = line.lineNumber
-                focusBraceDepth = trimmed.count { it == '{' } - trimmed.count { it == '}' }
-                focusBlockLines.clear()
-                focusBlockLines.add(trimmed)
-                continue
+            if (!inFocus) {
+                val sharedRef = extractAssignmentValue(trimmed, "shared_focus")
+                if (sharedRef != null && !trimmed.contains("{")) {
+                    sharedFocusReferences.add(sharedRef)
+                    continue
+                }
+                if (trimmed.startsWith("focus = {") || trimmed.startsWith("shared_focus = {")) {
+                    inFocus = true
+                    focusIsShared = trimmed.startsWith("shared_focus")
+                    focusStartLine = line.lineNumber
+                    focusBraceDepth = braceDelta(trimmed)
+                    focusBlockLines.clear()
+                    focusBlockLines.add(trimmed)
+                    if (focusBraceDepth <= 0) {
+                        val fd = parseTextFocus(focusBlockLines, filePath, focusStartLine)
+                        if (fd != null) {
+                            if (focusIsShared) sharedFocuses.add(fd.copy(isSharedFocus = true))
+                            else focuses.add(fd)
+                        }
+                        inFocus = false
+                        focusIsShared = false
+                        focusStartLine = 0
+                        focusBlockLines.clear()
+                    }
+                    continue
+                }
             }
             if (inFocus) {
                 focusBlockLines.add(trimmed)
-                focusBraceDepth += trimmed.count { it == '{' } - trimmed.count { it == '}' }
+                focusBraceDepth += braceDelta(trimmed)
                 if (focusBraceDepth <= 0) {
                     val fd = parseTextFocus(focusBlockLines, filePath, focusStartLine)
                     if (fd != null) {
-                        if (lines.firstOrNull()?.text?.trim()?.startsWith("shared_focus") == true) sharedFocuses.add(fd)
+                        if (focusIsShared) sharedFocuses.add(fd.copy(isSharedFocus = true))
                         else focuses.add(fd)
                     }
                     inFocus = false
+                    focusIsShared = false
                     focusStartLine = 0
                     focusBlockLines.clear()
                 }
@@ -169,10 +262,19 @@ class NationalFocusService(private val project: Project) {
 
         focusTrees.add(
             NationalFocusTreeData(
-                id = id, country = country,
-                focuses = focuses, sharedFocuses = sharedFocuses, defaultFocus = defaultFocus
+                id = id,
+                country = country,
+                focuses = focuses,
+                sharedFocuses = sharedFocuses,
+                sharedFocusReferences = sharedFocusReferences,
+                defaultFocus = defaultFocus
             )
         )
+    }
+
+    private fun parseTextSharedFocus(filePath: String, lines: List<TextLine>): FocusData? {
+        val startLine = lines.firstOrNull()?.lineNumber ?: 0
+        return parseTextFocus(lines.map { it.text }, filePath, startLine)?.copy(isSharedFocus = true)
     }
 
     private fun parseTextFocus(lines: List<String>, sourceFilePath: String, sourceLine: Int): FocusData? {
@@ -207,6 +309,7 @@ class NationalFocusService(private val project: Project) {
             completeTooltip = completeTooltip,
             prerequisitesText = if (prerequisites.isNotEmpty()) prerequisites.joinToString(", ") else null,
             sourceFilePath = sourceFilePath,
+            sourceOffset = -1,
             sourceLine = sourceLine
         )
     }
@@ -268,10 +371,19 @@ class NationalFocusService(private val project: Project) {
         return result
     }
 
-    private fun parseRootProperty(p: ParadoxScriptProperty, trees: MutableList<NationalFocusTreeData>) {
-        val k = p.propertyKey.text
-        if ((k == "focus_tree" || k == "shared_focus") && p.block != null) {
-            parseFocusTreeBlock(p.block!!)?.let { trees.add(it) }
+    private fun parseRootProperty(
+        p: ParadoxScriptProperty,
+        trees: MutableList<NationalFocusTreeData>,
+        standaloneSharedFocuses: MutableList<FocusData>
+    ) {
+        when (p.propertyKey.text) {
+            "focus_tree" -> {
+                p.block?.let { parseFocusTreeBlock(it) }?.let { trees.add(it) }
+            }
+
+            "shared_focus" -> {
+                parseFocusProperty(p, true)?.let { standaloneSharedFocuses.add(it) }
+            }
         }
     }
 
@@ -281,6 +393,7 @@ class NationalFocusService(private val project: Project) {
         var defaultFocus = false
         val focuses = mutableListOf<FocusData>()
         val sharedFocuses = mutableListOf<FocusData>()
+        val sharedFocusReferences = mutableListOf<String>()
         for (prop in block.propertyList) {
             when (prop.propertyKey.text) {
                 "id" -> treeId = prop.value
@@ -295,7 +408,14 @@ class NationalFocusService(private val project: Project) {
                 }
 
                 "shared_focus" -> {
-                    parseFocusProperty(prop, true)?.let { sharedFocuses.add(it) }
+                    val inline = parseFocusProperty(prop, true)
+                    if (inline != null) {
+                        sharedFocuses.add(inline)
+                    } else {
+                        prop.value?.trim()?.trim('"')?.takeIf { it.isNotBlank() }?.let {
+                            sharedFocusReferences.add(it)
+                        }
+                    }
                 }
             }
         }
@@ -305,6 +425,7 @@ class NationalFocusService(private val project: Project) {
             country = country,
             focuses = focuses,
             sharedFocuses = sharedFocuses,
+            sharedFocusReferences = sharedFocusReferences,
             defaultFocus = defaultFocus
         )
     }
@@ -372,6 +493,7 @@ class NationalFocusService(private val project: Project) {
             completeTooltip = completeTooltip,
             prerequisitesText = if (prerequisites.isNotEmpty()) prerequisites.joinToString(", ") else null,
             sourceFilePath = vf?.path,
+            sourceOffset = prop.textOffset,
             sourceLine = line,
             isSharedFocus = isShared
         )
@@ -494,6 +616,38 @@ class NationalFocusService(private val project: Project) {
             }
         }
         return result
+    }
+
+    private fun loadSharedFocusDefinitionsByFile(): Map<String, List<FocusData>> {
+        val result = linkedMapOf<String, List<FocusData>>()
+        for (path in findNationalFocusScriptFiles()) {
+            val standalone = mutableListOf<FocusData>()
+            parseFocusTreeFromText(path.toString(), mutableListOf(), standalone)
+            if (standalone.isNotEmpty()) {
+                result[path.toAbsolutePath().normalize().toString()] = standalone
+            }
+        }
+        LOG.info("Loaded shared focus definitions from ${result.size} files")
+        return result
+    }
+
+    private fun findNationalFocusScriptFiles(): List<Path> {
+        val files = linkedSetOf<Path>()
+        for (root in getResourceRoots()) {
+            for (relative in listOf("common/national_focus", "common/continuous_focus")) {
+                val dir = root.resolve(relative)
+                if (!dir.isDirectory()) continue
+                try {
+                    Files.walk(dir, 4).use { stream ->
+                        stream.filter {
+                            it.isRegularFile() && it.fileName.toString().endsWith(".txt", ignoreCase = true)
+                        }.forEach { files.add(it.toAbsolutePath().normalize()) }
+                    }
+                } catch (_: Exception) {
+                }
+            }
+        }
+        return files.toList()
     }
 
     private fun getPlsRoots(): List<Path> {
@@ -746,6 +900,94 @@ class NationalFocusService(private val project: Project) {
     private fun resolveIconKey(field: ParadoxScriptProperty): String? {
         field.block?.propertyList?.forEach { if (it.propertyKey.text == "value") return it.value }
         return field.value
+    }
+
+    fun updateFocusPosition(focus: FocusData, x: Int, y: Int): Boolean {
+        val path = focus.sourceFilePath ?: return false
+        if (focus.id.isBlank()) return false
+        val vf = LocalFileSystem.getInstance().findFileByPath(path) ?: return false
+        val psiFile = PsiManager.getInstance(project).findFile(vf) as? ParadoxScriptFile ?: return false
+        return WriteCommandAction.writeCommandAction(project, psiFile).withName("Update focus position").compute<Boolean, RuntimeException> {
+            val documentManager = PsiDocumentManager.getInstance(project)
+            val document = documentManager.getDocument(psiFile) ?: return@compute false
+            documentManager.commitDocument(document)
+            val target = findFocusProperty(psiFile, focus) ?: return@compute false
+            val block = target.block ?: return@compute false
+            upsertAxisProperty(block, "x", x)
+            upsertAxisProperty(block, "y", y)
+            val updatedDocument = documentManager.getDocument(psiFile) ?: return@compute false
+            documentManager.commitDocument(updatedDocument)
+            resolvedData[focus.id]?.let { cached ->
+                resolvedData[focus.id] = cached.copy(x = x.toDouble(), y = y.toDouble())
+            }
+            true
+        }
+    }
+
+    private fun findFocusProperty(psiFile: ParadoxScriptFile, focus: FocusData): ParadoxScriptProperty? {
+        val candidates = PsiTreeUtil.collectElementsOfType(psiFile, ParadoxScriptProperty::class.java)
+            .filter { it.propertyKey.text == "focus" || it.propertyKey.text == "shared_focus" }
+            .filter { it.block != null }
+            .filter { prop ->
+                prop.block?.propertyList?.any {
+                    it.propertyKey.text == "id" && it.value?.trim()?.trim('"') == focus.id
+                } == true
+            }
+        if (candidates.isEmpty()) return null
+        if (focus.sourceOffset >= 0) {
+            val offsetMatches = candidates.filter { it.textOffset == focus.sourceOffset }
+            if (offsetMatches.size == 1) return offsetMatches.first()
+        }
+        if (focus.sourceLine > 0) {
+            val document = PsiDocumentManager.getInstance(project).getDocument(psiFile)
+            if (document != null) {
+                val lineMatches = candidates.filter { document.getLineNumber(it.textOffset) + 1 == focus.sourceLine }
+                if (lineMatches.size == 1) return lineMatches.first()
+            }
+        }
+        return candidates.firstOrNull()
+    }
+
+    private fun upsertAxisProperty(block: ParadoxScriptBlock, key: String, value: Int) {
+        val document = PsiDocumentManager.getInstance(project).getDocument(block.containingFile) ?: return
+        val existing = block.propertyList.firstOrNull { it.propertyKey.text == key }
+        if (existing != null) {
+            val propertyValue = existing.propertyValue
+            if (propertyValue != null) {
+                val range = propertyValue.textRange
+                document.replaceString(range.startOffset, range.endOffset, value.toString())
+            } else {
+                val range = existing.textRange
+                document.replaceString(range.startOffset, range.endOffset, "$key = $value")
+            }
+            return
+        }
+        val leftBound = block.leftBound ?: return
+        val insertOffset = leftBound.textRange.endOffset
+        val indent = detectInnerIndent(block)
+        val insertion = buildString {
+            append('\n')
+            append(indent)
+            append(key)
+            append(" = ")
+            append(value)
+        }
+        document.insertString(insertOffset, insertion)
+    }
+
+    private fun detectInnerIndent(block: ParadoxScriptBlock): String {
+        val firstProperty = block.propertyList.firstOrNull()
+        if (firstProperty != null) {
+            val document = PsiDocumentManager.getInstance(project).getDocument(firstProperty.containingFile)
+            if (document != null) {
+                val line = document.getLineNumber(firstProperty.textOffset)
+                val lineStart = document.getLineStartOffset(line)
+                val prefix = document.charsSequence.subSequence(lineStart, firstProperty.textOffset).toString()
+                val indent = prefix.takeWhile { it == ' ' || it == '\t' }
+                if (indent.isNotEmpty()) return indent
+            }
+        }
+        return "\t"
     }
 
     fun clearCache() {
