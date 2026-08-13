@@ -1,5 +1,7 @@
 package net.posdaca.oiia.focus
 
+import net.posdaca.oiia.core.files.ResourceFiles
+
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.ui.JBColor
@@ -320,7 +322,7 @@ class NationalFocusPreviewPanel(
         private fun navigateToFocus(focus: FocusData) {
             val resolved = service.resolveFocusData(focus)
             val path = resolved.sourceFilePath ?: return
-            val vf = com.intellij.openapi.vfs.LocalFileSystem.getInstance().findFileByPath(path) ?: return
+            val vf = ResourceFiles.toVirtualFile(path) ?: return
             if (resolved.sourceLine > 0) {
                 OpenFileDescriptor(project, vf, resolved.sourceLine - 1, 0).navigate(true)
             } else {

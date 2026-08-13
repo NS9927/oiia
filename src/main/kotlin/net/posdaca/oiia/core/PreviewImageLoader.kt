@@ -1,5 +1,7 @@
 package net.posdaca.oiia.core
 
+import net.posdaca.oiia.core.files.ResourceFiles
+
 import icu.windea.pls.images.ImageService
 import java.awt.image.BufferedImage
 import java.net.URI
@@ -62,13 +64,13 @@ internal object PreviewImageLoader {
     }
 
     private fun readPath(path: Path): BufferedImage? {
-        if (!Files.isRegularFile(path)) return null
+        if (!ResourceFiles.isRegularFile(path)) return null
         return readUncompressedDds(path) ?: ImageIO.read(path.toFile())?.toArgbImage()
     }
 
     private fun readUncompressedDds(path: Path): BufferedImage? {
         if (!path.fileName.toString().endsWith(".dds", ignoreCase = true)) return null
-        val bytes = runCatching { Files.readAllBytes(path) }.getOrNull() ?: return null
+        val bytes = ResourceFiles.readBytes(path) ?: return null
         if (bytes.size < DDS_HEADER_SIZE || bytes.decodeAscii(0, 4) != "DDS ") return null
 
         val height = bytes.leInt(12)

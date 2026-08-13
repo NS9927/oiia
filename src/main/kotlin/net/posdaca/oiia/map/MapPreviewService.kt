@@ -2,8 +2,8 @@ package net.posdaca.oiia.map
 
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
-import net.posdaca.oiia.core.HoI4LocalisationFiles
-import net.posdaca.oiia.core.HoI4ResourceRoots
+import net.posdaca.oiia.core.files.LocalisationFiles
+import net.posdaca.oiia.core.files.ResourceFiles
 import net.posdaca.oiia.core.ParadoxLocalisationPreference
 import java.awt.Color
 import java.awt.image.BufferedImage
@@ -112,20 +112,16 @@ class MapPreviewService(private val project: Project) {
     }
 
     private fun getResourceRoots(): List<Path> {
-        return HoI4ResourceRoots.resourceRoots(project, projectFirst = true, gameFirst = false)
+        return ResourceFiles.resourceRoots(project, projectFirst = true, gameFirst = false)
     }
 
     private fun findFirstExisting(roots: List<Path>, relativePath: String): Path? {
-        for (root in roots) {
-            val path = root.resolve(relativePath)
-            if (path.isRegularFile()) return path.toAbsolutePath().normalize()
-        }
-        return null
+        return ResourceFiles.findFirst(roots, relativePath)
     }
 
     private fun parseDefinitionCsv(path: Path): Map<Int, ProvinceInfo> {
         val result = mutableMapOf<Int, ProvinceInfo>()
-        for ((index, rawLine) in Files.readAllLines(path).withIndex()) {
+        for ((index, rawLine) in ResourceFiles.readText(path).orEmpty().lines().withIndex()) {
             val line = rawLine.trim().removePrefix("\uFEFF")
             if (line.isEmpty() || line.startsWith("#")) continue
 
@@ -161,22 +157,14 @@ class MapPreviewService(private val project: Project) {
     }
 
     private fun findStateFiles(roots: List<Path>): List<Path> {
-        val files = mutableListOf<Path>()
-        for (root in roots) {
-            val dir = root.resolve(STATES_PATH)
-            if (!Files.isDirectory(dir)) continue
-            Files.walk(dir).use { stream ->
-                stream
-                    .filter { it.isRegularFile() && it.toString().endsWith(".txt", ignoreCase = true) }
-                    .forEach { files.add(it.toAbsolutePath().normalize()) }
-            }
-        }
-        return files.distinctBy { HoI4ResourceRoots.normalizedKey(it) }
+        return ResourceFiles.listFiles(roots, listOf(STATES_PATH), setOf(".txt"), maxDepth = 8)
+            .distinctBy { ResourceFiles.normalizedKey(it) }
     }
+
 
     private fun parseStateFile(path: Path, localisations: Map<String, String>): StateInfo? {
         return try {
-            val text = stripComments(Files.readString(path))
+            val text = stripComments(ResourceFiles.readText(path).orEmpty())
             val stateBlock = findNamedBlock(text, "state") ?: text
             val id = findInt(stateBlock, "id") ?: return null
             val history = findBlock(stateBlock, "history")
@@ -223,22 +211,14 @@ class MapPreviewService(private val project: Project) {
     }
 
     private fun findStrategicRegionFiles(roots: List<Path>): List<Path> {
-        val files = mutableListOf<Path>()
-        for (root in roots) {
-            val dir = root.resolve(STRATEGIC_REGIONS_PATH)
-            if (!Files.isDirectory(dir)) continue
-            Files.walk(dir).use { stream ->
-                stream
-                    .filter { it.isRegularFile() && it.toString().endsWith(".txt", ignoreCase = true) }
-                    .forEach { files.add(it.toAbsolutePath().normalize()) }
-            }
-        }
-        return files.distinctBy { HoI4ResourceRoots.normalizedKey(it) }
+        return ResourceFiles.listFiles(roots, listOf(STRATEGIC_REGIONS_PATH), setOf(".txt"), maxDepth = 8)
+            .distinctBy { ResourceFiles.normalizedKey(it) }
     }
+
 
     private fun parseStrategicRegionFile(path: Path, localisations: Map<String, String>): StrategicRegionInfo? {
         return try {
-            val text = stripComments(Files.readString(path))
+            val text = stripComments(ResourceFiles.readText(path).orEmpty())
             val id = findInt(text, "id") ?: path.fileName.toString().substringBefore('.').toIntOrNull() ?: return null
             val name = findValue(text, "name")
             StrategicRegionInfo(
@@ -331,44 +311,30 @@ class MapPreviewService(private val project: Project) {
 
     private fun loadCountryHistories(roots: List<Path>): Map<String, Path> {
         val result = linkedMapOf<String, Path>()
-        for (root in roots) {
-            val dir = root.resolve(COUNTRY_HISTORY_PATH)
-            if (!Files.isDirectory(dir)) continue
-            Files.walk(dir).use { stream ->
-                stream
-                    .filter { it.isRegularFile() && it.toString().endsWith(".txt", ignoreCase = true) }
-                    .forEach { path ->
-                        val tag = path.fileName.toString().substringBefore(" -").substringBefore('.').uppercase()
-                        if (tag.matches(COUNTRY_TAG_REGEX)) {
-                            result.putIfAbsent(tag, path.toAbsolutePath().normalize())
-                        }
-                    }
-            }
+        val historyFiles = ResourceFiles.listFiles(roots, listOf(COUNTRY_HISTORY_PATH), setOf(".txt"), maxDepth = 8)
+        for (path in historyFiles) {
+            val tag = path.fileName.toString().substringBefore('.').uppercase()
+            result.putIfAbsent(tag, path.toAbsolutePath().normalize())
         }
         return result
     }
+
 
     private fun loadCountryTagPaths(roots: List<Path>): Map<String, String> {
         val result = linkedMapOf<String, String>()
-        for (root in roots) {
-            val dir = root.resolve(COUNTRY_TAGS_PATH)
-            if (!Files.isDirectory(dir)) continue
-            Files.walk(dir).use { stream ->
-                stream
-                    .filter { it.isRegularFile() && it.toString().endsWith(".txt", ignoreCase = true) }
-                    .forEach { path ->
-                        for ((tag, relativePath) in parseCountryTagFile(path)) {
-                            result.putIfAbsent(tag, relativePath)
-                        }
-                    }
+        val tagFiles = ResourceFiles.listFiles(roots, listOf(COUNTRY_TAGS_PATH), setOf(".txt"), maxDepth = 8)
+        for (path in tagFiles) {
+            for ((tag, relativePath) in parseCountryTagFile(path)) {
+                result.putIfAbsent(tag, relativePath)
             }
         }
         return result
     }
 
+
     private fun parseCountryTagFile(path: Path): Map<String, String> {
         return try {
-            val text = stripComments(Files.readString(path))
+            val text = stripComments(ResourceFiles.readText(path).orEmpty())
             Regex("""(?im)([A-Z0-9_]{3})\s*=\s*(?:"([^"]+)"|([^\s#]+))""")
                 .findAll(text)
                 .associate {
@@ -392,7 +358,7 @@ class MapPreviewService(private val project: Project) {
 
     private fun parseCountryColor(path: Path): Int? {
         return try {
-            val text = stripComments(Files.readString(path))
+            val text = stripComments(ResourceFiles.readText(path).orEmpty())
             parseColorValue(text)
         } catch (e: Exception) {
             LOG.warn("Country color parse failed: $path", e)
@@ -414,7 +380,7 @@ class MapPreviewService(private val project: Project) {
 
     private fun parseCountryColorOverrideFile(path: Path): Map<String, Int> {
         return try {
-            val text = stripComments(Files.readString(path))
+            val text = stripComments(ResourceFiles.readText(path).orEmpty())
             val result = linkedMapOf<String, Int>()
             COUNTRY_COLOR_ASSIGNMENT_REGEX.findAll(text).forEach { match ->
                 val tag = match.groupValues[1].uppercase()
@@ -454,9 +420,9 @@ class MapPreviewService(private val project: Project) {
     ): List<Path> {
         val countryDefinitionPaths = countryDefinitions.values
             .flatMap { listOfNotNull(it.definitionPath, it.colorSourcePath) }
-            .distinctBy { HoI4ResourceRoots.normalizedKey(it) }
+            .distinctBy { ResourceFiles.normalizedKey(it) }
         val overridePaths = findCountryColorOverrideFiles(roots)
-        return (countryDefinitionPaths + overridePaths).distinctBy { HoI4ResourceRoots.normalizedKey(it) }
+        return (countryDefinitionPaths + overridePaths).distinctBy { ResourceFiles.normalizedKey(it) }
     }
 
     private fun findCountryColorOverrideFiles(roots: List<Path>): List<Path> {
@@ -464,7 +430,7 @@ class MapPreviewService(private val project: Project) {
             COUNTRY_COLOR_OVERRIDE_PATHS.map { root.resolve(it) }
                 .filter { it.isRegularFile() }
                 .map { it.toAbsolutePath().normalize() }
-        }.distinctBy { HoI4ResourceRoots.normalizedKey(it) }
+        }.distinctBy { ResourceFiles.normalizedKey(it) }
     }
 
     private data class MapRenderData(
@@ -1284,20 +1250,20 @@ class MapPreviewService(private val project: Project) {
     }
 
     private fun findLocFilePaths(roots: List<Path>): List<Path> {
-        return HoI4LocalisationFiles.findFiles(roots)
+        return LocalisationFiles.findFiles(roots)
     }
 
     private fun loadLocalisations(paths: List<Path>, roots: List<Path>): Map<String, String> {
         val result = linkedMapOf<String, String>()
         val scoreByKey = mutableMapOf<String, Int>()
-        val rootScores = HoI4LocalisationFiles.rootScores(roots)
+        val rootScores = LocalisationFiles.rootScores(roots)
         for (path in paths) {
             val score = localisationScore(path, rootScores)
-            for ((key, value) in HoI4LocalisationFiles.parseFile(path)) {
+            for ((key, value) in LocalisationFiles.parseFile(path)) {
                 val currentScore = scoreByKey[key] ?: Int.MIN_VALUE
                 if (score > currentScore) {
                     scoreByKey[key] = score
-                    result[key] = HoI4LocalisationFiles.unescape(value)
+                    result[key] = LocalisationFiles.unescape(value)
                 }
             }
         }
@@ -1326,7 +1292,7 @@ class MapPreviewService(private val project: Project) {
     }
 
     private fun localisationRootScore(path: Path, rootScores: List<Pair<String, Int>>): Int {
-        return HoI4LocalisationFiles.rootScore(path, rootScores)
+        return LocalisationFiles.rootScore(path, rootScores)
     }
 
     private fun computeSourceStamp(
@@ -1347,13 +1313,7 @@ class MapPreviewService(private val project: Project) {
     }
 
     private fun fileStamp(path: Path?): Long {
-        if (path == null || !path.exists()) return 0L
-        return try {
-            Files.getLastModifiedTime(path).toMillis() xor path.fileSize() xor HoI4ResourceRoots.normalizedKey(path)
-                .hashCode().toLong()
-        } catch (_: Exception) {
-            0L
-        }
+        return ResourceFiles.fileStamp(path)
     }
 
     companion object {
@@ -1383,3 +1343,4 @@ class MapPreviewService(private val project: Project) {
         private val TOKEN_REGEX = Regex(""""[^"]*"|[^\s{}=]+""")
     }
 }
+

@@ -1,12 +1,13 @@
 package net.posdaca.oiia.gui
 
+import net.posdaca.oiia.core.files.ResourceFiles
+
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
-import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.ui.JBColor
 import com.intellij.ui.LightweightHint
 import com.intellij.ui.components.JBLabel
@@ -1433,7 +1434,7 @@ class GuiPreviewPanel(
 
         private fun navigateTo(element: GuiElement) {
             val path = element.sourceFilePath ?: return
-            val vf = LocalFileSystem.getInstance().findFileByPath(path) ?: return
+            val vf = ResourceFiles.toVirtualFile(path) ?: return
             if (element.sourceLine > 0) {
                 OpenFileDescriptor(project, vf, element.sourceLine - 1, 0).navigate(true)
             } else {

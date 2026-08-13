@@ -1,5 +1,7 @@
 package net.posdaca.oiia.gui
 
+import net.posdaca.oiia.core.files.ResourceFiles
+
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.diagnostic.Logger
@@ -17,8 +19,7 @@ import icu.windea.pls.script.psi.ParadoxScriptBlock
 import icu.windea.pls.script.psi.ParadoxScriptFile
 import icu.windea.pls.script.psi.ParadoxScriptProperty
 import icu.windea.pls.script.psi.ParadoxScriptValue
-import net.posdaca.oiia.core.HoI4LocalisationFiles
-import net.posdaca.oiia.core.HoI4ResourceRoots
+import net.posdaca.oiia.core.files.LocalisationFiles
 import net.posdaca.oiia.core.ParadoxLocalisationPreference
 import net.posdaca.oiia.core.ParadoxSpriteResolver
 import net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteInfo
@@ -381,24 +382,24 @@ class GuiPreviewService(private val project: Project) {
     }
 
     private fun loadLocalisationFallbackCache(): Map<String, String> {
-        val roots = HoI4ResourceRoots.resourceRoots(project, projectFirst = true, gameFirst = false)
+        val roots = ResourceFiles.resourceRoots(project, projectFirst = true, gameFirst = false)
         val rootsKey = guiLocalisationCacheKey() + "|" +
-                roots.joinToString("|") { HoI4ResourceRoots.normalizedKey(it) }
+                roots.joinToString("|") { ResourceFiles.normalizedKey(it) }
         synchronized(localisationFallbackLock) {
             if (localisationFallbackRootsKey == rootsKey) return localisationFallbackCache
 
-            val paths = HoI4LocalisationFiles.findFiles(roots)
-            val rootScores = HoI4LocalisationFiles.rootScores(roots)
+            val paths = LocalisationFiles.findFiles(roots)
+            val rootScores = LocalisationFiles.rootScores(roots)
             val scoreByKey = mutableMapOf<String, Int>()
             val result = linkedMapOf<String, String>()
 
             for (path in paths) {
                 val score = localisationScore(path, rootScores)
-                HoI4LocalisationFiles.parseFile(path).forEach { (locKey, value) ->
+                LocalisationFiles.parseFile(path).forEach { (locKey, value) ->
                     val existing = scoreByKey[locKey] ?: Int.MIN_VALUE
                     if (score > existing) {
                         scoreByKey[locKey] = score
-                        result[locKey] = HoI4LocalisationFiles.unescape(value)
+                        result[locKey] = LocalisationFiles.unescape(value)
                     }
                 }
             }
@@ -416,7 +417,7 @@ class GuiPreviewService(private val project: Project) {
     }
 
     private fun localisationRootScore(path: Path, rootScores: List<Pair<String, Int>>): Int {
-        return HoI4LocalisationFiles.rootScore(path, rootScores)
+        return LocalisationFiles.rootScore(path, rootScores)
     }
 
     private fun languagePriority(path: String): Int {
@@ -485,7 +486,7 @@ class GuiPreviewService(private val project: Project) {
     fun updateElementPosition(element: GuiElement, x: Int, y: Int): Boolean {
         val path = element.sourceFilePath ?: return false
         if (element.sourceOffset < 0) return false
-        val vf = com.intellij.openapi.vfs.LocalFileSystem.getInstance().findFileByPath(path) ?: return false
+        val vf = ResourceFiles.toVirtualFile(path) ?: return false
         val psiFile = PsiManager.getInstance(project).findFile(vf) as? ParadoxScriptFile ?: return false
         return WriteCommandAction.writeCommandAction(project, psiFile).withName("Update GUI position").compute<Boolean, RuntimeException> {
             val documentManager = PsiDocumentManager.getInstance(project)

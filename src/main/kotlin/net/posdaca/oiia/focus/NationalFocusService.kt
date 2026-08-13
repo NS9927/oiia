@@ -4,7 +4,6 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
@@ -12,18 +11,14 @@ import com.intellij.psi.util.PsiTreeUtil
 import icu.windea.pls.script.psi.ParadoxScriptBlock
 import icu.windea.pls.script.psi.ParadoxScriptFile
 import icu.windea.pls.script.psi.ParadoxScriptProperty
-import net.posdaca.oiia.core.HoI4LocalisationFiles
-import net.posdaca.oiia.core.HoI4ResourceRoots
 import net.posdaca.oiia.core.ParadoxLocalisationPreference
 import net.posdaca.oiia.core.ParadoxLocalisationResolver
 import net.posdaca.oiia.core.ParadoxSpriteResolver
-import net.posdaca.oiia.core.PrefixIconLookup
-import java.nio.file.Files
+import net.posdaca.oiia.core.files.LocalisationFiles
+import net.posdaca.oiia.core.files.ResourceFiles
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
-import kotlin.io.path.isDirectory
-import kotlin.io.path.isRegularFile
 
 class NationalFocusService(private val project: Project) {
 
@@ -35,21 +30,17 @@ class NationalFocusService(private val project: Project) {
             "english", "l_english"
         )
         private const val LOCALISATION_LANGUAGE_WEIGHT = 10000
-        private val ICON_EXTENSIONS = setOf(".dds", ".tga", ".png")
 
         fun localisationCacheKey(): String {
             return ParadoxLocalisationPreference.cacheKey(LANG_PRIORITY)
         }
     }
 
-    private data class SpriteDefinition(val name: String, val textureFile: String, val root: Path)
     private data class TextLine(val lineNumber: Int, val text: String)
 
     private val resolvedData = ConcurrentHashMap<String, FocusData>()
     private val resolutionVersion = AtomicInteger(0)
     private val cachedRoots = mutableListOf<Path>()
-    private val cachedIconFiles = mutableMapOf<String, String>()
-    private val cachedSpriteIconFiles = mutableMapOf<String, String>()
     private val spriteResolver = ParadoxSpriteResolver(project)
     private val localisationResolver = ParadoxLocalisationResolver(project, LANG_PRIORITY)
     private var cachesValid = false
@@ -127,10 +118,10 @@ class NationalFocusService(private val project: Project) {
     ) {
         if (filePath == null) return
         val path = Path.of(filePath)
-        if (!Files.isRegularFile(path)) return
+        if (!ResourceFiles.isRegularFile(path)) return
 
         try {
-            val content = Files.readString(path)
+            val content = ResourceFiles.readText(path) ?: return
             val lines = content.lines()
             var inBlock = false
             var blockKind: String? = null
@@ -526,11 +517,6 @@ class NationalFocusService(private val project: Project) {
 
                 val iconNamesById = buildIconNames(allFocuses)
                 val iconMap = spriteResolver.resolveForCandidates(iconNamesById).toMutableMap()
-                val missingIconNamesById = iconNamesById.filterKeys { it !in iconMap }
-                if (missingIconNamesById.isNotEmpty()) {
-                    iconMap.putAll(searchIconsCached(missingIconNamesById))
-                }
-
                 if (version != resolutionVersion.get()) return@executeOnPooledThread
 
                 LOG.info("Matched ${iconMap.size} icons")
@@ -632,28 +618,20 @@ class NationalFocusService(private val project: Project) {
     }
 
     private fun findNationalFocusScriptFiles(): List<Path> {
-        val files = linkedSetOf<Path>()
-        for (root in getResourceRoots()) {
-            for (relative in listOf("common/national_focus", "common/continuous_focus")) {
-                val dir = root.resolve(relative)
-                if (!dir.isDirectory()) continue
-                try {
-                    Files.walk(dir, 4).use { stream ->
-                        stream.filter {
-                            it.isRegularFile() && it.fileName.toString().endsWith(".txt", ignoreCase = true)
-                        }.forEach { files.add(it.toAbsolutePath().normalize()) }
-                    }
-                } catch (_: Exception) {
-                }
-            }
-        }
-        return files.toList()
+        return ResourceFiles.listFiles(
+            project,
+            listOf("common/national_focus", "common/continuous_focus"),
+            setOf(".txt"),
+            maxDepth = 4,
+            projectFirst = true,
+            gameFirst = false
+        )
     }
 
     private fun getPlsRoots(): List<Path> {
         if (cachesValid && cachedRoots.isNotEmpty()) return cachedRoots
 
-        val roots = HoI4ResourceRoots.resourceRoots(project, projectFirst = true, gameFirst = false)
+        val roots = ResourceFiles.resourceRoots(project, projectFirst = true, gameFirst = false)
         if (roots.isNotEmpty()) {
             cachedRoots.clear()
             cachedRoots.addAll(roots)
@@ -662,95 +640,17 @@ class NationalFocusService(private val project: Project) {
     }
 
     private fun parseLocFileText(path: Path): Map<String, String> {
-        return HoI4LocalisationFiles.parseFile(path)
+        return LocalisationFiles.parseFile(path)
     }
 
     private fun findLocFilePaths(): List<Path> {
-        val files = HoI4LocalisationFiles.findFiles(getResourceRoots(), maxDepth = 3)
+        val files = LocalisationFiles.findFiles(getResourceRoots(), maxDepth = 3)
         LOG.info("Found ${files.size} loc files (NIO)")
         return files
     }
 
     private fun localisationRootScore(path: Path): Int {
-        return HoI4LocalisationFiles.rootScoreForRoots(path, getResourceRoots())
-    }
-
-    private fun ensureIconCache() {
-        if (cachesValid && (cachedIconFiles.isNotEmpty() || cachedSpriteIconFiles.isNotEmpty())) return
-        cachedIconFiles.clear()
-        cachedSpriteIconFiles.clear()
-
-        val roots = getResourceRoots()
-        val spriteDefinitions = mutableListOf<SpriteDefinition>()
-        LOG.info("Scanning gfx directories for focus icons...")
-        for (root in roots) {
-            val gfxDir = root.resolve("gfx")
-            if (gfxDir.isDirectory()) {
-                try {
-                    Files.walk(gfxDir, 6).use { stream ->
-                        stream.filter { it.isRegularFile() }.forEach { f ->
-                            val n = f.fileName.toString().lowercase()
-                            if (ICON_EXTENSIONS.any { n.endsWith(it) }) {
-                                cacheIconFile(root, f)
-                            } else if (n.endsWith(".gfx")) {
-                                parseGfxSpriteFile(root, f, spriteDefinitions)
-                            }
-                        }
-                    }
-                } catch (_: Exception) {
-                }
-            }
-
-            val interfaceDir = root.resolve("interface")
-            if (interfaceDir.isDirectory()) {
-                try {
-                    Files.walk(interfaceDir, 3).use { stream ->
-                        stream.filter {
-                            it.isRegularFile() && it.fileName.toString().endsWith(".gfx", ignoreCase = true)
-                        }
-                            .forEach { parseGfxSpriteFile(root, it, spriteDefinitions) }
-                    }
-                } catch (_: Exception) {
-                }
-            }
-        }
-
-        for (sprite in spriteDefinitions) {
-            val directPath = resolveGamePath(sprite.root, sprite.textureFile)
-            val iconPath = if (directPath.isRegularFile()) {
-                directPath.toAbsolutePath().normalize().toString()
-            } else {
-                findCachedIconPath(sprite.textureFile)
-            }
-            if (iconPath != null) putIconAliases(cachedSpriteIconFiles, sprite.name, iconPath)
-        }
-
-        LOG.info("Cached ${cachedIconFiles.size} icon aliases and ${cachedSpriteIconFiles.size} sprite icon aliases")
-    }
-
-    private fun searchIconsCached(iconNamesById: Map<String, List<String>>): Map<String, String> {
-        ensureIconCache()
-
-        val map = mutableMapOf<String, String>()
-        val prefixLookup = PrefixIconLookup(cachedIconFiles)
-
-        for ((focusId, names) in iconNamesById) {
-            for (name in names) {
-                var path = findCachedSpriteIconPath(name) ?: findCachedIconPath(name)
-                if (path != null) {
-                    map[focusId] = path
-                    break
-                }
-                val aliases = iconAliases(name)
-                path = prefixLookup.find(aliases)
-                if (path != null) {
-                    map[focusId] = path
-                    break
-                }
-            }
-        }
-
-        return map
+        return LocalisationFiles.rootScoreForRoots(path, getResourceRoots())
     }
 
     private fun buildIconNames(focuses: List<FocusData>): Map<String, List<String>> {
@@ -772,107 +672,6 @@ class NationalFocusService(private val project: Project) {
 
     private fun getResourceRoots(): List<Path> {
         return getPlsRoots()
-    }
-
-    private fun cacheIconFile(root: Path, file: Path) {
-        val absolutePath = file.toAbsolutePath().normalize().toString()
-        val fileName = file.fileName.toString().substringBeforeLast(".")
-        putIconAliases(cachedIconFiles, fileName, absolutePath)
-        try {
-            val relativePath = root.relativize(file).toString().substringBeforeLast(".")
-            putIconAliases(cachedIconFiles, relativePath, absolutePath)
-        } catch (_: Exception) {
-        }
-    }
-
-    private fun parseGfxSpriteFile(root: Path, file: Path, spriteDefinitions: MutableList<SpriteDefinition>) {
-        try {
-            var inSpriteType = false
-            var spriteDepth = 0
-            val blockLines = mutableListOf<String>()
-
-            for (rawLine in Files.readString(file).lines()) {
-                val line = stripLineComment(rawLine).trim()
-                if (line.isEmpty()) continue
-
-                if (!inSpriteType && Regex("""(?i)\bspriteType\s*=""").containsMatchIn(line)) {
-                    inSpriteType = true
-                    spriteDepth = braceDelta(line)
-                    blockLines.clear()
-                    blockLines.add(line)
-                    if (spriteDepth <= 0 && line.contains("{")) {
-                        collectSpriteDefinition(root, blockLines, spriteDefinitions)
-                        inSpriteType = false
-                    }
-                    continue
-                }
-
-                if (inSpriteType) {
-                    blockLines.add(line)
-                    spriteDepth += braceDelta(line)
-                    if (spriteDepth <= 0) {
-                        collectSpriteDefinition(root, blockLines, spriteDefinitions)
-                        inSpriteType = false
-                    }
-                }
-            }
-        } catch (_: Exception) {
-        }
-    }
-
-    private fun collectSpriteDefinition(
-        root: Path,
-        lines: List<String>,
-        spriteDefinitions: MutableList<SpriteDefinition>
-    ) {
-        val name = lines.firstNotNullOfOrNull { extractAssignmentValue(it, "name") } ?: return
-        val textureFile = lines.firstNotNullOfOrNull { extractAssignmentValue(it, "texturefile") } ?: return
-        spriteDefinitions.add(SpriteDefinition(name, textureFile, root))
-    }
-
-    private fun findCachedSpriteIconPath(name: String): String? = findCachedPath(cachedSpriteIconFiles, name)
-
-    private fun findCachedIconPath(name: String): String? = findCachedPath(cachedIconFiles, name)
-
-    private fun findCachedPath(cache: Map<String, String>, name: String): String? {
-        for (alias in iconAliases(name)) {
-            cache[alias]?.let { return it }
-        }
-        return null
-    }
-
-    private fun putIconAliases(cache: MutableMap<String, String>, name: String, path: String) {
-        for (alias in iconAliases(name)) {
-            cache.putIfAbsent(alias, path)
-        }
-    }
-
-    private fun iconAliases(name: String): Set<String> {
-        val normalized = removeIconExtension(name.trim().trim('"').replace('\\', '/').lowercase())
-        if (normalized.isBlank()) return emptySet()
-
-        val aliases = linkedSetOf(normalized)
-        if (normalized.startsWith("gfx/")) aliases.add(normalized.removePrefix("gfx/"))
-        aliases.add(normalized.substringAfterLast('/'))
-
-        val strippedGfxAliases = aliases.toList().mapNotNull { alias ->
-            alias.takeIf { it.startsWith("gfx_") }?.removePrefix("gfx_")
-        }
-        aliases.addAll(strippedGfxAliases)
-        return aliases.filterTo(linkedSetOf()) { it.isNotBlank() }
-    }
-
-    private fun removeIconExtension(name: String): String {
-        for (extension in ICON_EXTENSIONS) {
-            if (name.endsWith(extension)) return name.removeSuffix(extension)
-        }
-        return name
-    }
-
-    private fun resolveGamePath(root: Path, rawPath: String): Path {
-        val normalizedPath = rawPath.trim().trim('"').replace('\\', '/')
-        val path = Path.of(normalizedPath)
-        return if (path.isAbsolute) path.normalize() else root.resolve(normalizedPath).normalize()
     }
 
     private fun extractAssignmentValue(line: String, key: String): String? {
@@ -905,7 +704,7 @@ class NationalFocusService(private val project: Project) {
     fun updateFocusPosition(focus: FocusData, x: Int, y: Int): Boolean {
         val path = focus.sourceFilePath ?: return false
         if (focus.id.isBlank()) return false
-        val vf = LocalFileSystem.getInstance().findFileByPath(path) ?: return false
+        val vf = ResourceFiles.toVirtualFile(path) ?: return false
         val psiFile = PsiManager.getInstance(project).findFile(vf) as? ParadoxScriptFile ?: return false
         return WriteCommandAction.writeCommandAction(project, psiFile).withName("Update focus position").compute<Boolean, RuntimeException> {
             val documentManager = PsiDocumentManager.getInstance(project)
@@ -995,8 +794,6 @@ class NationalFocusService(private val project: Project) {
         localisationResolver.clearCache()
         lastLocalisationCacheKey = null
         cachedRoots.clear()
-        cachedIconFiles.clear()
-        cachedSpriteIconFiles.clear()
         cachesValid = false
     }
 

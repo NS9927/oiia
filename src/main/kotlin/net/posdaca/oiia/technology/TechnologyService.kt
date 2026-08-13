@@ -10,22 +10,17 @@ import icu.windea.pls.lang.util.ParadoxDefinitionManager
 import icu.windea.pls.script.psi.ParadoxScriptBlock
 import icu.windea.pls.script.psi.ParadoxScriptFile
 import icu.windea.pls.script.psi.ParadoxScriptProperty
-import net.posdaca.oiia.core.HoI4LocalisationFiles
-import net.posdaca.oiia.core.HoI4ResourceRoots
 import net.posdaca.oiia.core.ParadoxLocalisationPreference
 import net.posdaca.oiia.core.ParadoxLocalisationResolver
 import net.posdaca.oiia.core.ParadoxSpriteResolver
-import net.posdaca.oiia.core.PrefixIconLookup
-import java.nio.file.Files
+import net.posdaca.oiia.core.files.LocalisationFiles
+import net.posdaca.oiia.core.files.ResourceFiles
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
-import kotlin.io.path.isDirectory
-import kotlin.io.path.isRegularFile
 
 class TechnologyService(private val project: Project) {
 
-    private data class SpriteDefinition(val name: String, val textureFile: String, val root: Path)
     private data class TextToken(val text: String, val lineNumber: Int)
     private sealed class TextValue {
         data class Atom(val value: String) : TextValue()
@@ -36,8 +31,6 @@ class TechnologyService(private val project: Project) {
     private val resolvedData = ConcurrentHashMap<String, TechnologyData>()
     private val resolutionVersion = AtomicInteger(0)
     private val cachedRoots = mutableListOf<Path>()
-    private val cachedIconFiles = mutableMapOf<String, String>()
-    private val cachedSpriteIconFiles = mutableMapOf<String, String>()
     private val spriteResolver = ParadoxSpriteResolver(project)
     private val localisationResolver = ParadoxLocalisationResolver(project, LANG_PRIORITY)
     private var cachesValid = false
@@ -237,11 +230,6 @@ class TechnologyService(private val project: Project) {
 
                 val iconNamesById = buildIconNames(allTechnologies)
                 val iconMap = spriteResolver.resolveForCandidates(iconNamesById).toMutableMap()
-                val missingIconNamesById = iconNamesById.filterKeys { it !in iconMap }
-                if (missingIconNamesById.isNotEmpty()) {
-                    iconMap.putAll(searchIconsCached(missingIconNamesById))
-                }
-
                 if (version != resolutionVersion.get()) return@executeOnPooledThread
 
                 val nextResolvedData = mutableMapOf<String, TechnologyData>()
@@ -314,7 +302,7 @@ class TechnologyService(private val project: Project) {
     private fun getPlsRoots(): List<Path> {
         if (cachesValid && cachedRoots.isNotEmpty()) return cachedRoots
 
-        val roots = HoI4ResourceRoots.resourceRoots(project, projectFirst = true, gameFirst = false)
+        val roots = ResourceFiles.resourceRoots(project, projectFirst = true, gameFirst = false)
         if (roots.isNotEmpty()) {
             cachedRoots.clear()
             cachedRoots.addAll(roots)
@@ -323,85 +311,15 @@ class TechnologyService(private val project: Project) {
     }
 
     private fun findLocFilePaths(): List<Path> {
-        return HoI4LocalisationFiles.findFiles(getResourceRoots(), maxDepth = 3)
+        return LocalisationFiles.findFiles(getResourceRoots(), maxDepth = 3)
     }
 
     private fun localisationRootScore(path: Path): Int {
-        return HoI4LocalisationFiles.rootScoreForRoots(path, getResourceRoots())
+        return LocalisationFiles.rootScoreForRoots(path, getResourceRoots())
     }
 
     private fun parseLocFileText(path: Path): Map<String, String> {
-        return HoI4LocalisationFiles.parseFile(path)
-    }
-
-    private fun ensureIconCache() {
-        if (cachesValid && (cachedIconFiles.isNotEmpty() || cachedSpriteIconFiles.isNotEmpty())) return
-        cachedIconFiles.clear()
-        cachedSpriteIconFiles.clear()
-
-        val spriteDefinitions = mutableListOf<SpriteDefinition>()
-        for (root in getResourceRoots()) {
-            val gfxDir = root.resolve("gfx")
-            if (gfxDir.isDirectory()) {
-                try {
-                    Files.walk(gfxDir, 6).use { stream ->
-                        stream.filter { it.isRegularFile() }.forEach { file ->
-                            val name = file.fileName.toString().lowercase()
-                            if (ICON_EXTENSIONS.any { name.endsWith(it) }) {
-                                cacheIconFile(root, file)
-                            } else if (name.endsWith(".gfx")) {
-                                parseGfxSpriteFile(root, file, spriteDefinitions)
-                            }
-                        }
-                    }
-                } catch (_: Exception) {
-                }
-            }
-
-            val interfaceDir = root.resolve("interface")
-            if (interfaceDir.isDirectory()) {
-                try {
-                    Files.walk(interfaceDir, 3).use { stream ->
-                        stream.filter {
-                            it.isRegularFile() && it.fileName.toString().endsWith(".gfx", ignoreCase = true)
-                        }.forEach { parseGfxSpriteFile(root, it, spriteDefinitions) }
-                    }
-                } catch (_: Exception) {
-                }
-            }
-        }
-
-        for (sprite in spriteDefinitions) {
-            val directPath = resolveGamePath(sprite.root, sprite.textureFile)
-            val iconPath = if (directPath.isRegularFile()) {
-                directPath.toAbsolutePath().normalize().toString()
-            } else {
-                findCachedIconPath(sprite.textureFile)
-            }
-            if (iconPath != null) putIconAliases(cachedSpriteIconFiles, sprite.name, iconPath)
-        }
-    }
-
-    private fun searchIconsCached(iconNamesById: Map<String, List<String>>): Map<String, String> {
-        ensureIconCache()
-        val map = mutableMapOf<String, String>()
-        val prefixLookup = PrefixIconLookup(cachedIconFiles)
-        for ((technologyId, names) in iconNamesById) {
-            for (name in names) {
-                var path = findCachedSpriteIconPath(name) ?: findCachedIconPath(name)
-                if (path != null) {
-                    map[technologyId] = path
-                    break
-                }
-                val aliases = iconAliases(name)
-                path = prefixLookup.find(aliases)
-                if (path != null) {
-                    map[technologyId] = path
-                    break
-                }
-            }
-        }
-        return map
+        return LocalisationFiles.parseFile(path)
     }
 
     private fun buildIconNames(technologies: List<TechnologyData>): Map<String, List<String>> {
@@ -423,117 +341,12 @@ class TechnologyService(private val project: Project) {
         return getPlsRoots()
     }
 
-    private fun cacheIconFile(root: Path, file: Path) {
-        val absolutePath = file.toAbsolutePath().normalize().toString()
-        val fileName = file.fileName.toString().substringBeforeLast(".")
-        putIconAliases(cachedIconFiles, fileName, absolutePath)
-        try {
-            val relativePath = root.relativize(file).toString().substringBeforeLast(".")
-            putIconAliases(cachedIconFiles, relativePath, absolutePath)
-        } catch (_: Exception) {
-        }
-    }
-
-    private fun parseGfxSpriteFile(root: Path, file: Path, spriteDefinitions: MutableList<SpriteDefinition>) {
-        try {
-            var inSpriteType = false
-            var spriteDepth = 0
-            val blockLines = mutableListOf<String>()
-            for (rawLine in Files.readString(file).lines()) {
-                val line = stripLineComment(rawLine).trim()
-                if (line.isEmpty()) continue
-                if (!inSpriteType && Regex("""(?i)\bspriteType\s*=""").containsMatchIn(line)) {
-                    inSpriteType = true
-                    spriteDepth = braceDelta(line)
-                    blockLines.clear()
-                    blockLines.add(line)
-                    if (spriteDepth <= 0 && line.contains("{")) {
-                        collectSpriteDefinition(root, blockLines, spriteDefinitions)
-                        inSpriteType = false
-                    }
-                    continue
-                }
-
-                if (inSpriteType) {
-                    blockLines.add(line)
-                    spriteDepth += braceDelta(line)
-                    if (spriteDepth <= 0) {
-                        collectSpriteDefinition(root, blockLines, spriteDefinitions)
-                        inSpriteType = false
-                    }
-                }
-            }
-        } catch (_: Exception) {
-        }
-    }
-
-    private fun collectSpriteDefinition(
-        root: Path,
-        lines: List<String>,
-        spriteDefinitions: MutableList<SpriteDefinition>
-    ) {
-        val name = lines.firstNotNullOfOrNull { extractAssignmentValue(it, "name") } ?: return
-        val textureFile = lines.firstNotNullOfOrNull { extractAssignmentValue(it, "texturefile") } ?: return
-        spriteDefinitions.add(SpriteDefinition(name, textureFile, root))
-    }
-
-    private fun findCachedSpriteIconPath(name: String): String? = findCachedPath(cachedSpriteIconFiles, name)
-
-    private fun findCachedIconPath(name: String): String? = findCachedPath(cachedIconFiles, name)
-
-    private fun findCachedPath(cache: Map<String, String>, name: String): String? {
-        for (alias in iconAliases(name)) {
-            cache[alias]?.let { return it }
-        }
-        return null
-    }
-
-    private fun putIconAliases(cache: MutableMap<String, String>, name: String, path: String) {
-        for (alias in iconAliases(name)) {
-            cache.putIfAbsent(alias, path)
-        }
-    }
-
-    private fun iconAliases(name: String): Set<String> {
-        val normalized = removeIconExtension(name.trim().trim('"').replace('\\', '/').lowercase())
-        if (normalized.isBlank()) return emptySet()
-
-        val aliases = linkedSetOf(normalized)
-        if (normalized.startsWith("gfx/")) aliases.add(normalized.removePrefix("gfx/"))
-        aliases.add(normalized.substringAfterLast('/'))
-
-        val strippedGfxAliases = aliases.toList().mapNotNull { alias ->
-            alias.takeIf { it.startsWith("gfx_") }?.removePrefix("gfx_")
-        }
-        aliases.addAll(strippedGfxAliases)
-        return aliases.filterTo(linkedSetOf()) { it.isNotBlank() }
-    }
-
-    private fun removeIconExtension(name: String): String {
-        for (extension in ICON_EXTENSIONS) {
-            if (name.endsWith(extension)) return name.removeSuffix(extension)
-        }
-        return name
-    }
-
-    private fun resolveGamePath(root: Path, rawPath: String): Path {
-        val normalizedPath = rawPath.trim().trim('"').replace('\\', '/')
-        val path = Path.of(normalizedPath)
-        return if (path.isAbsolute) path.normalize() else root.resolve(normalizedPath).normalize()
-    }
-
-    private fun extractAssignmentValue(line: String, key: String): String? {
-        val regex = Regex("""(?i)(?:^|\s)${Regex.escape(key)}\s*=\s*(?:"([^"]*)"|([^\s{}#]+))""")
-        val match = regex.find(line) ?: return null
-        return match.groupValues[1].ifEmpty { match.groupValues[2] }
-    }
-
     private fun parseFromText(filePath: String?, technologies: MutableList<TechnologyData>) {
         if (filePath == null) return
         val path = Path.of(filePath)
-        if (!Files.isRegularFile(path)) return
+        if (!ResourceFiles.isRegularFile(path)) return
 
-        val entries = TextParser(tokenizeText(Files.readString(path))).parseEntries()
+        val entries = TextParser(tokenizeText(ResourceFiles.readText(path) ?: return)).parseEntries()
         val technologyEntries = entries
             .filter { it.key == "technologies" }
             .flatMap { it.value.blockEntries() }
@@ -758,22 +571,6 @@ class TechnologyService(private val project: Project) {
         private fun peekText(): String? = tokens.getOrNull(index)?.text
     }
 
-    private fun stripLineComment(line: String): String {
-        var inQuote = false
-        var escaped = false
-        for ((index, char) in line.withIndex()) {
-            when {
-                escaped -> escaped = false
-                char == '\\' -> escaped = true
-                char == '"' -> inQuote = !inQuote
-                char == '#' && !inQuote -> return line.substring(0, index)
-            }
-        }
-        return line
-    }
-
-    private fun braceDelta(line: String): Int = line.count { it == '{' } - line.count { it == '}' }
-
     companion object {
         private val LOG = Logger.getInstance(TechnologyService::class.java)
         private val LANG_PRIORITY = listOf(
@@ -781,7 +578,6 @@ class TechnologyService(private val project: Project) {
             "english", "l_english"
         )
         private const val LOCALISATION_LANGUAGE_WEIGHT = 10000
-        private val ICON_EXTENSIONS = setOf(".dds", ".tga", ".png")
         private const val DEFAULT_FOLDER = "Technologies"
         private val NON_TECHNOLOGY_KEYS = setOf(
             "technologies", "folders", "folder", "path", "categories", "doctrine", "doctrine_name",

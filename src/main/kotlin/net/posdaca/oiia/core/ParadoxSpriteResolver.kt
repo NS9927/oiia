@@ -8,6 +8,8 @@ import icu.windea.pls.lang.search.ParadoxFilePathSearch
 import icu.windea.pls.lang.util.ParadoxDefinitionManager
 import icu.windea.pls.lang.util.ParadoxImageManager
 import icu.windea.pls.script.psi.ParadoxScriptProperty
+import net.posdaca.oiia.core.files.ResourceFiles
+import net.posdaca.oiia.core.PrefixIconLookup
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.isRegularFile
@@ -80,6 +82,7 @@ class ParadoxSpriteResolver(private val project: Project) {
     private val iconFiles = mutableMapOf<String, String>()
     private val spriteIconFiles = mutableMapOf<String, String>()
     private val spriteDefinitionsByName = mutableMapOf<String, SpriteDefinition>()
+    @Volatile private var iconPrefixLookup: PrefixIconLookup? = null
     private var cacheRootsKey: String? = null
 
     fun resolveDefinitionImage(definition: ParadoxScriptProperty): String? {
@@ -185,12 +188,13 @@ class ParadoxSpriteResolver(private val project: Project) {
     }
 
     private fun ensureIconCache() {
-        val roots = HoI4ResourceRoots.resourceRoots(project, projectFirst = true, gameFirst = false)
-        val rootsKey = roots.joinToString("|") { HoI4ResourceRoots.normalizedKey(it) }
+        val roots = ResourceFiles.resourceRoots(project, projectFirst = true, gameFirst = false)
+        val rootsKey = roots.joinToString("|") { ResourceFiles.normalizedKey(it) }
         if (cacheRootsKey == rootsKey) return
         synchronized(this) {
             if (cacheRootsKey == rootsKey) return
             iconFiles.clear()
+            iconPrefixLookup = null
             spriteIconFiles.clear()
             spriteDefinitionsByName.clear()
 
@@ -208,6 +212,7 @@ class ParadoxSpriteResolver(private val project: Project) {
                 putDefinitionAliases(sprite)
             }
 
+            iconPrefixLookup = PrefixIconLookup(iconFiles.toMap())
             cacheRootsKey = rootsKey
             resolvedSpriteInfos.clear()
             LOG.info("GUI sprite cache rebuilt: roots=${roots.size} images=${iconFiles.size} spriteImages=${spriteIconFiles.size} definitions=${spriteDefinitionsByName.size}")
@@ -215,33 +220,21 @@ class ParadoxSpriteResolver(private val project: Project) {
     }
 
     private fun cacheImages(root: Path) {
-        val gfxDir = root.resolve("gfx")
-        if (!Files.isDirectory(gfxDir)) return
-        runCatching {
-            Files.walk(gfxDir, 6).use { stream ->
-                stream
-                    .filter { it.isRegularFile() }
-                    .filter { path -> ICON_EXTENSIONS.any { path.fileName.toString().endsWith(it, ignoreCase = true) } }
-                    .forEach { cacheIconFile(root, it) }
-            }
-        }
+        val files = ResourceFiles.listFiles(listOf(root), listOf("gfx"), ICON_EXTENSIONS, maxDepth = 6)
+        for (file in files) cacheIconFile(root, file)
     }
+
 
     private fun cacheSpriteDefinitions(root: Path, spriteDefinitions: MutableList<SpriteDefinition>) {
-        for (dir in listOf(root.resolve("interface"), root.resolve("gfx"))) {
-            if (!Files.isDirectory(dir)) continue
-            runCatching {
-                Files.walk(dir, 6).use { stream ->
-                    stream
-                        .filter { it.isRegularFile() && it.fileName.toString().endsWith(".gfx", ignoreCase = true) }
-                        .forEach { parseGfxFile(root, it, spriteDefinitions) }
-                }
-            }
+        val gfxFiles = ResourceFiles.listFiles(listOf(root), listOf("gfx", "interface"), setOf(".gfx"), maxDepth = 6)
+        for (path in gfxFiles) {
+            parseGfxFile(root, path, spriteDefinitions)
         }
     }
 
+
     private fun parseGfxFile(root: Path, path: Path, spriteDefinitions: MutableList<SpriteDefinition>) {
-        val content = runCatching { Files.readString(path) }.getOrNull() ?: return
+        val content = ResourceFiles.readText(path) ?: return
         findSpriteBlocks(content).forEach { spriteBlock ->
             val body = spriteBlock.body
             val assignmentBody = stripLineComments(body)
@@ -378,7 +371,8 @@ class ParadoxSpriteResolver(private val project: Project) {
 
     private fun findCachedIconPath(name: String): String? {
         ensureIconCache()
-        return lookupCachedPath(iconFiles, name)
+        lookupCachedPath(iconFiles, name)?.let { return it }
+        return iconPrefixLookup?.find(aliases(name))
     }
 
     private fun lookupCachedPath(cache: Map<String, String>, name: String): String? {
@@ -509,7 +503,7 @@ class ParadoxSpriteResolver(private val project: Project) {
 
     private fun resourceRootFor(filePath: String?): Path? {
         val file = filePath?.let { runCatching { Path.of(it).toAbsolutePath().normalize() }.getOrNull() } ?: return null
-        return HoI4ResourceRoots.resourceRoots(project, projectFirst = true, gameFirst = false)
+        return ResourceFiles.resourceRoots(project, projectFirst = true, gameFirst = false)
             .firstOrNull { root -> file.startsWith(root.toAbsolutePath().normalize()) }
     }
 
@@ -688,3 +682,5 @@ class ParadoxSpriteResolver(private val project: Project) {
         private val NUMBER_REGEX = Regex("""-?\d+(?:\.\d+)?""")
     }
 }
+
+
