@@ -14,7 +14,7 @@ class NationalFocusQuickDocTextProvider : ParadoxQuickDocTextProvider {
 
         if (type != "focus" && type != "focus_tree" && type != "shared_focus") return null
 
-        val name = ParadoxDefinitionManager.getLocalizedName(element)
+        val name = ParadoxDefinitionManager.getPresentableName(element)
             ?: ParadoxDefinitionManager.getName(element)
             ?: return null
 
@@ -36,7 +36,7 @@ class NationalFocusQuickDocTextProvider : ParadoxQuickDocTextProvider {
         val localisations = ParadoxDefinitionManager.getPrimaryLocalisations(element)
         val firstLoc = localisations.firstOrNull()
         if (firstLoc != null) {
-            val text = icu.windea.pls.lang.resolve.ParadoxLocalisationService.resolveLocalizedText(firstLoc)
+            val text = icu.windea.pls.lang.resolve.ParadoxLocalisationService.resolvePresentableText(firstLoc)
             if (text != null && text != name) {
                 sb.appendLine("<p>").append(text).appendLine("</p>")
             }

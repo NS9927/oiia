@@ -52,7 +52,7 @@ internal class ParadoxLocalisationResolver(
                 ParadoxLocalisationSearch.searchNormal(key, selector)
                     .findAll()
                     .maxByOrNull { localisationPriority(it) }
-                    ?.let { ParadoxLocalisationService.resolveLocalizedText(it) ?: it.value }
+                    ?.let { ParadoxLocalisationService.resolvePresentableText(it) ?: it.value }
                     ?.takeIf { it.isNotBlank() && it != key }
             }
         }.getOrNull()

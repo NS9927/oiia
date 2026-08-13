@@ -114,7 +114,7 @@ class TechnologyService(private val project: Project) {
         val doc = vf?.let { PsiManager.getInstance(project).findViewProvider(it)?.document }
         val line = if (doc != null) doc.getLineNumber(prop.textOffset) + 1 else 0
         val localisations = resolvePrimaryLocalisations(prop)
-        val localizedName = ParadoxDefinitionManager.getLocalizedName(prop)
+        val localizedName = ParadoxDefinitionManager.getPresentableName(prop)
         val primaryFolder = folders.values.firstOrNull()
 
         return TechnologyData(
@@ -203,7 +203,7 @@ class TechnologyService(private val project: Project) {
     private fun resolvePrimaryLocalisations(prop: ParadoxScriptProperty): List<String> {
         return try {
             ParadoxDefinitionManager.getPrimaryLocalisations(prop).mapNotNull {
-                ParadoxLocalisationService.resolveLocalizedText(it)
+                ParadoxLocalisationService.resolvePresentableText(it)
             }
         } catch (_: Exception) {
             emptyList()

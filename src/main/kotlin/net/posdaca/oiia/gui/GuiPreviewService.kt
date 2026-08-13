@@ -92,7 +92,7 @@ class GuiPreviewService(private val project: Project) {
                     .findAll()
                     .asSequence()
                     .mapNotNull { property ->
-                        val value = ParadoxLocalisationService.resolveLocalizedText(property) ?: property.value
+                        val value = ParadoxLocalisationService.resolvePresentableText(property) ?: property.value
                         value?.takeIf { it.isNotBlank() && it != key }
                             ?.let { it to localisationPriority(property) }
                     }
