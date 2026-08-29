@@ -1,5 +1,6 @@
 package net.posdaca.oiia.map
 
+import net.posdaca.oiia.core.preview.PreviewSnapshot
 import java.awt.image.BufferedImage
 import java.nio.file.Path
 
@@ -171,6 +172,10 @@ data class StrategicRegionInfo(
     val path: Path
 )
 
+/**
+ * The resolved map snapshot. Load failures are expressed by [MapLoadResult.Missing]/[MapLoadResult.Failed],
+ * so a constructed instance is never empty.
+ */
 data class LoadedMapData(
     val provincesImage: BufferedImage,
     val renderChunks: List<MapRenderChunk>,
@@ -192,7 +197,10 @@ data class LoadedMapData(
     val localisationPaths: List<Path>,
     val localisations: Map<String, String>,
     val sourceStamp: Long
-) {
+) : PreviewSnapshot {
+    override val isEmpty: Boolean
+        get() = false
+
     fun borderChunksFor(mode: MapPreviewMode): List<MapBorderChunk> = borderChunks[mode].orEmpty()
 
     fun smoothBorderSegmentsFor(mode: MapPreviewMode): List<MapLineSegment> = smoothBorderSegments[mode].orEmpty()
