@@ -35,6 +35,14 @@ internal class ParadoxLocalisationResolver(
         return resolved
     }
 
+    fun resolveAll(keys: Iterable<String>): Map<String, String> {
+        val result = linkedMapOf<String, String>()
+        for (key in keys) {
+            resolve(key)?.let { result[key] = it }
+        }
+        return result
+    }
+
     fun clearCache() {
         synchronized(cache) {
             cache.clear()

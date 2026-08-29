@@ -1,5 +1,6 @@
 package net.posdaca.oiia.core.files
 
+import net.posdaca.oiia.core.ParadoxLocalisationPreference
 import java.nio.file.Path
 
 /**
@@ -10,6 +11,66 @@ internal object LocalisationFiles {
     private const val MAX_PARSED_CACHE_SIZE = 1024
     private val lock = Any()
     private val parsedFileCache = linkedMapOf<String, CachedParsedFile>()
+
+    fun mergePreferred(
+        paths: Iterable<Path>,
+        score: (Path) -> Int,
+        keys: Set<String>? = null,
+        unescapeValues: Boolean = false,
+    ): Map<String, String> {
+        if (keys?.isEmpty() == true) return emptyMap()
+        val result = linkedMapOf<String, String>()
+        val scoreByKey = mutableMapOf<String, Int>()
+        for (path in paths) {
+            val pathScore = score(path)
+            val parsed = parseFile(path)
+            if (keys == null) {
+                for ((key, value) in parsed) {
+                    accept(result, scoreByKey, key, value, pathScore, unescapeValues)
+                }
+            } else {
+                for (key in keys) {
+                    val value = parsed[key] ?: continue
+                    accept(result, scoreByKey, key, value, pathScore, unescapeValues)
+                }
+            }
+        }
+        return result
+    }
+
+    fun mergeFromRoots(
+        roots: List<Path>,
+        languages: List<String>,
+        keys: Set<String>? = null,
+        unescapeValues: Boolean = false,
+        languageWeight: Int = 10000,
+        maxDepth: Int = 4,
+    ): Map<String, String> {
+        return mergePreferred(
+            findFiles(roots, maxDepth),
+            score = { path ->
+                ParadoxLocalisationPreference.languagePriority(path.toString(), languages, languageWeight) +
+                    rootScoreForRoots(path, roots)
+            },
+            keys = keys,
+            unescapeValues = unescapeValues,
+        )
+    }
+
+    private fun accept(
+        result: MutableMap<String, String>,
+        scoreByKey: MutableMap<String, Int>,
+        key: String,
+        value: String,
+        pathScore: Int,
+        unescapeValues: Boolean,
+    ) {
+        val existing = scoreByKey[key] ?: Int.MIN_VALUE
+        if (pathScore > existing) {
+            scoreByKey[key] = pathScore
+            result[key] = if (unescapeValues) unescape(value) else value
+        }
+    }
 
     fun findFiles(roots: List<Path>, maxDepth: Int = 4): List<Path> {
         return ResourceFiles.listFiles(
