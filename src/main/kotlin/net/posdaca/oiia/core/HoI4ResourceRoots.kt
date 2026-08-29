@@ -16,18 +16,6 @@ internal object HoI4ResourceRoots {
     private val cacheLock = Any()
     private val resourceRootsCache = mutableMapOf<ResourceRootCacheKey, CachedRoots>()
 
-    fun plsRoots(gameFirst: Boolean = true): List<Path> {
-        val state = ChronicleProfilesSettings.getInstance().state
-        val modSettings = state.modSettings.values.filter { it.isHoi4Mod() }
-        val gameRoots = gameRoots(modSettings)
-        val modRoots = allModRoots(modSettings)
-        return if (gameFirst) {
-            distinctNormalized(gameRoots + modRoots)
-        } else {
-            distinctNormalized(modRoots + gameRoots)
-        }
-    }
-
     fun resourceRoots(
         project: Project,
         projectFirst: Boolean = true,

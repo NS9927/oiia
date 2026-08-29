@@ -2,8 +2,17 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixes a race in the sprite resolver where rebuilding the icon cache could corrupt concurrently memoised sprite lookups; caches are now swapped atomically.
+- Sprite and localisation caches now detect edits to `.gfx` / `.yml` files (short TTL fingerprinting) instead of staying stale until resource roots or preferences change.
+- GUI preview no longer duplicates the shared PLS localisation resolution; every module resolves localisation through `core/ParadoxLocalisationResolver`.
+
 ### Changed
 
+- Consolidates fallback language order and localisation scoring weights into `ParadoxLocalisationPreference` (previously four drifting copies across preview modules).
+- Moves the shared text fallback parser into `core/ParadoxTextParser` (used by the technology preview) and extracts the pure `.gfx` text parsing into `ParadoxGfxParser`.
+- Removes unused resource-file APIs and the unused game GUI template loader.
 - Updates the `HOI4 via Shadow` run configuration to Shadow's `PDXGameLauncher hoi4 -playset <id>` CLI entry (replacing `--shadow-command hoi4.launch`).
 
 ## [1.0.2] - 2026-07-15

@@ -1,11 +1,9 @@
 package net.posdaca.oiia.core.files
 
-import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
-import icu.windea.pls.lang.search.ParadoxFilePathSearch
 import net.posdaca.oiia.core.HoI4ResourceRoots
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
@@ -19,9 +17,8 @@ import kotlin.io.path.isRegularFile
  * Single entry for preview modules to discover and read resource files.
  *
  * Order of preference:
- * 1. PLS [ParadoxFilePathSearch] when a project-relative game path is known
- * 2. IntelliJ VFS under configured resource roots
- * 3. NIO only as last-resort fallback (outside indexed trees / missing VFS)
+ * 1. IntelliJ VFS under configured resource roots
+ * 2. NIO only as last-resort fallback (outside indexed trees / missing VFS)
  */
 internal object ResourceFiles {
     private const val LIST_TTL_MS = 1000L
@@ -82,36 +79,12 @@ internal object ResourceFiles {
         return file.timeStamp xor file.length xor normalizedKey(file.path).hashCode().toLong()
     }
 
-    /**
-     * Resolve a game-relative path (e.g. `common/national_focus/foo.txt`) through PLS first,
-     * then fall back to project-first resource roots.
-     */
-    fun findByGamePath(project: Project, gameRelativePath: String): VirtualFile? {
-        val relative = normalizeRelative(gameRelativePath) ?: return null
-        findWithPls(project, relative)?.let { return it }
-        for (root in resourceRoots(project, projectFirst = true, gameFirst = false)) {
-            val candidate = root.resolve(relative)
-            if (candidate.isRegularFile()) {
-                return toVirtualFile(candidate) ?: continue
-            }
-        }
-        return null
-    }
-
+    /** Resolve a game-relative path (e.g. `common/national_focus/foo.txt`) against the given roots. */
     fun findFirst(roots: List<Path>, gameRelativePath: String): Path? {
         val relative = normalizeRelative(gameRelativePath) ?: return null
         for (root in roots) {
             val candidate = root.resolve(relative).normalize()
             if (candidate.isRegularFile()) return candidate.toAbsolutePath().normalize()
-        }
-        return null
-    }
-    fun findEffectivePath(project: Project, gameRelativePath: String): Path? {
-        val relative = normalizeRelative(gameRelativePath) ?: return null
-        findWithPls(project, relative)?.let { return toPath(it) }
-        for (root in resourceRoots(project, projectFirst = true, gameFirst = false)) {
-            val candidate = root.resolve(relative).normalize()
-            if (candidate.isRegularFile()) return candidate
         }
         return null
     }
@@ -169,31 +142,6 @@ internal object ResourceFiles {
         return result
     }
 
-    /**
-     * Prefer PLS path search for a directory/file pattern when indexed; otherwise [listFiles].
-     * [gamePathPrefix] examples: `common/national_focus`, `localisation`, `gfx`.
-     */
-    fun listByGamePathPrefix(
-        project: Project,
-        gamePathPrefix: String,
-        extensions: Set<String> = emptySet(),
-        maxDepth: Int = 8,
-    ): List<Path> {
-        val prefix = normalizeRelative(gamePathPrefix) ?: return emptyList()
-        val plsHits = findAllWithPls(project, prefix)
-        if (plsHits.isNotEmpty()) {
-            val ext = extensions.map { it.lowercase().let { e -> if (e.startsWith(".")) e else ".$e" } }.toSet()
-            return plsHits
-                .filter { vf ->
-                    vf.isValid && !vf.isDirectory &&
-                        (ext.isEmpty() || ext.any { vf.name.endsWith(it, ignoreCase = true) })
-                }
-                .map { toPath(it).toAbsolutePath().normalize() }
-                .distinctBy { normalizedKey(it) }
-        }
-        return listFiles(project, listOf(prefix), extensions, maxDepth)
-    }
-
     fun readText(path: Path): String? {
         toVirtualFile(path)?.let { vf -> readText(vf)?.let { return it } }
         return runCatching {
@@ -238,14 +186,10 @@ internal object ResourceFiles {
     }
 
 
-    
     private fun isIdeApplicationAvailable(): Boolean {
         return runCatching {
             com.intellij.openapi.application.ApplicationManager.getApplication() != null
         }.getOrDefault(false)
-    }
-    fun clearListCache() {
-        synchronized(listLock) { listCache.clear() }
     }
 
     private fun collectUnderRoot(
@@ -309,36 +253,11 @@ internal object ResourceFiles {
         }
     }
 
-    private fun findWithPls(project: Project, gameRelativePath: String): VirtualFile? {
-        return runCatching {
-            ReadAction.compute<VirtualFile?, Throwable> {
-                val selector = ParadoxFilePathSearch.selector(project, null).distinct()
-                ParadoxFilePathSearch.search(gameRelativePath, null, selector, true).find()
-                    ?: ParadoxFilePathSearch.search(gameRelativePath, null, selector, false).find()
-            }
-        }.getOrNull()
-    }
-
-    private fun findAllWithPls(project: Project, gamePathPrefix: String): List<VirtualFile> {
-        return runCatching {
-            ReadAction.compute<List<VirtualFile>, Throwable> {
-                val selector = ParadoxFilePathSearch.selector(project, null).distinct()
-                val paths = linkedSetOf<VirtualFile>()
-                for (query in listOf(gamePathPrefix, "$gamePathPrefix/", "$gamePathPrefix/**")) {
-                    ParadoxFilePathSearch.search(query, null, selector, true).findAll().forEach { paths.add(it) }
-                }
-                paths.toList()
-            }
-        }.getOrDefault(emptyList())
-    }
-
     private fun matchesExtension(name: String, extensions: Set<String>): Boolean {
         if (extensions.isEmpty()) return true
         val lower = name.lowercase()
         return extensions.any { lower.endsWith(it) }
-    }
-
-    private fun normalizeRelative(path: String?): String? {
+    }    private fun normalizeRelative(path: String?): String? {
         if (path.isNullOrBlank()) return null
         return path.replace('\\', '/').trim().trimStart('/')
     }
