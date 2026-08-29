@@ -4,6 +4,28 @@ import icu.windea.pls.config.config.delegated.CwtLocaleConfig
 import icu.windea.pls.lang.util.ParadoxLocaleManager
 
 object ParadoxLocalisationPreference {
+    /**
+     * Single source of truth for the fallback language order used by every preview module.
+     * Expanded tags (l_simp_chinese, l_chinese, ...) are derived by [cacheKey]/[languagePriority].
+     */
+    val DEFAULT_FALLBACK_LANGUAGES: List<String> = listOf(
+        "simp_chinese",
+        "english",
+        "braz_por",
+        "french",
+        "german",
+        "polish",
+        "russian",
+        "spanish",
+        "japanese"
+    )
+
+    /**
+     * Weight that makes the language rank dominate the resource-root score when the two are
+     * combined (language * [LOCALISATION_LANGUAGE_WEIGHT] + rootScore).
+     */
+    const val LOCALISATION_LANGUAGE_WEIGHT: Int = 10000
+
     fun preferenceKey(includePreferredLocale: Boolean = true): String {
         return if (includePreferredLocale) preferredLocaleTags().joinToString("|") else ""
     }
