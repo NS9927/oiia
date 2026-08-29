@@ -1,5 +1,7 @@
 package net.posdaca.oiia.focus
 
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorManagerEvent
 import com.intellij.openapi.fileEditor.FileEditorManagerListener
@@ -16,6 +18,7 @@ import com.intellij.util.messages.MessageBusConnection
 import OiiaBundle
 import net.posdaca.oiia.core.PreviewToolWindowSupport
 import java.awt.BorderLayout
+import java.util.concurrent.atomic.AtomicInteger
 import javax.swing.SwingConstants
 import javax.swing.Timer
 
@@ -41,7 +44,9 @@ class NationalFocusPreviewToolWindowFactory : ToolWindowFactory {
         private var currentPanel: JBPanel<JBPanel<*>> = createEmptyPanel()
         private var messageBusConnection: MessageBusConnection? = null
         private var renderedFilePath: String? = null
+        private var renderedStamp: Long = -1
         private var renderedLocalisationKey: String? = null
+        private val refreshVersion = AtomicInteger()
         private val service = NationalFocusService(project)
         private val refreshTimer = Timer(350) {
             if (isShowing) refreshFromCurrentFileIfChanged()
@@ -84,8 +89,12 @@ class NationalFocusPreviewToolWindowFactory : ToolWindowFactory {
 
         private fun refreshFromCurrentFileIfChanged() {
             val selectedFile = getSelectedFile()
+            val stamp = selectedFile?.modificationStamp ?: -1
             val localisationKey = NationalFocusService.localisationCacheKey()
-            if (selectedFile?.path != renderedFilePath || localisationKey != renderedLocalisationKey) {
+            if (selectedFile?.path != renderedFilePath ||
+                stamp != renderedStamp ||
+                localisationKey != renderedLocalisationKey
+            ) {
                 refreshFromFile(selectedFile, localisationKey = localisationKey)
             }
         }
@@ -100,8 +109,11 @@ class NationalFocusPreviewToolWindowFactory : ToolWindowFactory {
             localisationKey: String = NationalFocusService.localisationCacheKey()
         ) {
             val filePath = file?.path
-            if (!force && filePath == renderedFilePath && localisationKey == renderedLocalisationKey) return
+            val stamp = file?.modificationStamp ?: -1
+            if (!force && filePath == renderedFilePath && stamp == renderedStamp && localisationKey == renderedLocalisationKey) return
+            val version = refreshVersion.incrementAndGet()
             renderedFilePath = filePath
+            renderedStamp = stamp
             renderedLocalisationKey = localisationKey
 
             val selectedFile = file ?: run {
@@ -114,21 +126,31 @@ class NationalFocusPreviewToolWindowFactory : ToolWindowFactory {
                 return
             }
 
-            val parent = selectedFile.parent
-            if (parent == null) {
+            if (selectedFile.parent == null) {
                 updatePanel(createNoFocusTreePanel())
                 return
             }
 
-            val psiFile: PsiFile? = PsiManager.getInstance(project).findFile(selectedFile)
-            val snapshot = if (psiFile != null) service.loadSnapshot(psiFile) else FocusPreviewSnapshot(emptyList())
+            ApplicationManager.getApplication().executeOnPooledThread {
+                val snapshot = ApplicationManager.getApplication().runReadAction<FocusPreviewSnapshot?> {
+                    if (!selectedFile.isValid || selectedFile.modificationStamp != stamp) return@runReadAction null
+                    val psiFile: PsiFile = PsiManager.getInstance(project).findFile(selectedFile)
+                        ?: return@runReadAction null
+                    service.loadSnapshot(psiFile)
+                }
 
-            if (snapshot.isEmpty) {
-                updatePanel(createNoFocusTreePanel())
-                return
+                ApplicationManager.getApplication().invokeLater({
+                    if (version != refreshVersion.get()) return@invokeLater
+                    if (selectedFile.path != renderedFilePath || selectedFile.modificationStamp != stamp) return@invokeLater
+
+                    if (snapshot == null || snapshot.isEmpty) {
+                        updatePanel(createNoFocusTreePanel())
+                        return@invokeLater
+                    }
+
+                    updatePanel(NationalFocusPreviewPanel(project, snapshot, service))
+                }, ModalityState.any())
             }
-
-            updatePanel(NationalFocusPreviewPanel(project, snapshot, service))
         }
 
         @Suppress("UnstableApiUsage")

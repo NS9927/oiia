@@ -1,5 +1,7 @@
 package net.posdaca.oiia.technology
 
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorManagerEvent
 import com.intellij.openapi.fileEditor.FileEditorManagerListener
@@ -16,6 +18,7 @@ import com.intellij.util.messages.MessageBusConnection
 import OiiaBundle
 import net.posdaca.oiia.core.PreviewToolWindowSupport
 import java.awt.BorderLayout
+import java.util.concurrent.atomic.AtomicInteger
 import javax.swing.SwingConstants
 import javax.swing.Timer
 
@@ -41,6 +44,8 @@ class TechnologyPreviewToolWindowFactory : ToolWindowFactory {
         private var currentPanel: JBPanel<JBPanel<*>> = createEmptyPanel()
         private var messageBusConnection: MessageBusConnection? = null
         private var renderedFilePath: String? = null
+        private var renderedStamp: Long = -1
+        private val refreshVersion = AtomicInteger()
         private val service = TechnologyService(project)
         private val refreshTimer = Timer(350) {
             if (isShowing) refreshFromCurrentFileIfChanged()
@@ -83,7 +88,10 @@ class TechnologyPreviewToolWindowFactory : ToolWindowFactory {
 
         private fun refreshFromCurrentFileIfChanged() {
             val selectedFile = getSelectedFile()
-            if (selectedFile?.path != renderedFilePath) refreshFromFile(selectedFile)
+            val stamp = selectedFile?.modificationStamp ?: -1
+            if (selectedFile?.path != renderedFilePath || stamp != renderedStamp) {
+                refreshFromFile(selectedFile)
+            }
         }
 
         private fun refreshFromCurrentFile() {
@@ -92,8 +100,11 @@ class TechnologyPreviewToolWindowFactory : ToolWindowFactory {
 
         private fun refreshFromFile(file: VirtualFile?, force: Boolean = false) {
             val filePath = file?.path
-            if (!force && filePath == renderedFilePath) return
+            val stamp = file?.modificationStamp ?: -1
+            if (!force && filePath == renderedFilePath && stamp == renderedStamp) return
+            val version = refreshVersion.incrementAndGet()
             renderedFilePath = filePath
+            renderedStamp = stamp
 
             val selectedFile = file ?: run {
                 updatePanel(createEmptyPanel())
@@ -105,21 +116,31 @@ class TechnologyPreviewToolWindowFactory : ToolWindowFactory {
                 return
             }
 
-            val parent = selectedFile.parent
-            if (parent == null) {
+            if (selectedFile.parent == null) {
                 updatePanel(createNoTechnologyPanel())
                 return
             }
 
-            val psiFile: PsiFile? = PsiManager.getInstance(project).findFile(selectedFile)
-            val snapshot = if (psiFile != null) service.loadSnapshot(psiFile) else TechnologyPreviewSnapshot(emptyList())
+            ApplicationManager.getApplication().executeOnPooledThread {
+                val snapshot = ApplicationManager.getApplication().runReadAction<TechnologyPreviewSnapshot?> {
+                    if (!selectedFile.isValid || selectedFile.modificationStamp != stamp) return@runReadAction null
+                    val psiFile: PsiFile = PsiManager.getInstance(project).findFile(selectedFile)
+                        ?: return@runReadAction null
+                    service.loadSnapshot(psiFile)
+                }
 
-            if (snapshot.isEmpty) {
-                updatePanel(createNoTechnologyPanel())
-                return
+                ApplicationManager.getApplication().invokeLater({
+                    if (version != refreshVersion.get()) return@invokeLater
+                    if (selectedFile.path != renderedFilePath || selectedFile.modificationStamp != stamp) return@invokeLater
+
+                    if (snapshot == null || snapshot.isEmpty) {
+                        updatePanel(createNoTechnologyPanel())
+                        return@invokeLater
+                    }
+
+                    updatePanel(TechnologyPreviewPanel(project, snapshot, service))
+                }, ModalityState.any())
             }
-
-            updatePanel(TechnologyPreviewPanel(project, snapshot, service))
         }
 
         @Suppress("UnstableApiUsage")
