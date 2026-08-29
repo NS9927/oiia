@@ -212,3 +212,5 @@ sealed class MapLoadResult {
     data class Missing(val searchedRoots: List<Path>) : MapLoadResult()
     data class Failed(val message: String) : MapLoadResult()
 }
+
+typealias MapPreviewSnapshot = LoadedMapData

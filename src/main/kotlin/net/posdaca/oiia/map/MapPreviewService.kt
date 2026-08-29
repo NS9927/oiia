@@ -17,6 +17,8 @@ import kotlin.io.path.name
 
 class MapPreviewService(private val project: Project) {
 
+    fun loadSnapshot(onProgress: (MapLoadStep) -> Unit = {}): MapLoadResult = loadMap(onProgress)
+
     fun loadMap(onProgress: (MapLoadStep) -> Unit = {}): MapLoadResult {
         onProgress(MapLoadStep.LOCATING)
         val roots = getResourceRoots()
@@ -1254,20 +1256,12 @@ class MapPreviewService(private val project: Project) {
     }
 
     private fun loadLocalisations(paths: List<Path>, roots: List<Path>): Map<String, String> {
-        val result = linkedMapOf<String, String>()
-        val scoreByKey = mutableMapOf<String, Int>()
         val rootScores = LocalisationFiles.rootScores(roots)
-        for (path in paths) {
-            val score = localisationScore(path, rootScores)
-            for ((key, value) in LocalisationFiles.parseFile(path)) {
-                val currentScore = scoreByKey[key] ?: Int.MIN_VALUE
-                if (score > currentScore) {
-                    scoreByKey[key] = score
-                    result[key] = LocalisationFiles.unescape(value)
-                }
-            }
-        }
-        return result
+        return LocalisationFiles.mergePreferred(
+            paths,
+            score = { path -> localisationScore(path, rootScores) },
+            unescapeValues = true,
+        )
     }
 
     private fun resolveLocalisation(localisations: Map<String, String>, vararg keys: String?): String? {

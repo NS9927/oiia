@@ -1,16 +1,12 @@
 package net.posdaca.oiia.map
 
-import net.posdaca.oiia.core.files.ResourceFiles
-
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapi.vfs.newvfs.BulkFileListener
 import com.intellij.openapi.vfs.newvfs.events.VFileEvent
 import com.intellij.ui.JBColor
-import com.intellij.ui.LightweightHint
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPanel
 import com.intellij.ui.components.JBScrollPane
@@ -18,7 +14,9 @@ import com.intellij.ui.scale.JBUIScale
 import com.intellij.util.messages.MessageBusConnection
 import com.intellij.util.ui.JBFont
 import OiiaBundle
-import net.posdaca.oiia.core.PreviewHintSupport
+import net.posdaca.oiia.core.preview.PreviewClickHint
+import net.posdaca.oiia.core.preview.PreviewHintHtml
+import net.posdaca.oiia.core.preview.PreviewNavigation
 import java.awt.BorderLayout
 import java.awt.BasicStroke
 import java.awt.Color
@@ -63,7 +61,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
     private val statusLabel = JBLabel(OiiaBundle.message("toolwindow.MapPreview.loading"))
     private val loadVersion = AtomicInteger(0)
     private val changeCheckInProgress = AtomicBoolean(false)
-    private var loadedData: LoadedMapData? = null
+    private var snapshot: MapPreviewSnapshot? = null
     private var loading = false
     private var messageBusConnection: MessageBusConnection? = null
     private var colorMode = MapPreviewMode.PROVINCE
@@ -202,7 +200,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
 
     private fun reloadIfChanged() {
         if (loading) return
-        val current = loadedData
+        val current = snapshot
         if (current == null) {
             reload()
             return
@@ -229,7 +227,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         statusLabel.text = msg("loading")
 
         ApplicationManager.getApplication().executeOnPooledThread {
-            val result = service.loadMap { step ->
+            val result = service.loadSnapshot { step ->
                 ApplicationManager.getApplication().invokeLater {
                     if (version == loadVersion.get() && loading) {
                         statusLabel.text = msg(step.messageKey)
@@ -248,7 +246,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
     private fun applyLoadResult(result: MapLoadResult) {
         when (result) {
             is MapLoadResult.Loaded -> {
-                loadedData = result.data
+                snapshot = result.data
                 canvas.setData(result.data)
                 val image = result.data.provincesImage
                 val definitions = result.data.provinceByColor.size
@@ -268,13 +266,13 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             }
 
             is MapLoadResult.Missing -> {
-                loadedData = null
+                snapshot = null
                 canvas.setData(null)
                 statusLabel.text = msg("missing")
             }
 
             is MapLoadResult.Failed -> {
-                loadedData = null
+                snapshot = null
                 canvas.setData(null)
                 statusLabel.text = result.message
             }
@@ -327,8 +325,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         private val zoomSettleTimer = Timer(ZOOM_SETTLE_DELAY_MS) {
             finishZoomInteraction()
         }.apply { isRepeats = false }
-        private var lockedHint: LightweightHint? = null
-        private var singleClickTimer: Timer? = null
+        private val clickHint = PreviewClickHint(this)
         private var recenteringScroll = false
         private var fitToMinimumAfterLayout = false
 
@@ -343,7 +340,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             addMouseListener(object : MouseAdapter() {
                 override fun mousePressed(e: MouseEvent) {
                     if (e.button != MouseEvent.BUTTON1) return
-                    if (e.clickCount > 1) cancelPendingSingleClick()
+                    if (e.clickCount > 1) clickHint.cancel()
                     dragStartScreenPoint = Point(e.locationOnScreen)
                     dragStartScroll = Point(
                         scrollPane?.horizontalScrollBar?.value ?: 0,
@@ -362,22 +359,22 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
                     if (e.button != MouseEvent.BUTTON1) return
                     val sample = sampleProvince(e.point)
                     if (sample == null) {
-                        if (e.clickCount == 1) hideMapHint()
+                        if (e.clickCount == 1) clickHint.hide()
                         return
                     }
                     if (e.clickCount >= 2) {
-                        cancelPendingSingleClick()
-                        hideMapHint()
+                        clickHint.cancel()
+                        clickHint.hide()
                         navigateToSource(sample)
                     } else if (e.clickCount == 1) {
-                        scheduleMapHint(sample, e.point)
+                        clickHint.schedule(e.point) { buildDetailText(sample) }
                     }
                 }
             })
 
             addMouseMotionListener(object : MouseAdapter() {
                 override fun mouseDragged(e: MouseEvent) {
-                    cancelPendingSingleClick()
+                    clickHint.cancel()
                     val startPoint = dragStartScreenPoint ?: return
                     val startScroll = dragStartScroll ?: return
                     val scroll = scrollPane ?: return
@@ -400,40 +397,9 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             }
         }
 
-        private fun scheduleMapHint(sample: ProvinceSample, point: Point) {
-            cancelPendingSingleClick()
-            val hintPoint = Point(point)
-            singleClickTimer = Timer(PreviewHintSupport.multiClickInterval()) {
-                singleClickTimer = null
-                if (isShowing) showMapHint(sample, hintPoint)
-            }.apply {
-                isRepeats = false
-                start()
-            }
-        }
-
-        private fun cancelPendingSingleClick() {
-            singleClickTimer?.stop()
-            singleClickTimer = null
-        }
-
-        private fun showMapHint(sample: ProvinceSample, point: Point) {
-            hideMapHint()
-            val hint = PreviewHintSupport.showHint(this, point, buildDetailText(sample)) { hiddenHint ->
-                if (lockedHint === hiddenHint) lockedHint = null
-            }
-            lockedHint = hint
-        }
-
-        private fun hideMapHint() {
-            val hint = lockedHint
-            lockedHint = null
-            PreviewHintSupport.hideHint(hint)
-        }
-
         fun setColorMode(nextMode: MapPreviewMode) {
-            cancelPendingSingleClick()
-            hideMapHint()
+            clickHint.cancel()
+            clickHint.hide()
             if (fillMode == nextMode) return
             fillMode = nextMode
             clearTileCache()
@@ -442,8 +408,8 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         }
 
         fun setBorderMode(nextMode: MapPreviewMode) {
-            cancelPendingSingleClick()
-            hideMapHint()
+            clickHint.cancel()
+            clickHint.hide()
             if (outlineMode == nextMode) return
             outlineMode = nextMode
             hoverSelection = null
@@ -470,8 +436,8 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         }
 
         fun setData(nextData: LoadedMapData?) {
-            cancelPendingSingleClick()
-            hideMapHint()
+            clickHint.cancel()
+            clickHint.hide()
             data = nextData
             bordersVisible = this@MapPreviewPanel.showBorders
             smoothBorders = this@MapPreviewPanel.smoothBorders
@@ -607,11 +573,11 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         }
 
         private fun renderMapTile(current: LoadedMapData, key: MapTileKey): BufferedImage {
-            val image = current.provincesImage
-            val tileLeft = key.x * MAP_TILE_SIZE
-            val tileTop = key.y * MAP_TILE_SIZE
-            val tileWidth = minOf(MAP_TILE_SIZE, image.width - tileLeft)
-            val tileHeight = minOf(MAP_TILE_SIZE, image.height - tileTop)
+            val source = tileSource(current, key)
+            val tileLeft = source.left
+            val tileTop = source.top
+            val tileWidth = source.width
+            val tileHeight = source.height
             val tile = BufferedImage(tileWidth, tileHeight, BufferedImage.TYPE_INT_RGB)
             val g2 = tile.createGraphics()
             try {
@@ -900,12 +866,24 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             g2.draw(path)
         }
 
-        private fun tileScreenBounds(current: LoadedMapData, key: MapTileKey, scale: Double): Rectangle {
+        private fun tileSource(current: LoadedMapData, key: MapTileKey): MapTileSource {
             val image = current.provincesImage
-            val tileLeft = key.x * MAP_TILE_SIZE
-            val tileTop = key.y * MAP_TILE_SIZE
-            val tileWidth = minOf(MAP_TILE_SIZE, image.width - tileLeft)
-            val tileHeight = minOf(MAP_TILE_SIZE, image.height - tileTop)
+            val left = key.x * MAP_TILE_SIZE
+            val top = key.y * MAP_TILE_SIZE
+            return MapTileSource(
+                left,
+                top,
+                minOf(MAP_TILE_SIZE, image.width - left),
+                minOf(MAP_TILE_SIZE, image.height - top)
+            )
+        }
+
+        private fun tileScreenBounds(current: LoadedMapData, key: MapTileKey, scale: Double): Rectangle {
+            val source = tileSource(current, key)
+            val tileLeft = source.left
+            val tileTop = source.top
+            val tileWidth = source.width
+            val tileHeight = source.height
             val x1 = (tileLeft * scale).roundToInt()
             val y1 = (tileTop * scale).roundToInt()
             val x2 = ((tileLeft + tileWidth) * scale).roundToInt().coerceAtLeast(x1 + 1)
@@ -914,11 +892,11 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         }
 
         private fun tileImageRect(current: LoadedMapData, key: MapTileKey, padding: Double = 0.0): ImageRect {
-            val image = current.provincesImage
-            val tileLeft = key.x * MAP_TILE_SIZE
-            val tileTop = key.y * MAP_TILE_SIZE
-            val tileWidth = minOf(MAP_TILE_SIZE, image.width - tileLeft)
-            val tileHeight = minOf(MAP_TILE_SIZE, image.height - tileTop)
+            val source = tileSource(current, key)
+            val tileLeft = source.left
+            val tileTop = source.top
+            val tileWidth = source.width
+            val tileHeight = source.height
             return ImageRect(
                 minX = tileLeft.toDouble() - padding,
                 minY = tileTop.toDouble() - padding,
@@ -1228,113 +1206,83 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         }
 
         private fun buildDetailText(sample: ProvinceSample): String {
-            return buildString {
-                append("<html><body>")
-                when (outlineMode) {
-                    MapPreviewMode.PROVINCE -> appendProvinceDetail(sample)
-                    MapPreviewMode.STATE -> appendStateDetail(sample)
-                    MapPreviewMode.COUNTRY -> appendCountryDetail(sample)
-                    MapPreviewMode.STRATEGIC_REGION -> appendStrategicRegionDetail(sample)
-                }
-                append("</body></html>")
+            val html = PreviewHintHtml()
+            when (outlineMode) {
+                MapPreviewMode.PROVINCE -> appendProvinceDetail(html, sample)
+                MapPreviewMode.STATE -> appendStateDetail(html, sample)
+                MapPreviewMode.COUNTRY -> appendCountryDetail(html, sample)
+                MapPreviewMode.STRATEGIC_REGION -> appendStrategicRegionDetail(html, sample)
             }
+            return html.build()
         }
 
-        private fun StringBuilder.appendProvinceDetail(sample: ProvinceSample) {
+        private fun appendProvinceDetail(html: PreviewHintHtml, sample: ProvinceSample) {
             val province = sample.province
-            append("<b>").append(msg("detail.province")).append(" ")
-            append(province?.let { displayProvinceName(it) } ?: msg("detail.unknown"))
-            append("</b>")
-            province?.let { append("<br>").append(msg("detail.province.id")).append(": ").append(it.id) }
-            append("<br>").append(msg("detail.pixel")).append(": ").append(sample.x).append(", ").append(sample.y)
-            append("<br>RGB: #").append("%06X".format(sample.rgb))
-            province?.type?.let { append("<br>").append(msg("detail.type")).append(": ").append(escapeHtml(displayGameKey(it))) }
-            province?.terrain?.let { append("<br>").append(msg("detail.terrain")).append(": ").append(escapeHtml(displayGameKey(it))) }
-            province?.continent?.let { append("<br>").append(msg("detail.continent")).append(": ").append(it) }
-            province?.coastal?.let { append("<br>").append(msg("detail.coastal")).append(": ").append(it) }
-            sample.state?.let {
-                append("<br>").append(msg("detail.state")).append(": ").append(displayStateName(it))
-            }
-            sample.country?.let { append("<br>").append(msg("detail.owner")).append(": ").append(escapeHtml(displayCountryTag(it.tag))) }
-            sample.strategicRegion?.let {
-                append("<br>").append(msg("detail.strategic.region")).append(": ")
-                    .append(escapeHtml(displayStrategicRegionName(it)))
-            }
-            sample.state?.let { state ->
-                state.victoryPoints[province?.id]?.let { append("<br>").append(msg("detail.victory.points")).append(": ").append(it) }
-                state.provinceBuildings[province?.id]?.takeIf { it.isNotEmpty() }?.let { buildings ->
-                    append("<br>").append(msg("detail.province.buildings")).append(": ")
-                    append(formatMap(buildings))
-                }
-            }
+            html.header(
+                msg("detail.province"),
+                province?.let { displayProvinceName(it) } ?: msg("detail.unknown"),
+                province?.id?.toString() ?: msg("detail.unknown")
+            )
+                .escapedRow(msg("detail.pixel"), "${sample.x}, ${sample.y}")
+                .escapedRow("RGB", "#%06X".format(sample.rgb))
+                .escapedRow(msg("detail.type"), province?.type?.let(::displayGameKey))
+                .escapedRow(msg("detail.terrain"), province?.terrain?.let(::displayGameKey))
+                .escapedRow(msg("detail.continent"), province?.continent?.toString())
+                .escapedRow(msg("detail.coastal"), province?.coastal?.toString())
+                .escapedRow(msg("detail.state"), sample.state?.let(::displayStateName))
+                .escapedRow(msg("detail.owner"), sample.country?.let { displayCountryTag(it.tag) })
+                .escapedRow(msg("detail.strategic.region"), sample.strategicRegion?.let(::displayStrategicRegionName))
+                .escapedRow(msg("detail.victory.points"), province?.id?.let { sample.state?.victoryPoints?.get(it) }?.toString())
+                .escapedRow(
+                    msg("detail.province.buildings"),
+                    province?.id?.let { sample.state?.provinceBuildings?.get(it) }?.takeIf { it.isNotEmpty() }?.let(::formatMap)
+                )
         }
 
-        private fun StringBuilder.appendStateDetail(sample: ProvinceSample) {
+        private fun appendStateDetail(html: PreviewHintHtml, sample: ProvinceSample) {
             val state = sample.state
-            append("<b>").append(msg("detail.state")).append(" ")
-            append(state?.let { displayStateName(it) } ?: msg("detail.unknown"))
-            append("</b>")
-            state?.name?.let { append(" - ").append(escapeHtml(it)) }
-            append("<br>").append(msg("detail.province")).append(": ").append(sample.province?.id ?: msg("detail.unknown"))
-            state?.owner?.let { append("<br>").append(msg("detail.owner")).append(": ").append(escapeHtml(displayCountryTag(it))) }
-            state?.category?.let { append("<br>").append(msg("detail.category")).append(": ").append(escapeHtml(displayGameKey(it))) }
-            state?.manpower?.let { append("<br>").append(msg("detail.manpower")).append(": ").append(it) }
-            state?.let {
-                append("<br>").append(msg("detail.state.id")).append(": ").append(it.id)
-                if (it.cores.isNotEmpty()) {
-                    append("<br>").append(msg("detail.cores")).append(": ")
-                        .append(escapeHtml(it.cores.joinToString(", ") { core -> displayCountryTag(core) }))
-                }
-                if (it.resources.isNotEmpty()) {
-                    append("<br>").append(msg("detail.resources")).append(": ")
-                    append(formatMap(it.resources))
-                }
-                if (it.stateBuildings.isNotEmpty()) {
-                    append("<br>").append(msg("detail.state.buildings")).append(": ")
-                    append(formatMap(it.stateBuildings))
-                }
-            }
-            state?.path?.let { append("<br>").append(msg("detail.file")).append(": ").append(escapeHtml(it.fileName.toString())) }
+            val title = state?.let { displayStateName(it) } ?: msg("detail.unknown")
+            html.header(msg("detail.state"), title, state?.id?.toString() ?: msg("detail.unknown"))
+                .escapedRow(msg("detail.state"), state?.name?.takeIf { it != title })
+                .escapedRow(msg("detail.province"), sample.province?.id?.toString() ?: msg("detail.unknown"))
+                .escapedRow(msg("detail.owner"), state?.owner?.let(::displayCountryTag))
+                .escapedRow(msg("detail.category"), state?.category?.let(::displayGameKey))
+                .escapedRow(msg("detail.manpower"), state?.manpower?.toString())
+                .escapedRow(msg("detail.cores"), state?.cores?.takeIf { it.isNotEmpty() }?.joinToString(", ", transform = ::displayCountryTag))
+                .escapedRow(msg("detail.resources"), state?.resources?.takeIf { it.isNotEmpty() }?.let(::formatMap))
+                .escapedRow(msg("detail.state.buildings"), state?.stateBuildings?.takeIf { it.isNotEmpty() }?.let(::formatMap))
+                .escapedRow(msg("detail.file"), state?.path?.fileName?.toString())
         }
 
-        private fun StringBuilder.appendCountryDetail(sample: ProvinceSample) {
+        private fun appendCountryDetail(html: PreviewHintHtml, sample: ProvinceSample) {
             val country = sample.country
-            append("<b>").append(msg("detail.country")).append(" ")
-            append(country?.let { displayCountryName(it) } ?: msg("detail.unknown"))
-            append("</b>")
-            country?.let { append("<br>").append(msg("detail.country.tag")).append(": ").append(escapeHtml(it.tag)) }
-            append("<br>").append(msg("detail.province")).append(": ").append(sample.province?.id ?: msg("detail.unknown"))
-            append("<br>").append(msg("detail.state")).append(": ").append(sample.state?.id ?: msg("detail.unknown"))
-            country?.let {
-                append("<br>").append(msg("detail.owned.states")).append(": ").append(it.stateIds.size)
-                append("<br>").append(msg("detail.owned.provinces")).append(": ").append(it.provinceIds.size)
-                it.color?.let { color -> append("<br>").append(msg("detail.color")).append(": #").append("%06X".format(color)) }
-                it.colorSourcePath?.let { path -> append("<br>").append(msg("detail.color.file")).append(": ").append(escapeHtml(path.fileName.toString())) }
-                append("<br>").append(msg("detail.state.ids")).append(": ").append(escapeHtml(it.stateIds.take(24).joinToString(", ")))
-                if (it.stateIds.size > 24) append(", ...")
-            }
+            html.header(
+                msg("detail.country"),
+                country?.let { displayCountryName(it) } ?: msg("detail.unknown"),
+                country?.tag ?: msg("detail.unknown")
+            )
+                .escapedRow(msg("detail.province"), sample.province?.id?.toString() ?: msg("detail.unknown"))
+                .escapedRow(msg("detail.state"), sample.state?.id?.toString() ?: msg("detail.unknown"))
+                .escapedRow(msg("detail.owned.states"), country?.stateIds?.size?.toString())
+                .escapedRow(msg("detail.owned.provinces"), country?.provinceIds?.size?.toString())
+                .escapedRow(msg("detail.color"), country?.color?.let { "#%06X".format(it) })
+                .escapedRow(msg("detail.color.file"), country?.colorSourcePath?.fileName?.toString())
+                .escapedRow(msg("detail.state.ids"), country?.stateIds?.let(::formatLimited))
         }
 
-        private fun StringBuilder.appendStrategicRegionDetail(sample: ProvinceSample) {
+        private fun appendStrategicRegionDetail(html: PreviewHintHtml, sample: ProvinceSample) {
             val region = sample.strategicRegion
-            append("<b>").append(msg("detail.strategic.region")).append(" ")
-            append(region?.let { displayStrategicRegionName(it) } ?: msg("detail.unknown"))
-            append("</b>")
-            region?.let { append("<br>").append(msg("detail.strategic.region.id")).append(": ").append(it.id) }
-            append("<br>").append(msg("detail.province")).append(": ").append(sample.province?.id ?: msg("detail.unknown"))
-            region?.let {
-                append("<br>").append(msg("detail.province.count")).append(": ").append(it.provinces.size)
-                it.navalTerrain?.let { terrain ->
-                    append("<br>").append(msg("detail.naval.terrain")).append(": ").append(escapeHtml(displayGameKey(terrain)))
-                }
-                if (it.weather.isNotEmpty()) {
-                    append("<br>").append(msg("detail.weather")).append(": ")
-                    append(it.weather.entries.joinToString(", ") { entry -> "${escapeHtml(displayGameKey(entry.key))} ${entry.value}" })
-                }
-                append("<br>").append(msg("detail.province.ids")).append(": ").append(escapeHtml(it.provinces.take(24).joinToString(", ")))
-                if (it.provinces.size > 24) append(", ...")
-                append("<br>").append(msg("detail.file")).append(": ").append(escapeHtml(it.path.fileName.toString()))
-            }
+            html.header(
+                msg("detail.strategic.region"),
+                region?.let { displayStrategicRegionName(it) } ?: msg("detail.unknown"),
+                region?.id?.toString() ?: msg("detail.unknown")
+            )
+                .escapedRow(msg("detail.province"), sample.province?.id?.toString() ?: msg("detail.unknown"))
+                .escapedRow(msg("detail.province.count"), region?.provinces?.size?.toString())
+                .escapedRow(msg("detail.naval.terrain"), region?.navalTerrain?.let(::displayGameKey))
+                .escapedRow(msg("detail.weather"), region?.weather?.takeIf { it.isNotEmpty() }?.let(::formatMap))
+                .escapedRow(msg("detail.province.ids"), region?.provinces?.let(::formatLimited))
+                .escapedRow(msg("detail.file"), region?.path?.fileName?.toString())
         }
 
         private fun navigateToSource(sample: ProvinceSample) {
@@ -1345,13 +1293,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
                 MapPreviewMode.COUNTRY -> SourceTarget(sample.country?.historyPath ?: sample.country?.definitionPath, 0)
                 MapPreviewMode.STRATEGIC_REGION -> SourceTarget(sample.strategicRegion?.path, 0)
             }
-            val path = target.path ?: return
-            val vf = ResourceFiles.toVirtualFile(path.pathString) ?: return
-            if (target.line > 0) {
-                OpenFileDescriptor(project, vf, target.line - 1, 0).navigate(true)
-            } else {
-                OpenFileDescriptor(project, vf).navigate(true)
-            }
+            PreviewNavigation.open(project, target.path?.pathString, target.line)
         }
 
         private fun displayProvinceName(province: ProvinceInfo): String {
@@ -1370,8 +1312,13 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             return region.localizedName ?: region.name ?: region.id.toString()
         }
 
-        private fun formatMap(values: Map<String, Int>): String {
-            return values.entries.joinToString(", ") { entry -> "${escapeHtml(displayGameKey(entry.key))} ${entry.value}" }
+        private fun formatMap(values: Map<String, *>): String {
+            return values.entries.joinToString(", ") { entry -> "${displayGameKey(entry.key)} ${entry.value}" }
+        }
+
+        private fun formatLimited(values: Collection<*>): String {
+            val prefix = values.take(24).joinToString(", ")
+            return if (values.size > 24) "$prefix, ..." else prefix
         }
 
         private fun displayCountryTag(tag: String): String {
@@ -1407,13 +1354,6 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             recenterHorizontalScrollIfNeeded()
         }
 
-        private fun escapeHtml(value: String): String {
-            return value
-                .replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-        }
-
         private fun setScrollValue(scrollBar: javax.swing.JScrollBar, value: Int) {
             val max = scrollBar.maximum - scrollBar.visibleAmount
             scrollBar.value = value.coerceIn(scrollBar.minimum, max.coerceAtLeast(scrollBar.minimum))
@@ -1441,8 +1381,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             zoomSettleTimer.stop()
             zoomInteractionActive = false
             invalidateBorderRendering(clearCache = false)
-            cancelPendingSingleClick()
-            hideMapHint()
+            clickHint.dispose()
             super.removeNotify()
         }
     }
@@ -1464,6 +1403,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
     private data class SourceTarget(val path: java.nio.file.Path?, val line: Int)
     private data class ImageRect(val minX: Double, val minY: Double, val maxX: Double, val maxY: Double)
     private data class MapTileKey(val x: Int, val y: Int)
+    private data class MapTileSource(val left: Int, val top: Int, val width: Int, val height: Int)
     private data class BorderTileKey(
         val x: Int,
         val y: Int,
