@@ -25,12 +25,8 @@ class NationalFocusService(private val project: Project) {
     companion object {
         private val LOG = Logger.getInstance(NationalFocusService::class.java)
 
-        private val LANG_PRIORITY = listOf(
-            "simp_chinese", "l_simp_chinese", "chinese", "l_chinese",
-            "english", "l_english"
-        )
         fun localisationCacheKey(): String {
-            return ParadoxLocalisationPreference.cacheKey(LANG_PRIORITY)
+            return ParadoxLocalisationPreference.cacheKey(ParadoxLocalisationPreference.DEFAULT_FALLBACK_LANGUAGES)
         }
     }
 
@@ -38,8 +34,8 @@ class NationalFocusService(private val project: Project) {
 
     private val resolutionVersion = AtomicInteger(0)
     private val spriteResolver = ParadoxSpriteResolver(project)
-    private val localisationResolver = ParadoxLocalisationResolver(project, LANG_PRIORITY)
-    private var lastLocalisationCacheKey: String? = null
+    private val localisationResolver =
+        ParadoxLocalisationResolver(project, ParadoxLocalisationPreference.DEFAULT_FALLBACK_LANGUAGES)
 
     fun parseFocusTreeFromFile(psiFile: PsiFile): List<NationalFocusTreeData> {
         val focusTrees = mutableListOf<NationalFocusTreeData>()
@@ -505,7 +501,6 @@ class NationalFocusService(private val project: Project) {
     }
 
     fun resolve(snapshot: FocusPreviewSnapshot, onReady: (FocusPreviewSnapshot) -> Unit) {
-        refreshLocalisationPreference()
         val version = resolutionVersion.incrementAndGet()
         val allFocuses = snapshot.allFocuses
         ApplicationManager.getApplication().executeOnPooledThread {
@@ -519,7 +514,12 @@ class NationalFocusService(private val project: Project) {
                 if (version != resolutionVersion.get()) return@executeOnPooledThread
 
                 val roots = ResourceFiles.resourceRoots(project, projectFirst = true, gameFirst = false)
-                for ((k, v) in LocalisationFiles.mergeFromRoots(roots, LANG_PRIORITY, keys = neededKeys - locMap.keys, maxDepth = 3)) {
+                for ((k, v) in LocalisationFiles.mergeFromRoots(
+                    roots,
+                    ParadoxLocalisationPreference.DEFAULT_FALLBACK_LANGUAGES,
+                    keys = neededKeys - locMap.keys,
+                    maxDepth = 3
+                )) {
                     locMap.putIfAbsent(k, v)
                 }
 
@@ -554,14 +554,6 @@ class NationalFocusService(private val project: Project) {
                 LOG.warn("Resolution failed", e)
             }
             ApplicationManager.getApplication().invokeLater { onReady(nextSnapshot) }
-        }
-    }
-
-    private fun refreshLocalisationPreference() {
-        val currentKey = localisationCacheKey()
-        if (lastLocalisationCacheKey != currentKey) {
-                localisationResolver.clearCache()
-            lastLocalisationCacheKey = currentKey
         }
     }
 
@@ -719,7 +711,6 @@ class NationalFocusService(private val project: Project) {
 
     fun clearCache() {
         localisationResolver.clearCache()
-        lastLocalisationCacheKey = null
     }
 
 }

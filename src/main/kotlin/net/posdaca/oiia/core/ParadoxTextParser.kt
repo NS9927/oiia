@@ -137,6 +137,11 @@ internal sealed interface ParadoxTextValue {
     data class Block(val entries: List<ParadoxTextEntry>) : ParadoxTextValue
 }
 
+internal fun ParadoxTextValue?.atomValue(): String? = (this as? ParadoxTextValue.Atom)?.value
+
+internal fun ParadoxTextValue?.blockEntries(): List<ParadoxTextEntry> =
+    (this as? ParadoxTextValue.Block)?.entries.orEmpty()
+
 internal fun List<ParadoxTextEntry>.firstEntry(key: String): ParadoxTextEntry? =
     firstOrNull { it.key.equals(key, ignoreCase = true) }
 

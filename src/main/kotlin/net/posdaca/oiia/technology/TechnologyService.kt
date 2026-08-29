@@ -10,8 +10,14 @@ import icu.windea.pls.lang.util.ParadoxDefinitionManager
 import icu.windea.pls.script.psi.ParadoxScriptBlock
 import icu.windea.pls.script.psi.ParadoxScriptFile
 import icu.windea.pls.script.psi.ParadoxScriptProperty
+import net.posdaca.oiia.core.ParadoxLocalisationPreference
 import net.posdaca.oiia.core.ParadoxLocalisationResolver
 import net.posdaca.oiia.core.ParadoxSpriteResolver
+import net.posdaca.oiia.core.ParadoxTextEntry
+import net.posdaca.oiia.core.ParadoxTextParser
+import net.posdaca.oiia.core.atomValue
+import net.posdaca.oiia.core.blockEntries
+import net.posdaca.oiia.core.enumValues
 import net.posdaca.oiia.core.files.LocalisationFiles
 import net.posdaca.oiia.core.files.ResourceFiles
 import java.nio.file.Path
@@ -19,16 +25,10 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class TechnologyService(private val project: Project) {
 
-    private data class TextToken(val text: String, val lineNumber: Int)
-    private sealed class TextValue {
-        data class Atom(val value: String) : TextValue()
-        data class Block(val entries: List<TextEntry>) : TextValue()
-    }
-    private data class TextEntry(val key: String, val value: TextValue?, val lineNumber: Int)
-
     private val resolutionVersion = AtomicInteger(0)
     private val spriteResolver = ParadoxSpriteResolver(project)
-    private val localisationResolver = ParadoxLocalisationResolver(project, LANG_PRIORITY)
+    private val localisationResolver =
+        ParadoxLocalisationResolver(project, ParadoxLocalisationPreference.DEFAULT_FALLBACK_LANGUAGES)
 
     fun parseTechnologyTreesFromFile(psiFile: PsiFile): List<TechnologyTreeData> {
         val technologies = mutableListOf<TechnologyData>()
@@ -234,7 +234,12 @@ class TechnologyService(private val project: Project) {
                 if (version != resolutionVersion.get()) return@executeOnPooledThread
 
                 val roots = ResourceFiles.resourceRoots(project, projectFirst = true, gameFirst = false)
-                for ((key, value) in LocalisationFiles.mergeFromRoots(roots, LANG_PRIORITY, keys = neededKeys - locMap.keys, maxDepth = 3)) {
+                for ((key, value) in LocalisationFiles.mergeFromRoots(
+                    roots,
+                    ParadoxLocalisationPreference.DEFAULT_FALLBACK_LANGUAGES,
+                    keys = neededKeys - locMap.keys,
+                    maxDepth = 3
+                )) {
                     locMap.putIfAbsent(key, value)
                 }
 
@@ -303,7 +308,7 @@ class TechnologyService(private val project: Project) {
         val path = Path.of(filePath)
         if (!ResourceFiles.isRegularFile(path)) return
 
-        val entries = TextParser(tokenizeText(ResourceFiles.readText(path) ?: return)).parseEntries()
+        val entries = ParadoxTextParser.parse(ResourceFiles.readText(path) ?: return)
         val technologyEntries = entries
             .filter { it.key == "technologies" }
             .flatMap { it.value.blockEntries() }
@@ -314,7 +319,7 @@ class TechnologyService(private val project: Project) {
         }
     }
 
-    private fun parseTextTechnology(filePath: String, entry: TextEntry): TechnologyData? {
+    private fun parseTextTechnology(filePath: String, entry: ParadoxTextEntry): TechnologyData? {
         if (entry.key in NON_TECHNOLOGY_KEYS) return null
         val blockEntries = entry.value.blockEntries().takeIf { it.isNotEmpty() } ?: return null
         val folders = linkedMapOf<String, TechnologyFolderData>()
@@ -358,7 +363,7 @@ class TechnologyService(private val project: Project) {
         )
     }
 
-    private fun extractTextFolders(entry: TextEntry): List<TechnologyFolderData> {
+    private fun extractTextFolders(entry: ParadoxTextEntry): List<TechnologyFolderData> {
         val blockEntries = entry.value.blockEntries()
         if (blockEntries.isEmpty()) {
             return entry.value.atomValue()?.let { listOf(TechnologyFolderData(it)) } ?: emptyList()
@@ -381,26 +386,26 @@ class TechnologyService(private val project: Project) {
         return result
     }
 
-    private fun extractTextPositionX(position: TextEntry?): Double {
+    private fun extractTextPositionX(position: ParadoxTextEntry?): Double {
         val entries = position?.value.blockEntries()
         return extractTextNamedNumber(entries, "x") ?: extractTextIndexedNumber(entries, 0) ?: 0.0
     }
 
-    private fun extractTextPositionY(position: TextEntry?): Double {
+    private fun extractTextPositionY(position: ParadoxTextEntry?): Double {
         val entries = position?.value.blockEntries()
         return extractTextNamedNumber(entries, "y") ?: extractTextIndexedNumber(entries, 1) ?: 0.0
     }
 
-    private fun extractTextNamedNumber(entries: List<TextEntry>?, key: String): Double? {
+    private fun extractTextNamedNumber(entries: List<ParadoxTextEntry>?, key: String): Double? {
         return entries?.firstOrNull { it.key == key }?.value.atomValue()?.toDoubleOrNull()
     }
 
-    private fun extractTextIndexedNumber(entries: List<TextEntry>?, index: Int): Double? {
+    private fun extractTextIndexedNumber(entries: List<ParadoxTextEntry>?, index: Int): Double? {
         val entry = entries?.getOrNull(index) ?: return null
         return entry.value.atomValue()?.toDoubleOrNull() ?: entry.key.toDoubleOrNull()
     }
 
-    private fun extractTextPathLeads(entry: TextEntry): List<String> {
+    private fun extractTextPathLeads(entry: ParadoxTextEntry): List<String> {
         val direct = entry.value.atomValue()
         if (direct != null) return listOf(direct)
         return entry.value.blockEntries().mapNotNull { pathField ->
@@ -408,132 +413,12 @@ class TechnologyService(private val project: Project) {
         }
     }
 
-    private fun extractTextEnumValues(entry: TextEntry): List<String> {
-        val direct = entry.value.atomValue()
-        if (direct != null) return listOf(direct)
-        return entry.value.blockEntries().mapNotNull { child ->
-            child.value.atomValue() ?: child.key.takeIf { it != "{" && it != "=" }
-        }
-    }
-
-    private fun TextValue?.atomValue(): String? = (this as? TextValue.Atom)?.value
-
-    private fun TextValue?.blockEntries(): List<TextEntry> = (this as? TextValue.Block)?.entries.orEmpty()
-
-    private fun tokenizeText(content: String): List<TextToken> {
-        val tokens = mutableListOf<TextToken>()
-        var lineNumber = 1
-        var index = 0
-        while (index < content.length) {
-            val char = content[index]
-            when {
-                char == '\n' -> {
-                    lineNumber++
-                    index++
-                }
-
-                char.isWhitespace() -> index++
-                char == '#' -> {
-                    while (index < content.length && content[index] != '\n') index++
-                }
-
-                char == '{' || char == '}' || char == '=' -> {
-                    tokens.add(TextToken(char.toString(), lineNumber))
-                    index++
-                }
-
-                char == '"' -> {
-                    val startLine = lineNumber
-                    index++
-                    val sb = StringBuilder()
-                    var escaped = false
-                    while (index < content.length) {
-                        val c = content[index]
-                        if (c == '\n') lineNumber++
-                        when {
-                            escaped -> {
-                                sb.append(c)
-                                escaped = false
-                            }
-
-                            c == '\\' -> escaped = true
-                            c == '"' -> {
-                                index++
-                                break
-                            }
-
-                            else -> sb.append(c)
-                        }
-                        index++
-                    }
-                    tokens.add(TextToken(sb.toString(), startLine))
-                }
-
-                else -> {
-                    val start = index
-                    val startLine = lineNumber
-                    while (
-                        index < content.length &&
-                        !content[index].isWhitespace() &&
-                        content[index] !in charArrayOf('{', '}', '=', '#')
-                    ) {
-                        index++
-                    }
-                    tokens.add(TextToken(content.substring(start, index), startLine))
-                }
-            }
-        }
-        return tokens
-    }
-
-    private class TextParser(private val tokens: List<TextToken>) {
-        private var index = 0
-
-        fun parseEntries(stopOnBrace: Boolean = false): List<TextEntry> {
-            val entries = mutableListOf<TextEntry>()
-            while (index < tokens.size) {
-                val token = tokens[index]
-                when (token.text) {
-                    "}" -> {
-                        index++
-                        if (stopOnBrace) return entries
-                    }
-
-                    "{", "=" -> index++
-                    else -> {
-                        index++
-                        val value = if (peekText() == "=") {
-                            index++
-                            parseValue()
-                        } else {
-                            null
-                        }
-                        entries.add(TextEntry(token.text, value, token.lineNumber))
-                    }
-                }
-            }
-            return entries
-        }
-
-        private fun parseValue(): TextValue? {
-            val token = tokens.getOrNull(index) ?: return null
-            index++
-            return when (token.text) {
-                "{" -> TextValue.Block(parseEntries(stopOnBrace = true))
-                "}" -> null
-                else -> TextValue.Atom(token.text)
-            }
-        }
-
-        private fun peekText(): String? = tokens.getOrNull(index)?.text
+    private fun extractTextEnumValues(entry: ParadoxTextEntry): List<String> {
+        return entry.enumValues()
     }
 
     companion object {
         private val LOG = Logger.getInstance(TechnologyService::class.java)
-        private val LANG_PRIORITY = listOf(
-            "simp_chinese", "l_simp_chinese", "chinese", "l_chinese",
-            "english", "l_english"
-        )
         private const val DEFAULT_FOLDER = "Technologies"
         private val NON_TECHNOLOGY_KEYS = setOf(
             "technologies", "folders", "folder", "path", "categories", "doctrine", "doctrine_name",

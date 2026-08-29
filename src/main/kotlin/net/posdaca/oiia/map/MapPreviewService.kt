@@ -2,6 +2,7 @@ package net.posdaca.oiia.map
 
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
+import net.posdaca.oiia.core.PreviewImageLoader
 import net.posdaca.oiia.core.files.LocalisationFiles
 import net.posdaca.oiia.core.files.ResourceFiles
 import net.posdaca.oiia.core.ParadoxLocalisationPreference
@@ -9,7 +10,6 @@ import java.awt.Color
 import java.awt.image.BufferedImage
 import java.nio.file.Files
 import java.nio.file.Path
-import javax.imageio.ImageIO
 import kotlin.io.path.exists
 import kotlin.io.path.fileSize
 import kotlin.io.path.isRegularFile
@@ -28,7 +28,7 @@ class MapPreviewService(private val project: Project) {
 
         return try {
             onProgress(MapLoadStep.READING_PROVINCES)
-            val image = ImageIO.read(provincesPath.toFile())
+            val image = PreviewImageLoader.load(provincesPath.toString(), mutableMapOf())
                 ?: return MapLoadResult.Failed("Unable to read ${provincesPath.name}")
             onProgress(MapLoadStep.LOCALISATION)
             val localisationPaths = findLocFilePaths(roots)
@@ -1276,17 +1276,12 @@ class MapPreviewService(private val project: Project) {
         return resolveLocalisation(localisations, tag, "${tag}_DEF", "${tag}_ADJ")
     }
 
-    private fun languagePriority(path: String): Int {
-        return ParadoxLocalisationPreference.languagePriority(path, LANG_PRIORITY)
-    }
-
     private fun localisationScore(path: Path, rootScores: List<Pair<String, Int>>): Int {
-        return languagePriority(path.toString()) * LOCALISATION_SCORE_LANGUAGE_WEIGHT +
-                localisationRootScore(path, rootScores)
-    }
-
-    private fun localisationRootScore(path: Path, rootScores: List<Pair<String, Int>>): Int {
-        return LocalisationFiles.rootScore(path, rootScores)
+        return ParadoxLocalisationPreference.languagePriority(
+            path.toString(),
+            ParadoxLocalisationPreference.DEFAULT_FALLBACK_LANGUAGES,
+            ParadoxLocalisationPreference.LOCALISATION_LANGUAGE_WEIGHT
+        ) + LocalisationFiles.rootScore(path, rootScores)
     }
 
     private fun computeSourceStamp(
@@ -1323,17 +1318,11 @@ class MapPreviewService(private val project: Project) {
         private const val UNKNOWN_KEY = -1
         private const val RENDER_ZONE_BLOCK_SIZE = 256
         private const val SMOOTH_EDGE_SIMPLIFY_TOLERANCE = 0.85
-        private val COUNTRY_TAG_REGEX = Regex("""[A-Z0-9_]{3}""")
         private val COUNTRY_COLOR_OVERRIDE_PATHS = listOf(
             "common/countries/color.txt",
             "common/countries/colors.txt"
         )
         private val COUNTRY_COLOR_ASSIGNMENT_REGEX = Regex("""(?im)(?:^|[\s{}])([A-Z0-9_]{3})\s*=""")
-        private val LANG_PRIORITY = listOf(
-            "simp_chinese", "l_simp_chinese", "chinese", "l_chinese",
-            "english", "l_english"
-        )
-        private const val LOCALISATION_SCORE_LANGUAGE_WEIGHT = 10
         private val TOKEN_REGEX = Regex(""""[^"]*"|[^\s{}=]+""")
     }
 }
