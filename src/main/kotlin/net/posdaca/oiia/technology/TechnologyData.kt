@@ -1,5 +1,7 @@
 package net.posdaca.oiia.technology
 
+import net.posdaca.oiia.core.preview.PreviewSnapshot
+
 data class TechnologyTreeData(
     val folderName: String,
     val technologies: List<TechnologyData> = emptyList()
@@ -10,6 +12,24 @@ data class TechnologyFolderData(
     val x: Double = 0.0,
     val y: Double = 0.0
 )
+
+data class TechnologyPreviewSnapshot(
+    val trees: List<TechnologyTreeData>
+) : PreviewSnapshot {
+    override val isEmpty: Boolean get() = trees.isEmpty()
+
+    val allTechnologies: List<TechnologyData>
+        get() = trees.flatMap { it.technologies }.distinctBy { it.id }
+
+    fun withResolved(resolvedById: Map<String, TechnologyData>): TechnologyPreviewSnapshot {
+        if (resolvedById.isEmpty()) return this
+        return copy(
+            trees = trees.map { tree ->
+                tree.copy(technologies = tree.technologies.map { it.withResolvedPresentation(resolvedById[it.id]) })
+            }
+        )
+    }
+}
 
 data class TechnologyData(
     val id: String,
@@ -37,4 +57,13 @@ data class TechnologyData(
             ?: folderName?.takeIf { it == folder }?.let { TechnologyFolderData(it, x, y) }
             ?: if (folders.isEmpty() && folderName == null) TechnologyFolderData(folder, x, y) else null
     }
+}
+
+internal fun TechnologyData.withResolvedPresentation(resolved: TechnologyData?): TechnologyData {
+    if (resolved == null) return this
+    return copy(
+        localizedName = resolved.localizedName ?: localizedName,
+        localizedDescription = resolved.localizedDescription ?: localizedDescription,
+        iconImagePath = resolved.iconImagePath ?: iconImagePath
+    )
 }

@@ -111,27 +111,15 @@ class TechnologyPreviewToolWindowFactory : ToolWindowFactory {
                 return
             }
 
-            val allTechnologyTrees = mutableListOf<TechnologyTreeData>()
             val psiFile: PsiFile? = PsiManager.getInstance(project).findFile(selectedFile)
-            if (psiFile != null) {
-                allTechnologyTrees.addAll(service.parseTechnologyTreesFromFile(psiFile))
-            }
+            val snapshot = if (psiFile != null) service.loadSnapshot(psiFile) else TechnologyPreviewSnapshot(emptyList())
 
-            if (allTechnologyTrees.isEmpty()) {
-                for (child in parent.children) {
-                    val childPsi = PsiManager.getInstance(project).findFile(child)
-                    if (childPsi != null) {
-                        allTechnologyTrees.addAll(service.parseTechnologyTreesFromFile(childPsi))
-                    }
-                }
-            }
-
-            if (allTechnologyTrees.isEmpty()) {
+            if (snapshot.isEmpty) {
                 updatePanel(createNoTechnologyPanel())
                 return
             }
 
-            updatePanel(TechnologyPreviewPanel(project, mergeTrees(allTechnologyTrees), service))
+            updatePanel(TechnologyPreviewPanel(project, snapshot, service))
         }
 
         @Suppress("UnstableApiUsage")
@@ -141,13 +129,6 @@ class TechnologyPreviewToolWindowFactory : ToolWindowFactory {
                 ?: fileEditorManager.selectedEditors.firstOrNull()?.file
                 ?: fileEditorManager.selectedFiles.firstOrNull()
                 ?: fileEditorManager.selectedEditor?.file
-        }
-
-        private fun mergeTrees(trees: List<TechnologyTreeData>): List<TechnologyTreeData> {
-            return trees.flatMap { tree -> tree.technologies }
-                .groupBy { it.folderName ?: "Technologies" }
-                .toSortedMap(String.CASE_INSENSITIVE_ORDER)
-                .map { (folder, technologies) -> TechnologyTreeData(folder, technologies.distinctBy { it.id }) }
         }
 
         private fun isTechnologyFile(file: VirtualFile): Boolean {

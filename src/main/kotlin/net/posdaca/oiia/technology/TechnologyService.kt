@@ -10,13 +10,11 @@ import icu.windea.pls.lang.util.ParadoxDefinitionManager
 import icu.windea.pls.script.psi.ParadoxScriptBlock
 import icu.windea.pls.script.psi.ParadoxScriptFile
 import icu.windea.pls.script.psi.ParadoxScriptProperty
-import net.posdaca.oiia.core.ParadoxLocalisationPreference
 import net.posdaca.oiia.core.ParadoxLocalisationResolver
 import net.posdaca.oiia.core.ParadoxSpriteResolver
 import net.posdaca.oiia.core.files.LocalisationFiles
 import net.posdaca.oiia.core.files.ResourceFiles
 import java.nio.file.Path
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 class TechnologyService(private val project: Project) {
@@ -28,12 +26,9 @@ class TechnologyService(private val project: Project) {
     }
     private data class TextEntry(val key: String, val value: TextValue?, val lineNumber: Int)
 
-    private val resolvedData = ConcurrentHashMap<String, TechnologyData>()
     private val resolutionVersion = AtomicInteger(0)
-    private val cachedRoots = mutableListOf<Path>()
     private val spriteResolver = ParadoxSpriteResolver(project)
     private val localisationResolver = ParadoxLocalisationResolver(project, LANG_PRIORITY)
-    private var cachesValid = false
 
     fun parseTechnologyTreesFromFile(psiFile: PsiFile): List<TechnologyTreeData> {
         val technologies = mutableListOf<TechnologyData>()
@@ -210,19 +205,36 @@ class TechnologyService(private val project: Project) {
         }
     }
 
-    fun resolveTechnologyData(technology: TechnologyData): TechnologyData = resolvedData[technology.id] ?: technology
+    fun loadSnapshot(psiFile: PsiFile): TechnologyPreviewSnapshot {
+        val trees = parseTechnologyTreesFromFile(psiFile).toMutableList()
+        if (trees.isEmpty()) {
+            val parent = psiFile.virtualFile?.parent
+            if (parent != null) {
+                val manager = PsiManager.getInstance(project)
+                for (child in parent.children) {
+                    val childPsi = manager.findFile(child) ?: continue
+                    trees.addAll(parseTechnologyTreesFromFile(childPsi))
+                }
+            }
+        }
+        return TechnologyPreviewSnapshot(mergeTrees(trees))
+    }
 
-    fun scheduleResolution(allTechnologies: List<TechnologyData>, onDone: () -> Unit) {
+    fun resolve(snapshot: TechnologyPreviewSnapshot, onReady: (TechnologyPreviewSnapshot) -> Unit) {
         val version = resolutionVersion.incrementAndGet()
+        val allTechnologies = snapshot.allTechnologies
         ApplicationManager.getApplication().executeOnPooledThread {
+            var nextSnapshot = snapshot
             try {
+                val neededKeys = neededLocalisationKeys(allTechnologies)
                 val locMap = ApplicationManager.getApplication().runReadAction<MutableMap<String, String>> {
-                    resolveNeededLocalisations(allTechnologies).toMutableMap()
+                    localisationResolver.resolveAll(neededKeys).toMutableMap()
                 }
 
                 if (version != resolutionVersion.get()) return@executeOnPooledThread
 
-                for ((key, value) in resolveNeededLocalisationsFromFiles(allTechnologies, locMap.keys)) {
+                val roots = ResourceFiles.resourceRoots(project, projectFirst = true, gameFirst = false)
+                for ((key, value) in LocalisationFiles.mergeFromRoots(roots, LANG_PRIORITY, keys = neededKeys - locMap.keys, maxDepth = 3)) {
                     locMap.putIfAbsent(key, value)
                 }
 
@@ -245,18 +257,21 @@ class TechnologyService(private val project: Project) {
                         )
                     }
                 }
-                resolvedData.clear()
-                resolvedData.putAll(nextResolvedData)
-                cachesValid = true
+                nextSnapshot = snapshot.withResolved(nextResolvedData)
             } catch (e: Exception) {
                 LOG.warn("Technology resolution failed", e)
             }
-            ApplicationManager.getApplication().invokeLater { onDone() }
+            ApplicationManager.getApplication().invokeLater { onReady(nextSnapshot) }
         }
     }
 
-    private fun getLanguagePriority(path: String): Int {
-        return ParadoxLocalisationPreference.languagePriority(path, LANG_PRIORITY, LOCALISATION_LANGUAGE_WEIGHT)
+    private fun mergeTrees(trees: List<TechnologyTreeData>): List<TechnologyTreeData> {
+        return trees.groupBy { it.folderName }.map { (folder, grouped) ->
+            TechnologyTreeData(
+                folderName = folder,
+                technologies = grouped.flatMap { it.technologies }.distinctBy { it.id }
+            )
+        }
     }
 
     private fun neededLocalisationKeys(technologies: List<TechnologyData>): Set<String> {
@@ -266,60 +281,6 @@ class TechnologyService(private val project: Project) {
             keys.add("${technology.id}_desc")
         }
         return keys
-    }
-
-    private fun resolveNeededLocalisations(technologies: List<TechnologyData>): Map<String, String> {
-        val result = linkedMapOf<String, String>()
-        for (key in neededLocalisationKeys(technologies)) {
-            localisationResolver.resolve(key)?.let { result[key] = it }
-        }
-        return result
-    }
-
-    private fun resolveNeededLocalisationsFromFiles(
-        technologies: List<TechnologyData>,
-        alreadyResolved: Set<String>
-    ): Map<String, String> {
-        val neededKeys = neededLocalisationKeys(technologies) - alreadyResolved
-        if (neededKeys.isEmpty()) return emptyMap()
-        val result = linkedMapOf<String, String>()
-        val scoreByKey = mutableMapOf<String, Int>()
-        for (path in findLocFilePaths()) {
-            val langScore = getLanguagePriority(path.toString()) + localisationRootScore(path)
-            val parsed = parseLocFileText(path)
-            for (key in neededKeys) {
-                val value = parsed[key] ?: continue
-                val existing = scoreByKey[key] ?: -1
-                if (langScore > existing) {
-                    scoreByKey[key] = langScore
-                    result[key] = value
-                }
-            }
-        }
-        return result
-    }
-
-    private fun getPlsRoots(): List<Path> {
-        if (cachesValid && cachedRoots.isNotEmpty()) return cachedRoots
-
-        val roots = ResourceFiles.resourceRoots(project, projectFirst = true, gameFirst = false)
-        if (roots.isNotEmpty()) {
-            cachedRoots.clear()
-            cachedRoots.addAll(roots)
-        }
-        return roots
-    }
-
-    private fun findLocFilePaths(): List<Path> {
-        return LocalisationFiles.findFiles(getResourceRoots(), maxDepth = 3)
-    }
-
-    private fun localisationRootScore(path: Path): Int {
-        return LocalisationFiles.rootScoreForRoots(path, getResourceRoots())
-    }
-
-    private fun parseLocFileText(path: Path): Map<String, String> {
-        return LocalisationFiles.parseFile(path)
     }
 
     private fun buildIconNames(technologies: List<TechnologyData>): Map<String, List<String>> {
@@ -335,10 +296,6 @@ class TechnologyService(private val project: Project) {
             map[technology.id] = names.toList()
         }
         return map
-    }
-
-    private fun getResourceRoots(): List<Path> {
-        return getPlsRoots()
     }
 
     private fun parseFromText(filePath: String?, technologies: MutableList<TechnologyData>) {
@@ -577,7 +534,6 @@ class TechnologyService(private val project: Project) {
             "simp_chinese", "l_simp_chinese", "chinese", "l_chinese",
             "english", "l_english"
         )
-        private const val LOCALISATION_LANGUAGE_WEIGHT = 10000
         private const val DEFAULT_FOLDER = "Technologies"
         private val NON_TECHNOLOGY_KEYS = setOf(
             "technologies", "folders", "folder", "path", "categories", "doctrine", "doctrine_name",
