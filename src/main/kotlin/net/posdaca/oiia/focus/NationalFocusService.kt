@@ -16,8 +16,8 @@ import net.posdaca.oiia.core.ParadoxLocalisationResolver
 import net.posdaca.oiia.core.ParadoxSpriteResolver
 import net.posdaca.oiia.core.files.LocalisationFiles
 import net.posdaca.oiia.core.files.ResourceFiles
+import net.posdaca.oiia.core.script.ScriptBlocks
 import java.nio.file.Path
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 class NationalFocusService(private val project: Project) {
@@ -29,8 +29,6 @@ class NationalFocusService(private val project: Project) {
             "simp_chinese", "l_simp_chinese", "chinese", "l_chinese",
             "english", "l_english"
         )
-        private const val LOCALISATION_LANGUAGE_WEIGHT = 10000
-
         fun localisationCacheKey(): String {
             return ParadoxLocalisationPreference.cacheKey(LANG_PRIORITY)
         }
@@ -38,12 +36,9 @@ class NationalFocusService(private val project: Project) {
 
     private data class TextLine(val lineNumber: Int, val text: String)
 
-    private val resolvedData = ConcurrentHashMap<String, FocusData>()
     private val resolutionVersion = AtomicInteger(0)
-    private val cachedRoots = mutableListOf<Path>()
     private val spriteResolver = ParadoxSpriteResolver(project)
     private val localisationResolver = ParadoxLocalisationResolver(project, LANG_PRIORITY)
-    private var cachesValid = false
     private var lastLocalisationCacheKey: String? = null
 
     fun parseFocusTreeFromFile(psiFile: PsiFile): List<NationalFocusTreeData> {
@@ -494,20 +489,37 @@ class NationalFocusService(private val project: Project) {
         return spriteResolver.resolveDefinitionImage(focusProperty)
     }
 
-    fun resolveFocusData(focus: FocusData): FocusData = resolvedData[focus.id] ?: focus
+    fun loadSnapshot(psiFile: PsiFile): FocusPreviewSnapshot {
+        val trees = parseFocusTreeFromFile(psiFile).toMutableList()
+        if (trees.isEmpty()) {
+            val parent = psiFile.virtualFile?.parent
+            if (parent != null) {
+                val manager = PsiManager.getInstance(project)
+                for (child in parent.children) {
+                    val childPsi = manager.findFile(child) ?: continue
+                    trees.addAll(parseFocusTreeFromFile(childPsi))
+                }
+            }
+        }
+        return FocusPreviewSnapshot(trees)
+    }
 
-    fun scheduleResolution(allFocuses: List<FocusData>, onDone: () -> Unit) {
+    fun resolve(snapshot: FocusPreviewSnapshot, onReady: (FocusPreviewSnapshot) -> Unit) {
         refreshLocalisationPreference()
         val version = resolutionVersion.incrementAndGet()
+        val allFocuses = snapshot.allFocuses
         ApplicationManager.getApplication().executeOnPooledThread {
+            var nextSnapshot = snapshot
             try {
+                val neededKeys = neededLocalisationKeys(allFocuses)
                 val locMap = ApplicationManager.getApplication().runReadAction<MutableMap<String, String>> {
-                    resolveNeededLocalisations(allFocuses).toMutableMap()
+                    localisationResolver.resolveAll(neededKeys).toMutableMap()
                 }
 
                 if (version != resolutionVersion.get()) return@executeOnPooledThread
 
-                for ((k, v) in resolveNeededLocalisationsFromFiles(allFocuses, locMap.keys)) {
+                val roots = ResourceFiles.resourceRoots(project, projectFirst = true, gameFirst = false)
+                for ((k, v) in LocalisationFiles.mergeFromRoots(roots, LANG_PRIORITY, keys = neededKeys - locMap.keys, maxDepth = 3)) {
                     locMap.putIfAbsent(k, v)
                 }
 
@@ -536,27 +548,19 @@ class NationalFocusService(private val project: Project) {
                         )
                     }
                 }
-                resolvedData.clear()
-                resolvedData.putAll(nextResolvedData)
+                nextSnapshot = snapshot.withResolved(nextResolvedData)
                 LOG.info("Resolved ${nextResolvedData.size}/${allFocuses.size} focuses")
-
-                cachesValid = true
             } catch (e: Exception) {
                 LOG.warn("Resolution failed", e)
             }
-            ApplicationManager.getApplication().invokeLater { onDone() }
+            ApplicationManager.getApplication().invokeLater { onReady(nextSnapshot) }
         }
-    }
-
-    private fun getLanguagePriority(path: String): Int {
-        return ParadoxLocalisationPreference.languagePriority(path, LANG_PRIORITY, LOCALISATION_LANGUAGE_WEIGHT)
     }
 
     private fun refreshLocalisationPreference() {
         val currentKey = localisationCacheKey()
         if (lastLocalisationCacheKey != currentKey) {
-            resolvedData.clear()
-            localisationResolver.clearCache()
+                localisationResolver.clearCache()
             lastLocalisationCacheKey = currentKey
         }
     }
@@ -571,37 +575,6 @@ class NationalFocusService(private val project: Project) {
             focus.completeTooltip?.let { keys.add(it) }
         }
         return keys
-    }
-
-    private fun resolveNeededLocalisations(focuses: List<FocusData>): Map<String, String> {
-        val result = linkedMapOf<String, String>()
-        for (key in neededLocalisationKeys(focuses)) {
-            localisationResolver.resolve(key)?.let { result[key] = it }
-        }
-        return result
-    }
-
-    private fun resolveNeededLocalisationsFromFiles(
-        focuses: List<FocusData>,
-        alreadyResolved: Set<String>
-    ): Map<String, String> {
-        val neededKeys = neededLocalisationKeys(focuses) - alreadyResolved
-        if (neededKeys.isEmpty()) return emptyMap()
-        val result = linkedMapOf<String, String>()
-        val scoreByKey = mutableMapOf<String, Int>()
-        for (path in findLocFilePaths()) {
-            val langScore = getLanguagePriority(path.toString()) + localisationRootScore(path)
-            val parsed = parseLocFileText(path)
-            for (key in neededKeys) {
-                val value = parsed[key] ?: continue
-                val existing = scoreByKey[key] ?: -1
-                if (langScore > existing) {
-                    scoreByKey[key] = langScore
-                    result[key] = value
-                }
-            }
-        }
-        return result
     }
 
     private fun loadSharedFocusDefinitionsByFile(): Map<String, List<FocusData>> {
@@ -628,31 +601,6 @@ class NationalFocusService(private val project: Project) {
         )
     }
 
-    private fun getPlsRoots(): List<Path> {
-        if (cachesValid && cachedRoots.isNotEmpty()) return cachedRoots
-
-        val roots = ResourceFiles.resourceRoots(project, projectFirst = true, gameFirst = false)
-        if (roots.isNotEmpty()) {
-            cachedRoots.clear()
-            cachedRoots.addAll(roots)
-        }
-        return roots
-    }
-
-    private fun parseLocFileText(path: Path): Map<String, String> {
-        return LocalisationFiles.parseFile(path)
-    }
-
-    private fun findLocFilePaths(): List<Path> {
-        val files = LocalisationFiles.findFiles(getResourceRoots(), maxDepth = 3)
-        LOG.info("Found ${files.size} loc files (NIO)")
-        return files
-    }
-
-    private fun localisationRootScore(path: Path): Int {
-        return LocalisationFiles.rootScoreForRoots(path, getResourceRoots())
-    }
-
     private fun buildIconNames(focuses: List<FocusData>): Map<String, List<String>> {
         val map = mutableMapOf<String, List<String>>()
         for (f in focuses) {
@@ -668,10 +616,6 @@ class NationalFocusService(private val project: Project) {
             map[f.id] = list.toList()
         }
         return map
-    }
-
-    private fun getResourceRoots(): List<Path> {
-        return getPlsRoots()
     }
 
     private fun extractAssignmentValue(line: String, key: String): String? {
@@ -716,9 +660,6 @@ class NationalFocusService(private val project: Project) {
             upsertAxisProperty(block, "y", y)
             val updatedDocument = documentManager.getDocument(psiFile) ?: return@compute false
             documentManager.commitDocument(updatedDocument)
-            resolvedData[focus.id]?.let { cached ->
-                resolvedData[focus.id] = cached.copy(x = x.toDouble(), y = y.toDouble())
-            }
             true
         }
     }
@@ -774,27 +715,11 @@ class NationalFocusService(private val project: Project) {
         document.insertString(insertOffset, insertion)
     }
 
-    private fun detectInnerIndent(block: ParadoxScriptBlock): String {
-        val firstProperty = block.propertyList.firstOrNull()
-        if (firstProperty != null) {
-            val document = PsiDocumentManager.getInstance(project).getDocument(firstProperty.containingFile)
-            if (document != null) {
-                val line = document.getLineNumber(firstProperty.textOffset)
-                val lineStart = document.getLineStartOffset(line)
-                val prefix = document.charsSequence.subSequence(lineStart, firstProperty.textOffset).toString()
-                val indent = prefix.takeWhile { it == ' ' || it == '\t' }
-                if (indent.isNotEmpty()) return indent
-            }
-        }
-        return "\t"
-    }
+    private fun detectInnerIndent(block: ParadoxScriptBlock): String = ScriptBlocks.innerIndent(project, block)
 
     fun clearCache() {
-        resolvedData.clear()
         localisationResolver.clearCache()
         lastLocalisationCacheKey = null
-        cachedRoots.clear()
-        cachesValid = false
     }
 
 }

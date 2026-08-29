@@ -120,28 +120,15 @@ class NationalFocusPreviewToolWindowFactory : ToolWindowFactory {
                 return
             }
 
-            val allFocusTrees = mutableListOf<NationalFocusTreeData>()
-
             val psiFile: PsiFile? = PsiManager.getInstance(project).findFile(selectedFile)
-            if (psiFile != null) {
-                allFocusTrees.addAll(service.parseFocusTreeFromFile(psiFile))
-            }
+            val snapshot = if (psiFile != null) service.loadSnapshot(psiFile) else FocusPreviewSnapshot(emptyList())
 
-            if (allFocusTrees.isEmpty()) {
-                for (child in parent.children) {
-                    val childPsi = PsiManager.getInstance(project).findFile(child)
-                    if (childPsi != null) {
-                        allFocusTrees.addAll(service.parseFocusTreeFromFile(childPsi))
-                    }
-                }
-            }
-
-            if (allFocusTrees.isEmpty()) {
+            if (snapshot.isEmpty) {
                 updatePanel(createNoFocusTreePanel())
                 return
             }
 
-            updatePanel(NationalFocusPreviewPanel(project, allFocusTrees, service))
+            updatePanel(NationalFocusPreviewPanel(project, snapshot, service))
         }
 
         @Suppress("UnstableApiUsage")
