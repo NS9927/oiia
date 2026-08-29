@@ -73,17 +73,22 @@ class ParadoxSpriteResolver(private val project: Project) {
         val alwaysTransparent: Boolean? = null
     )
 
-    private data class SpriteBlock(
-        val key: String,
-        val body: String
+    /**
+     * Immutable cache snapshot swapped atomically, so readers never observe a half-cleared cache
+     * and rebuilds cannot race with memoisation.
+     */
+    private data class SpriteCacheSnapshot(
+        val rootsKey: String? = null,
+        val stamp: Long = Long.MIN_VALUE,
+        val iconFiles: Map<String, String> = emptyMap(),
+        val spriteIconFiles: Map<String, String> = emptyMap(),
+        val spriteDefinitionsByName: Map<String, SpriteDefinition> = emptyMap(),
+        val iconPrefixLookup: PrefixIconLookup? = null,
+        val resolvedSpriteInfos: Map<String, SpriteInfo?> = emptyMap(),
     )
 
-    private val resolvedSpriteInfos = mutableMapOf<String, SpriteInfo?>()
-    private val iconFiles = mutableMapOf<String, String>()
-    private val spriteIconFiles = mutableMapOf<String, String>()
-    private val spriteDefinitionsByName = mutableMapOf<String, SpriteDefinition>()
-    @Volatile private var iconPrefixLookup: PrefixIconLookup? = null
-    private var cacheRootsKey: String? = null
+    @Volatile private var cache = SpriteCacheSnapshot()
+    @Volatile private var lastStampCheckMillis = Long.MIN_VALUE
 
     fun resolveDefinitionImage(definition: ParadoxScriptProperty): String? {
         return runCatching {
@@ -100,13 +105,16 @@ class ParadoxSpriteResolver(private val project: Project) {
 
     fun resolveSpriteInfo(name: String?): SpriteInfo? {
         val normalized = name?.trim()?.trim('"')?.takeIf { it.isNotBlank() } ?: return null
-        synchronized(resolvedSpriteInfos) {
-            if (resolvedSpriteInfos.containsKey(normalized)) return resolvedSpriteInfos[normalized]
-            val resolved = resolveSpriteInfoWithPls(normalized)
-                ?: resolveSpriteInfoFromCache(normalized)
-            resolvedSpriteInfos[normalized] = resolved
-            return resolved
+        val snapshot = cache
+        if (snapshot.resolvedSpriteInfos.containsKey(normalized)) return snapshot.resolvedSpriteInfos[normalized]
+        val resolved = resolveSpriteInfoWithPls(normalized)
+            ?: resolveSpriteInfoFromCache(normalized)
+        synchronized(this) {
+            if (cache === snapshot && cache.resolvedSpriteInfos.size < MAX_RESOLVED_SPRITE_INFOS) {
+                cache = cache.copy(resolvedSpriteInfos = cache.resolvedSpriteInfos + (normalized to resolved))
+            }
         }
+        return resolved
     }
 
     fun resolveFirst(names: Iterable<String?>): String? {
@@ -141,10 +149,10 @@ class ParadoxSpriteResolver(private val project: Project) {
 
     private fun ParadoxScriptProperty.toSpriteInfo(name: String): SpriteInfo? {
         val block = block
-        val textureFile = block?.propertyValue("textureFile")?.let(::cleanToken)
-        val textureFile1 = block?.propertyValue("textureFile1")?.let(::cleanToken)
-        val textureFile2 = block?.propertyValue("textureFile2")?.let(::cleanToken)
-        val effectFile = block?.propertyValue("effectFile")?.let(::cleanToken)
+        val textureFile = block?.propertyValue("textureFile")?.let { ParadoxGfxParser.cleanToken(it) }
+        val textureFile1 = block?.propertyValue("textureFile1")?.let { ParadoxGfxParser.cleanToken(it) }
+        val textureFile2 = block?.propertyValue("textureFile2")?.let { ParadoxGfxParser.cleanToken(it) }
+        val effectFile = block?.propertyValue("effectFile")?.let { ParadoxGfxParser.cleanToken(it) }
         val rootHint = resourceRootFor(containingFile?.virtualFile?.path)
         val imagePath1 = resolveTexturePath(textureFile1, rootHint)
         val imagePath2 = resolveTexturePath(textureFile2, rootHint)
@@ -159,7 +167,7 @@ class ParadoxSpriteResolver(private val project: Project) {
             imagePath1 = imagePath1,
             imagePath2 = imagePath2,
             subtype = runCatching { ParadoxDefinitionManager.getSubtypes(this)?.firstOrNull() }.getOrNull()
-                ?: subtypeFromPropertyKey(propertyKey.text),
+                ?: ParadoxGfxParser.subtypeFromPropertyKey(propertyKey.text),
             textureFile = textureFile,
             borderSize = block?.propertyBlock("borderSize")?.let(::parseInsets),
             size = block?.propertyBlock("size")?.let(::parseSize),
@@ -182,46 +190,75 @@ class ParadoxSpriteResolver(private val project: Project) {
 
     private fun ParadoxScriptProperty.isSpriteDefinition(): Boolean {
         val key = propertyKey.text
-        if (key.lowercase() in SPRITE_DEFINITION_PROPERTY_KEYS) return true
+        if (key.lowercase() in ParadoxGfxParser.SPRITE_TYPE_KEYS) return true
         val type = runCatching { ParadoxDefinitionManager.getType(this) }.getOrNull()
         return type != null && type.contains("sprite", ignoreCase = true)
     }
 
     private fun ensureIconCache() {
-        val roots = ResourceFiles.resourceRoots(project, projectFirst = true, gameFirst = false)
-        val rootsKey = roots.joinToString("|") { ResourceFiles.normalizedKey(it) }
-        if (cacheRootsKey == rootsKey) return
+        val now = System.currentTimeMillis()
+        val rootsKey = currentRootsKey()
+        val snapshot = cache
+        if (snapshot.rootsKey == rootsKey && now - lastStampCheckMillis < STAMP_CHECK_INTERVAL_MS) return
         synchronized(this) {
-            if (cacheRootsKey == rootsKey) return
-            iconFiles.clear()
-            iconPrefixLookup = null
-            spriteIconFiles.clear()
-            spriteDefinitionsByName.clear()
+            if (cache.rootsKey == rootsKey && now - lastStampCheckMillis < STAMP_CHECK_INTERVAL_MS) return
+            lastStampCheckMillis = now
+            val roots = ResourceFiles.resourceRoots(project, projectFirst = true, gameFirst = false)
+            val freshRootsKey = roots.joinToString("|") { ResourceFiles.normalizedKey(it) }
+            val stamp = computeGfxStamp(roots)
+            if (cache.rootsKey == freshRootsKey && cache.stamp == stamp) return
 
+            val iconFiles = HashMap<String, String>()
+            val spriteIconFiles = HashMap<String, String>()
+            val spriteDefinitionsByName = HashMap<String, SpriteDefinition>()
             val spriteDefinitions = mutableListOf<SpriteDefinition>()
             for (root in roots) {
-                cacheImages(root)
+                cacheImages(root, iconFiles)
                 cacheSpriteDefinitions(root, spriteDefinitions)
             }
-
             for (sprite in spriteDefinitions) {
-                val iconPath = resolveTexturePath(sprite.textureFile, sprite.root, ensureCache = false)
-                    ?: resolveTexturePath(sprite.textureFile1, sprite.root, ensureCache = false)
-                    ?: resolveTexturePath(sprite.textureFile2, sprite.root, ensureCache = false)
+                val iconPath = resolveTexturePathIn(sprite.textureFile, sprite.root, iconFiles)
+                    ?: resolveTexturePathIn(sprite.textureFile1, sprite.root, iconFiles)
+                    ?: resolveTexturePathIn(sprite.textureFile2, sprite.root, iconFiles)
                 if (iconPath != null) putAliases(spriteIconFiles, sprite.name, iconPath)
-                putDefinitionAliases(sprite)
+                putDefinitionAliases(spriteDefinitionsByName, sprite)
             }
 
-            iconPrefixLookup = PrefixIconLookup(iconFiles.toMap())
-            cacheRootsKey = rootsKey
-            resolvedSpriteInfos.clear()
+            cache = SpriteCacheSnapshot(
+                rootsKey = freshRootsKey,
+                stamp = stamp,
+                iconFiles = iconFiles,
+                spriteIconFiles = spriteIconFiles,
+                spriteDefinitionsByName = spriteDefinitionsByName,
+                iconPrefixLookup = PrefixIconLookup(iconFiles),
+            )
             LOG.info("GUI sprite cache rebuilt: roots=${roots.size} images=${iconFiles.size} spriteImages=${spriteIconFiles.size} definitions=${spriteDefinitionsByName.size}")
         }
     }
 
-    private fun cacheImages(root: Path) {
-        val files = ResourceFiles.listFiles(listOf(root), listOf("gfx"), ICON_EXTENSIONS, maxDepth = 6)
-        for (file in files) cacheIconFile(root, file)
+    private fun currentRootsKey(): String {
+        return ResourceFiles.resourceRoots(project, projectFirst = true, gameFirst = false)
+            .joinToString("|") { ResourceFiles.normalizedKey(it) }
+    }
+
+    /**
+     * Cheap fingerprint over the `.gfx` files backing the cache, so edits to those files
+     * invalidate the cache within [STAMP_CHECK_INTERVAL_MS] instead of living until roots change.
+     */
+    private fun computeGfxStamp(roots: List<Path>): Long {
+        var stamp = roots.size.toLong()
+        for (root in roots) {
+            val files = ResourceFiles.listFiles(listOf(root), listOf("gfx", "interface"), setOf(".gfx"), maxDepth = 6)
+            for (path in files.sortedBy { ResourceFiles.normalizedKey(it) }) {
+                stamp = stamp * 31 + ResourceFiles.fileStamp(path)
+            }
+        }
+        return stamp
+    }
+
+    private fun cacheImages(root: Path, iconFiles: MutableMap<String, String>) {
+        val files = ResourceFiles.listFiles(listOf(root), listOf("gfx"), ParadoxGfxParser.ICON_EXTENSIONS, maxDepth = 6)
+        for (file in files) cacheIconFile(root, file, iconFiles)
     }
 
 
@@ -235,128 +272,42 @@ class ParadoxSpriteResolver(private val project: Project) {
 
     private fun parseGfxFile(root: Path, path: Path, spriteDefinitions: MutableList<SpriteDefinition>) {
         val content = ResourceFiles.readText(path) ?: return
-        findSpriteBlocks(content).forEach { spriteBlock ->
+        ParadoxGfxParser.findSpriteBlocks(content).forEach { spriteBlock ->
             val body = spriteBlock.body
-            val assignmentBody = stripLineComments(body)
-            val name = NAME_ASSIGNMENT_REGEX.find(assignmentBody)?.groupValues?.getOrNull(1)?.takeIf { it.isNotBlank() }
+            val assignmentBody = ParadoxGfxParser.stripLineComments(body)
+            val name = ParadoxGfxParser.parseAssignmentValue(assignmentBody, "name")?.takeIf { it.isNotBlank() }
                 ?: return@forEach
-            val texture = parseAssignmentValue(assignmentBody, "textureFile")
-            val texture1 = parseAssignmentValue(assignmentBody, "textureFile1")
-            val texture2 = parseAssignmentValue(assignmentBody, "textureFile2")
-            val effectFile = parseAssignmentValue(assignmentBody, "effectFile")
+            val texture = ParadoxGfxParser.parseAssignmentValue(assignmentBody, "textureFile")
+            val texture1 = ParadoxGfxParser.parseAssignmentValue(assignmentBody, "textureFile1")
+            val texture2 = ParadoxGfxParser.parseAssignmentValue(assignmentBody, "textureFile2")
+            val effectFile = ParadoxGfxParser.parseAssignmentValue(assignmentBody, "effectFile")
             if (texture == null && texture1 == null && texture2 == null) return@forEach
-            val cleanName = cleanToken(name)
             spriteDefinitions.add(
                 SpriteDefinition(
-                    name = cleanName,
+                    name = name,
                     textureFile = texture,
                     root = root,
-                    subtype = subtypeFromPropertyKey(spriteBlock.key),
-                    borderSize = parseBorderSize(assignmentBody),
-                    size = parseSpriteSize(assignmentBody),
-                    tilingCenter = parseAssignmentValue(assignmentBody, "tilingCenter").parseParadoxBoolean() ?: false,
-                    noOfFrames = parseAssignmentValue(assignmentBody, "noOfFrames")?.parseParadoxInt(),
-                    defaultFrame = parseAssignmentValue(assignmentBody, "default_frame")?.parseParadoxInt(),
+                    subtype = ParadoxGfxParser.subtypeFromPropertyKey(spriteBlock.key),
+                    borderSize = ParadoxGfxParser.parseBorderSize(assignmentBody),
+                    size = ParadoxGfxParser.parseSpriteSize(assignmentBody),
+                    tilingCenter = ParadoxGfxParser.parseAssignmentValue(assignmentBody, "tilingCenter").parseParadoxBoolean() ?: false,
+                    noOfFrames = ParadoxGfxParser.parseAssignmentValue(assignmentBody, "noOfFrames")?.parseParadoxInt(),
+                    defaultFrame = ParadoxGfxParser.parseAssignmentValue(assignmentBody, "default_frame")?.parseParadoxInt(),
                     textureFile1 = texture1,
                     textureFile2 = texture2,
                     effectFile = effectFile,
-                    horizontal = parseAssignmentValue(assignmentBody, "horizontal").parseParadoxBoolean(),
-                    steps = parseAssignmentValue(assignmentBody, "steps")?.parseParadoxInt(),
-                    rotation = parseAssignmentValue(assignmentBody, "rotation")?.parseParadoxInt(),
-                    amount = parseAssignmentValue(assignmentBody, "amount")?.parseParadoxInt(),
-                    alwaysTransparent = parseAssignmentValue(assignmentBody, "alwaystransparent").parseParadoxBoolean()
-                        ?: parseAssignmentValue(assignmentBody, "allwaystransparent").parseParadoxBoolean()
+                    horizontal = ParadoxGfxParser.parseAssignmentValue(assignmentBody, "horizontal").parseParadoxBoolean(),
+                    steps = ParadoxGfxParser.parseAssignmentValue(assignmentBody, "steps")?.parseParadoxInt(),
+                    rotation = ParadoxGfxParser.parseAssignmentValue(assignmentBody, "rotation")?.parseParadoxInt(),
+                    amount = ParadoxGfxParser.parseAssignmentValue(assignmentBody, "amount")?.parseParadoxInt(),
+                    alwaysTransparent = ParadoxGfxParser.parseAssignmentValue(assignmentBody, "alwaystransparent").parseParadoxBoolean()
+                        ?: ParadoxGfxParser.parseAssignmentValue(assignmentBody, "allwaystransparent").parseParadoxBoolean()
                 )
             )
         }
     }
 
-    private fun findSpriteBlocks(content: String): Sequence<SpriteBlock> {
-        val searchableContent = stripLineComments(content)
-        return sequence {
-            var index = 0
-            while (index < searchableContent.length) {
-                val match = SPRITE_BLOCK_START_REGEX.find(searchableContent, index) ?: break
-                val key = match.groupValues[1]
-                val openBraceIndex = match.range.last
-                val closeBraceIndex = findMatchingBrace(searchableContent, openBraceIndex)
-                if (closeBraceIndex == null) {
-                    index = openBraceIndex + 1
-                    continue
-                }
-                yield(SpriteBlock(key, content.substring(openBraceIndex + 1, closeBraceIndex)))
-                index = closeBraceIndex + 1
-            }
-        }
-    }
-
-    private fun stripLineComments(content: String): String {
-        val result = StringBuilder(content.length)
-        var inString = false
-        var index = 0
-        while (index < content.length) {
-            val char = content[index]
-            if (inString) {
-                result.append(char)
-                if (char == '\\' && index + 1 < content.length) {
-                    index++
-                    result.append(content[index])
-                } else if (char == '"') {
-                    inString = false
-                }
-            } else {
-                when (char) {
-                    '"' -> {
-                        inString = true
-                        result.append(char)
-                    }
-                    '#' -> {
-                        result.append(' ')
-                        while (index + 1 < content.length && content[index + 1] != '\n' && content[index + 1] != '\r') {
-                            index++
-                            result.append(' ')
-                        }
-                    }
-                    else -> result.append(char)
-                }
-            }
-            index++
-        }
-        return result.toString()
-    }
-
-    private fun findMatchingBrace(content: String, openBraceIndex: Int): Int? {
-        var depth = 0
-        var inString = false
-        var index = openBraceIndex
-        while (index < content.length) {
-            val c = content[index]
-            if (inString) {
-                if (c == '\\') {
-                    index += 2
-                    continue
-                }
-                if (c == '"') inString = false
-            } else {
-                when (c) {
-                    '"' -> inString = true
-                    '#' -> {
-                        index = content.indexOf('\n', index).takeIf { it >= 0 } ?: content.length
-                        continue
-                    }
-                    '{' -> depth++
-                    '}' -> {
-                        depth--
-                        if (depth == 0) return index
-                    }
-                }
-            }
-            index++
-        }
-        return null
-    }
-
-    private fun cacheIconFile(root: Path, file: Path) {
+    private fun cacheIconFile(root: Path, file: Path, iconFiles: MutableMap<String, String>) {
         val absolutePath = file.toAbsolutePath().normalize().toString()
         putAliases(iconFiles, file.fileName.toString().substringBeforeLast("."), absolutePath)
         runCatching {
@@ -364,49 +315,44 @@ class ParadoxSpriteResolver(private val project: Project) {
         }
     }
 
-    private fun findCachedSpriteIconPath(name: String): String? {
-        ensureIconCache()
-        return lookupCachedPath(spriteIconFiles, name)
-    }
-
-    private fun findCachedIconPath(name: String): String? {
-        ensureIconCache()
-        lookupCachedPath(iconFiles, name)?.let { return it }
-        return iconPrefixLookup?.find(aliases(name))
+    private fun findCachedIconPath(name: String, snapshot: SpriteCacheSnapshot): String? {
+        lookupCachedPath(snapshot.iconFiles, name)?.let { return it }
+        return snapshot.iconPrefixLookup?.find(ParadoxGfxParser.spriteAliases(name))
     }
 
     private fun lookupCachedPath(cache: Map<String, String>, name: String): String? {
-        for (alias in aliases(name)) {
+        for (alias in ParadoxGfxParser.spriteAliases(name)) {
             cache[alias]?.let { return it }
         }
         return null
     }
 
     private fun putAliases(cache: MutableMap<String, String>, name: String, path: String) {
-        for (alias in aliases(name)) {
+        for (alias in ParadoxGfxParser.spriteAliases(name)) {
             cache.putIfAbsent(alias, path)
         }
     }
 
     private fun putAliases(cache: MutableMap<String, SpriteDefinition>, name: String, definition: SpriteDefinition) {
-        for (alias in aliases(name)) {
+        for (alias in ParadoxGfxParser.spriteAliases(name)) {
             cache.putIfAbsent(alias, definition)
         }
     }
 
-    private fun putDefinitionAliases(definition: SpriteDefinition) {
-        putAliases(spriteDefinitionsByName, definition.name, definition)
-        definition.textureFile?.let { putAliases(spriteDefinitionsByName, it, definition) }
+    private fun putDefinitionAliases(cache: MutableMap<String, SpriteDefinition>, definition: SpriteDefinition) {
+        putAliases(cache, definition.name, definition)
+        definition.textureFile?.let { putAliases(cache, it, definition) }
     }
 
     private fun resolveSpriteInfoFromCache(name: String): SpriteInfo? {
         ensureIconCache()
-        val definition = lookupSpriteDefinition(name)
-        val imagePath1 = resolveTexturePath(definition?.textureFile1, definition?.root, ensureCache = false)
-        val imagePath2 = resolveTexturePath(definition?.textureFile2, definition?.root, ensureCache = false)
-        val path = resolveTexturePath(definition?.textureFile, definition?.root, ensureCache = false)
-            ?: findCachedSpriteIconPath(name)
-            ?: findCachedIconPath(name)
+        val snapshot = cache
+        val definition = lookupSpriteDefinition(name, snapshot.spriteDefinitionsByName)
+        val imagePath1 = resolveTexturePathIn(definition?.textureFile1, definition?.root, snapshot.iconFiles)
+        val imagePath2 = resolveTexturePathIn(definition?.textureFile2, definition?.root, snapshot.iconFiles)
+        val path = resolveTexturePathIn(definition?.textureFile, definition?.root, snapshot.iconFiles)
+            ?: lookupCachedPath(snapshot.spriteIconFiles, name)
+            ?: findCachedIconPath(name, snapshot)
             ?: imagePath1
             ?: imagePath2
         if (definition == null && path == null && imagePath1 == null && imagePath2 == null) return null
@@ -432,51 +378,34 @@ class ParadoxSpriteResolver(private val project: Project) {
             alwaysTransparent = definition?.alwaysTransparent
         )
         if (definition == null) {
-            LOG.info("GUI sprite resolved by image fallback without gfx definition: name=$name aliases=${aliases(name)} image=${info.primaryImagePath}")
+            LOG.info("GUI sprite resolved by image fallback without gfx definition: name=$name aliases=${ParadoxGfxParser.spriteAliases(name)} image=${info.primaryImagePath}")
         } else {
             LOG.info("GUI sprite resolved by cache: name=$name type=${definition.subtype} root=${definition.root} texture=${definition.textureFile} image=${info.primaryImagePath} frames=${info.noOfFrames} size=${info.size} effect=${info.effectFile}")
         }
         return info
     }
 
-    private fun lookupSpriteDefinition(name: String): SpriteDefinition? {
-        for (alias in aliases(name)) {
-            spriteDefinitionsByName[alias]?.let { return it }
+    private fun lookupSpriteDefinition(name: String, definitionsByName: Map<String, SpriteDefinition>): SpriteDefinition? {
+        for (alias in ParadoxGfxParser.spriteAliases(name)) {
+            definitionsByName[alias]?.let { return it }
         }
         return null
     }
 
-    private fun aliases(name: String): Set<String> {
-        val normalized = removeExtension(cleanToken(name).replace('\\', '/').lowercase())
-        if (normalized.isBlank()) return emptySet()
-
-        val aliases = linkedSetOf(normalized)
-        if (normalized.startsWith("gfx/")) aliases.add(normalized.removePrefix("gfx/"))
-        if (normalized.startsWith("interface/")) aliases.add(normalized.removePrefix("interface/"))
-        aliases.add(normalized.substringAfterLast('/'))
-
-        val strippedGfxAliases = aliases.toList().mapNotNull { alias ->
-            alias.takeIf { it.startsWith("gfx_") }?.removePrefix("gfx_")
-        }
-        aliases.addAll(strippedGfxAliases)
-        return aliases.filterTo(linkedSetOf()) { it.isNotBlank() }
-    }
-
-    private fun removeExtension(name: String): String {
-        for (extension in ICON_EXTENSIONS) {
-            if (name.endsWith(extension)) return name.removeSuffix(extension)
-        }
-        return name
-    }
-
     private fun resolveGamePath(root: Path, rawPath: String): Path {
-        val normalizedPath = cleanToken(rawPath).replace('\\', '/')
+        val normalizedPath = ParadoxGfxParser.cleanToken(rawPath).replace('\\', '/')
         val path = runCatching { Path.of(normalizedPath) }.getOrNull()
         return if (path != null && path.isAbsolute) path.normalize() else root.resolve(normalizedPath).normalize()
     }
 
     private fun resolveTexturePath(rawPath: String?, rootHint: Path?, ensureCache: Boolean = true): String? {
-        val cleanPath = rawPath?.let(::cleanToken)?.takeIf { it.isNotBlank() } ?: return null
+        val cleanPath = rawPath?.let { ParadoxGfxParser.cleanToken(it) }?.takeIf { it.isNotBlank() } ?: return null
+        if (ensureCache) ensureIconCache()
+        return resolveTexturePathIn(cleanPath, rootHint, cache.iconFiles)
+    }
+
+    private fun resolveTexturePathIn(rawPath: String?, rootHint: Path?, iconFiles: Map<String, String>): String? {
+        val cleanPath = rawPath?.let { ParadoxGfxParser.cleanToken(it) }?.takeIf { it.isNotBlank() } ?: return null
         if (rootHint != null) {
             val directPath = resolveGamePath(rootHint, cleanPath)
             if (directPath.isRegularFile()) return directPath.toAbsolutePath().normalize().toString()
@@ -486,7 +415,6 @@ class ParadoxSpriteResolver(private val project: Project) {
             return absolute.toAbsolutePath().normalize().toString()
         }
         resolveTexturePathWithPls(cleanPath)?.let { return it }
-        if (ensureCache) ensureIconCache()
         return lookupCachedPath(iconFiles, cleanPath)
     }
 
@@ -505,22 +433,6 @@ class ParadoxSpriteResolver(private val project: Project) {
         val file = filePath?.let { runCatching { Path.of(it).toAbsolutePath().normalize() }.getOrNull() } ?: return null
         return ResourceFiles.resourceRoots(project, projectFirst = true, gameFirst = false)
             .firstOrNull { root -> file.startsWith(root.toAbsolutePath().normalize()) }
-    }
-
-    private fun subtypeFromPropertyKey(key: String): String? {
-        return when (key.lowercase()) {
-            "spritetype" -> "normal"
-            "frameanimatedspritetype" -> "frame_animated_sprite"
-            "corneredtilespritetype" -> "cornered_tile_sprite"
-            "maskedshieldtype" -> "masked_shield"
-            "textspritetype" -> "text_sprite"
-            "progressbartype" -> "progressbar"
-            "circularprogressbartype" -> "circular_progressbar"
-            "piecharttype" -> "pie_chart"
-            "linecharttype" -> "line_chart"
-            "quadtexturesprite" -> "quad_texture"
-            else -> null
-        }
     }
 
     private fun icu.windea.pls.script.psi.ParadoxScriptBlock.propertyValue(key: String): String? {
@@ -565,48 +477,6 @@ class ParadoxSpriteResolver(private val project: Project) {
         )
     }
 
-    private fun parseBorderSize(body: String): SpriteInsets? {
-        val block = Regex("""(?is)\bborderSize\s*=\s*\{(.*?)\}""").find(body)?.groupValues?.getOrNull(1)
-            ?: return null
-        val sideLeft = parseAssignmentValue(block, "left")?.toDoubleOrNull()?.toInt()
-        val sideTop = parseAssignmentValue(block, "top")?.toDoubleOrNull()?.toInt()
-        val sideRight = parseAssignmentValue(block, "right")?.toDoubleOrNull()?.toInt()
-        val sideBottom = parseAssignmentValue(block, "bottom")?.toDoubleOrNull()?.toInt()
-        if (sideLeft != null || sideTop != null || sideRight != null || sideBottom != null) {
-            return SpriteInsets(
-                left = sideLeft ?: 0,
-                top = sideTop ?: 0,
-                right = sideRight ?: sideLeft ?: 0,
-                bottom = sideBottom ?: sideTop ?: 0
-            )
-        }
-        val dimensions = bodyDimensionValues(block)
-        return SpriteInsets(
-            left = dimensions.horizontalOrFirst,
-            top = dimensions.verticalOrSecond,
-            right = dimensions.horizontalOrThird,
-            bottom = dimensions.verticalOrFourth
-        )
-    }
-
-    private fun parseSpriteSize(body: String): SpriteSize? {
-        val block = Regex("""(?is)\bsize\s*=\s*\{(.*?)\}""").find(body)?.groupValues?.getOrNull(1)
-            ?: return null
-        val dimensions = bodyDimensionValues(block)
-        return SpriteSize(
-            width = dimensions.horizontalOrFirst,
-            height = dimensions.verticalOrSecond
-        )
-    }
-
-    private fun parseAssignmentValue(body: String, key: String): String? {
-        return Regex("""(?im)\b${Regex.escape(key)}\s*=\s*("[^"]+"|[^\s#{}]+)""")
-            .find(body)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.let(::cleanToken)
-    }
-
     private fun icu.windea.pls.script.psi.ParadoxScriptBlock.dimensionValues(): DimensionValues {
         return DimensionValues(
             x = propertyValue("x")?.toDoubleOrNull()?.toInt(),
@@ -614,16 +484,6 @@ class ParadoxSpriteResolver(private val project: Project) {
             width = propertyValue("width")?.toDoubleOrNull()?.toInt(),
             height = propertyValue("height")?.toDoubleOrNull()?.toInt(),
             values = valueList.mapNotNull { it.text.trim().trim('"').toDoubleOrNull()?.toInt() }
-        )
-    }
-
-    private fun bodyDimensionValues(body: String): DimensionValues {
-        return DimensionValues(
-            x = parseAssignmentValue(body, "x")?.toDoubleOrNull()?.toInt(),
-            y = parseAssignmentValue(body, "y")?.toDoubleOrNull()?.toInt(),
-            width = parseAssignmentValue(body, "width")?.toDoubleOrNull()?.toInt(),
-            height = parseAssignmentValue(body, "height")?.toDoubleOrNull()?.toInt(),
-            values = NUMBER_REGEX.findAll(body).mapNotNull { it.value.toDoubleOrNull()?.toInt() }.toList()
         )
     }
 
@@ -644,42 +504,10 @@ class ParadoxSpriteResolver(private val project: Project) {
             get() = y ?: height ?: values.getOrNull(3) ?: values.getOrNull(1) ?: values.getOrNull(0) ?: 0
     }
 
-    private fun cleanToken(value: String): String {
-        return value.trim().trim('"')
-    }
-
-    private fun String.parseParadoxInt(): Int? {
-        return cleanToken(this).toDoubleOrNull()?.toInt()
-    }
-
-    private fun String?.parseParadoxBoolean(): Boolean? {
-        return when (this?.let(::cleanToken)?.lowercase()) {
-            "yes", "true", "1" -> true
-            "no", "false", "0" -> false
-            else -> null
-        }
-    }
-
     companion object {
         private val LOG = Logger.getInstance(ParadoxSpriteResolver::class.java)
-        private val ICON_EXTENSIONS = setOf(".dds", ".tga", ".png")
-        private val SPRITE_DEFINITION_PROPERTY_KEYS = setOf(
-            "spritetype",
-            "frameanimatedspritetype",
-            "corneredtilespritetype",
-            "maskedshieldtype",
-            "textspritetype",
-            "progressbartype",
-            "circularprogressbartype",
-            "piecharttype",
-            "linecharttype",
-            "quadtexturesprite"
-        )
-        private val SPRITE_BLOCK_START_REGEX = Regex(
-            """(?i)\b(spriteType|frameAnimatedSpriteType|corneredTileSpriteType|maskedShieldType|textSpriteType|progressbartype|circularProgressBarType|pieChartType|LineChartType|quadTextureSprite)\s*=\s*\{"""
-        )
-        private val NAME_ASSIGNMENT_REGEX = Regex("""(?im)\bname\s*=\s*("[^"]+"|[^\s#]+)""")
-        private val NUMBER_REGEX = Regex("""-?\d+(?:\.\d+)?""")
+        private const val STAMP_CHECK_INTERVAL_MS = 2000L
+        private const val MAX_RESOLVED_SPRITE_INFOS = 4096
     }
 }
 
