@@ -21,6 +21,7 @@ import icu.windea.pls.script.psi.ParadoxScriptProperty
 import icu.windea.pls.script.psi.ParadoxScriptValue
 import net.posdaca.oiia.core.files.LocalisationFiles
 import net.posdaca.oiia.core.ParadoxLocalisationPreference
+import net.posdaca.oiia.core.script.ScriptBlocks
 import net.posdaca.oiia.core.ParadoxSpriteResolver
 import net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteInfo
 import net.posdaca.oiia.core.PreviewImageLoader
@@ -36,6 +37,14 @@ class GuiPreviewService(private val project: Project) {
     private var localisationFallbackCache: Map<String, String> = emptyMap()
     private val spriteResolver = ParadoxSpriteResolver(project)
 
+    fun loadSnapshot(psiFile: PsiFile): GuiPreviewSnapshot {
+        return GuiPreviewSnapshot(parseGuiFile(psiFile), GuiPreviewResources(localisationCacheKey()))
+    }
+
+    fun resolve(snapshot: GuiPreviewSnapshot, shouldCancel: () -> Boolean = { false }): GuiPreviewSnapshot {
+        if (snapshot.isEmpty) return snapshot
+        return snapshot.copy(resources = loadResources(snapshot.file.roots, shouldCancel))
+    }
     fun parseGuiFile(psiFile: PsiFile): GuiPreviewFile {
         val roots = if (psiFile is ParadoxScriptFile) {
             parseFromPlsPsi(psiFile)
@@ -389,35 +398,20 @@ class GuiPreviewService(private val project: Project) {
             if (localisationFallbackRootsKey == rootsKey) return localisationFallbackCache
 
             val paths = LocalisationFiles.findFiles(roots)
-            val rootScores = LocalisationFiles.rootScores(roots)
-            val scoreByKey = mutableMapOf<String, Int>()
-            val result = linkedMapOf<String, String>()
-
-            for (path in paths) {
-                val score = localisationScore(path, rootScores)
-                LocalisationFiles.parseFile(path).forEach { (locKey, value) ->
-                    val existing = scoreByKey[locKey] ?: Int.MIN_VALUE
-                    if (score > existing) {
-                        scoreByKey[locKey] = score
-                        result[locKey] = LocalisationFiles.unescape(value)
-                    }
-                }
-            }
+            val result = LocalisationFiles.mergePreferred(
+                paths,
+                score = { path ->
+                    languagePriority(path.toString()) * LOCALISATION_SCORE_LANGUAGE_WEIGHT +
+                        LocalisationFiles.rootScore(path, LocalisationFiles.rootScores(roots))
+                },
+                unescapeValues = true,
+            )
 
             localisationFallbackRootsKey = rootsKey
             localisationFallbackCache = result
             LOG.info("GUI localisation fallback loaded: roots=${roots.size} files=${paths.size} entries=${result.size}")
             return result
         }
-    }
-
-    private fun localisationScore(path: Path, rootScores: List<Pair<String, Int>>): Int {
-        return languagePriority(path.toString()) * LOCALISATION_SCORE_LANGUAGE_WEIGHT +
-                localisationRootScore(path, rootScores)
-    }
-
-    private fun localisationRootScore(path: Path, rootScores: List<Pair<String, Int>>): Int {
-        return LocalisationFiles.rootScore(path, rootScores)
     }
 
     private fun languagePriority(path: String): Int {
@@ -597,20 +591,8 @@ class GuiPreviewService(private val project: Project) {
         document.insertString(insertOffset, insertion)
     }
 
-    private fun detectInnerIndent(block: ParadoxScriptBlock): String {
-        val firstProperty = block.propertyList.firstOrNull()
-        if (firstProperty != null) {
-            val document = PsiDocumentManager.getInstance(project).getDocument(firstProperty.containingFile)
-            if (document != null) {
-                val line = document.getLineNumber(firstProperty.textOffset)
-                val lineStart = document.getLineStartOffset(line)
-                val prefix = document.charsSequence.subSequence(lineStart, firstProperty.textOffset).toString()
-                val indent = prefix.takeWhile { it == ' ' || it == '\t' }
-                if (indent.isNotEmpty()) return indent
-            }
-        }
-        return "\t"
-    }
+    private fun detectInnerIndent(block: ParadoxScriptBlock): String = ScriptBlocks.innerIndent(project, block)
+
     companion object {
         private val LOG = Logger.getInstance(GuiPreviewService::class.java)
         private const val ROOT_TYPE = "containerWindowType"

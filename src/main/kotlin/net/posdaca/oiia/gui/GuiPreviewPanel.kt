@@ -1,15 +1,14 @@
 package net.posdaca.oiia.gui
 
-import net.posdaca.oiia.core.files.ResourceFiles
+import net.posdaca.oiia.core.preview.PreviewGraphCanvas
+import net.posdaca.oiia.core.preview.PreviewHintHtml
 
-import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.ui.JBColor
-import com.intellij.ui.LightweightHint
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPanel
 import com.intellij.ui.components.JBScrollPane
@@ -19,22 +18,16 @@ import com.intellij.util.ui.JBFont
 import OiiaBundle
 import net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteInfo
 import net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteInsets
-import net.posdaca.oiia.core.PreviewHintSupport
 import java.awt.BasicStroke
 import java.awt.BorderLayout
 import java.awt.Color
-import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.Font
-import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.Point
 import java.awt.Rectangle
 import java.awt.RenderingHints
 import java.awt.Shape
-import java.awt.event.MouseAdapter
-import java.awt.event.MouseEvent
-import java.awt.event.MouseWheelEvent
 import java.awt.geom.Arc2D
 import java.awt.image.BufferedImage
 import java.util.concurrent.atomic.AtomicInteger
@@ -42,25 +35,20 @@ import javax.swing.DefaultListCellRenderer
 import javax.swing.JComponent
 import javax.swing.JList
 import javax.swing.JPanel
-import javax.swing.Scrollable
 import javax.swing.SwingUtilities
-import javax.swing.ToolTipManager
-import javax.swing.Timer
 import kotlin.math.max
-import kotlin.math.pow
 import kotlin.math.roundToInt
 
 class GuiPreviewPanel(
     project: Project,
-    previewFile: GuiPreviewFile,
-    service: GuiPreviewService,
-    initialResources: GuiPreviewResources = GuiPreviewResources(GuiPreviewService.localisationCacheKey())
+    snapshot: GuiPreviewSnapshot,
+    service: GuiPreviewService
 ) : JBPanel<JBPanel<*>>(BorderLayout()) {
 
-    private val roots = previewFile.roots
+    private val roots = snapshot.file.roots
     private val selector = ComboBox(roots.toTypedArray())
     private val statusLabel = JBLabel()
-    private val canvas = GuiCanvas(project, service, initialResources)
+    private val canvas = GuiCanvas(project, service, snapshot.resources)
     val statusComponent: JComponent = createStatusComponent()
     val rootSelectorActions: JComponent = createRootSelectorActions()
 
@@ -128,12 +116,16 @@ class GuiPreviewPanel(
     }
 
     private class GuiCanvas(
-        private val project: Project,
+        project: Project,
         private val service: GuiPreviewService,
         initialResources: GuiPreviewResources
-    ) : JBPanel<JBPanel<*>>(null), Scrollable {
+    ) : PreviewGraphCanvas<GuiLayoutNode>(project) {
 
-        private val padding = JBUIScale.scale(48)
+        override val minZoom: Double = 0.2
+        override val scrollUnit: Int = JBUIScale.scale(32)
+        override val scrollBlock: Int = JBUIScale.scale(160)
+
+        override val padding = JBUIScale.scale(48)
         private val imageCache = mutableMapOf<String, BufferedImage>()
         private val processedImageCache = mutableMapOf<SpriteRenderKey, BufferedImage>()
         private val spriteInfoCache = mutableMapOf<String, SpriteInfo?>()
@@ -142,28 +134,11 @@ class GuiPreviewPanel(
         private var root: GuiElement? = null
         private var nodes = emptyList<GuiLayoutNode>()
         private var logicalSize = Dimension(JBUIScale.scale(800), JBUIScale.scale(520))
-        private var zoomFactor = 1.0
-        private var hovered: GuiLayoutNode? = null
-        private var selected: GuiLayoutNode? = null
-        private var lockedNode: GuiLayoutNode? = null
-        private var lockedHint: LightweightHint? = null
-        private var dragPressScreenPoint: Point? = null
-        private var dragScrollStart: Point? = null
-        private var pressedNode: GuiLayoutNode? = null
-        private var draggingView = false
-        private var draggingElement = false
-        private var dragStartLogicalPoint: Point? = null
         private var dragBasePosition: GuiPoint? = null
         private var dragDeltaX = 0
         private var dragDeltaY = 0
-        private var singleClickTimer: Timer? = null
         private val preloadVersion = AtomicInteger()
         private var ready = false
-
-        private val scrollableHsb: javax.swing.JScrollBar?
-            get() = (SwingUtilities.getAncestorOfClass(JBScrollPane::class.java, this) as? JBScrollPane)?.horizontalScrollBar
-        private val scrollableVsb: javax.swing.JScrollBar?
-            get() = (SwingUtilities.getAncestorOfClass(JBScrollPane::class.java, this) as? JBScrollPane)?.verticalScrollBar
 
         companion object {
             private const val PREVIEW_SCREEN_WIDTH = 1920
@@ -224,147 +199,12 @@ class GuiPreviewPanel(
         init {
             mergeResources(initialResources)
             ready = true
-            isOpaque = true
-            background = JBColor.PanelBackground
-            ToolTipManager.sharedInstance().registerComponent(this)
-            addMouseListener(object : MouseAdapter() {
-                override fun mousePressed(e: MouseEvent) {
-                    if (e.button != MouseEvent.BUTTON1) return
-                    val logicalPoint = screenToLogical(e.point)
-                    pressedNode = findNodeAt(logicalPoint)
-                    dragPressScreenPoint = Point(e.locationOnScreen)
-                    dragScrollStart = Point(scrollableHsb?.value ?: 0, scrollableVsb?.value ?: 0)
-                    dragStartLogicalPoint = logicalPoint
-                    dragBasePosition = pressedNode?.element?.position
-                    dragDeltaX = 0
-                    dragDeltaY = 0
-                    draggingView = false
-                    draggingElement = false
-                }
-
-                override fun mouseReleased(e: MouseEvent) {
-                    if (e.button != MouseEvent.BUTTON1) return
-                    val wasDraggingView = draggingView
-                    val wasDraggingElement = draggingElement
-                    val draggedNode = pressedNode
-                    val finalDx = dragDeltaX
-                    val finalDy = dragDeltaY
-                    val basePosition = dragBasePosition
-                    cursor = Cursor.getDefaultCursor()
-                    dragPressScreenPoint = null
-                    dragScrollStart = null
-                    dragStartLogicalPoint = null
-                    dragBasePosition = null
-                    dragDeltaX = 0
-                    dragDeltaY = 0
-                    draggingView = false
-                    draggingElement = false
-
-                    if (wasDraggingElement && draggedNode != null && basePosition != null && (finalDx != 0 || finalDy != 0)) {
-                        commitElementDrag(draggedNode, basePosition, finalDx, finalDy)
-                    } else if (!wasDraggingView && !wasDraggingElement) {
-                        val clicked = findNodeAt(screenToLogical(e.point))
-                        if (clicked != null && clicked.element == draggedNode?.element) {
-                            selected = clicked
-                            if (e.clickCount >= 2) {
-                                cancelPendingSingleClick()
-                                hideNodeHint(clearLocked = true)
-                                navigateTo(clicked.element)
-                            } else {
-                                scheduleNodeHint(clicked, e.point)
-                            }
-                        } else if (clicked == null) {
-                            cancelPendingSingleClick()
-                            selected = null
-                            hideNodeHint(clearLocked = true)
-                        }
-                        repaint()
-                    }
-                    pressedNode = null
-                }
-
-                override fun mouseExited(e: MouseEvent) {
-                    if (draggingElement || draggingView) return
-                    if (hovered != null) {
-                        hovered = null
-                        repaint()
-                    }
-                }
-            })
-
-            addMouseMotionListener(object : MouseAdapter() {
-                override fun mouseMoved(e: MouseEvent) {
-                    val next = findNodeAt(screenToLogical(e.point))
-                    if (next?.element != hovered?.element) {
-                        hovered = next
-                        repaint()
-                    }
-                    cursor = if (next != null && canDragNode(next)) {
-                        Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-                    } else {
-                        Cursor.getDefaultCursor()
-                    }
-                }
-
-                override fun mouseDragged(e: MouseEvent) {
-                    val pressPoint = dragPressScreenPoint ?: return
-                    val threshold = JBUIScale.scale(4)
-                    val screenDx = e.locationOnScreen.x - pressPoint.x
-                    val screenDy = e.locationOnScreen.y - pressPoint.y
-                    if (!draggingView && !draggingElement && screenDx * screenDx + screenDy * screenDy < threshold * threshold) return
-
-                    val node = pressedNode
-                    if (node != null && canDragNode(node) && dragStartLogicalPoint != null && dragBasePosition != null) {
-                        if (!draggingElement) {
-                            cancelPendingSingleClick()
-                            hideNodeHint(clearLocked = true)
-                            selected = node
-                            draggingElement = true
-                        }
-                        val logicalPoint = screenToLogical(e.point)
-                        val start = dragStartLogicalPoint ?: return
-                        dragDeltaX = logicalPoint.x - start.x
-                        dragDeltaY = logicalPoint.y - start.y
-                        cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
-                        repaint()
-                        return
-                    }
-
-                    val scrollStart = dragScrollStart ?: return
-                    if (!draggingView) cancelPendingSingleClick()
-                    draggingView = true
-                    cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
-                    setScrollBarValue(scrollableHsb, scrollStart.x - screenDx)
-                    setScrollBarValue(scrollableVsb, scrollStart.y - screenDy)
-                }
-            })
-
-            addMouseWheelListener { e: MouseWheelEvent ->
-                val oldZoom = zoomFactor
-                zoomFactor *= 1.15.pow(-e.wheelRotation.toDouble())
-                zoomFactor = zoomFactor.coerceIn(0.2, 4.0)
-
-                val hsb = scrollableHsb
-                val vsb = scrollableVsb
-                val oldVx = hsb?.value ?: 0
-                val oldVy = vsb?.value ?: 0
-                revalidate()
-
-                val scaleRatio = zoomFactor / oldZoom
-                setScrollBarValue(hsb, (e.x * scaleRatio - (e.x - oldVx)).toInt())
-                setScrollBarValue(vsb, (e.y * scaleRatio - (e.y - oldVy)).toInt())
-                repaint()
-            }
         }
-
         fun setRoot(nextRoot: GuiElement) {
-            cancelPendingSingleClick()
-            hideNodeHint(clearLocked = true)
+            resetHoverAndHints()
             val version = preloadVersion.incrementAndGet()
             root = nextRoot
             refreshLocalisationPreference()
-            selected = null
-            hovered = null
             if (isRootReady(nextRoot)) {
                 ready = true
                 nodes = layout(nextRoot)
@@ -379,15 +219,63 @@ class GuiPreviewPanel(
                 repaint()
                 preloadResources(nextRoot, version)
             }
-            SwingUtilities.invokeLater {
-                setScrollBarValue(scrollableHsb, 0)
-                setScrollBarValue(scrollableVsb, 0)
+            SwingUtilities.invokeLater { resetScroll() }
+        }
+
+        override fun isDocumentEmpty(): Boolean = !ready || nodes.isEmpty()
+
+        override fun computeLogicalSize(): Dimension = logicalSize
+
+        override fun findHit(logical: Point): GuiLayoutNode? = findNodeAt(logical)
+
+        override fun hitId(hit: GuiLayoutNode): String {
+            val element = hit.element
+            return if (element.sourceOffset >= 0) {
+                "${element.sourceFilePath}#${element.sourceOffset}"
+            } else {
+                "${element.sourceFilePath}:${element.sourceLine}:${element.type}:${element.name}"
             }
         }
 
-        override fun updateUI() {
-            super.updateUI()
-            background = JBColor.PanelBackground
+        override fun navigateTo(hit: GuiLayoutNode) {
+            navigateToSource(hit.element.sourceFilePath, hit.element.sourceLine)
+        }
+
+        override fun buildHintHtml(hit: GuiLayoutNode): String {
+            val element = hit.element
+            val text = element.text?.let { cachedLocalizedText(it) ?: it.trim('"') }
+            val info = cachedSpriteInfo(element)
+            val html = PreviewHintHtml()
+                .header(element.type, element.name ?: element.type, element.name ?: element.type)
+                .description(text)
+                .escapedRow("Position", "${element.position.xValue}, ${element.position.yValue}")
+                .escapedRow("Bounds", "${hit.bounds.x}, ${hit.bounds.y}, ${hit.bounds.width} x ${hit.bounds.height}")
+                .escapedRow("Size", "${hit.bounds.width} x ${hit.bounds.height}")
+                .escapedRow("Orientation", element.orientation)
+                .escapedRow("Origo", element.origo)
+                .row("Scale", element.scale?.toString())
+                .row("Center Position", element.centerPosition.takeIf { it }?.toString())
+                .row("Preserve Aspect", element.preserveAspectRatio.takeIf { it }?.toString())
+                .escapedRow("Sprite", element.primarySprite)
+                .escapedRow("Subtype", info?.subtype)
+                .row("Frame", element.frame?.toString() ?: info?.defaultFrame?.toString())
+                .row("Frame Index", info?.noOfFrames?.let { resolveFrameIndex(element.frame ?: info.defaultFrame, it.coerceAtLeast(1)).toString() })
+                .row("No Of Frames", info?.noOfFrames?.toString())
+                .escapedRow("Sprite URL", info?.primaryImagePath)
+                .escapedRow("Texture", info?.textureFile)
+                .escapedRow("Texture 1", info?.textureFile1)
+                .escapedRow("Texture 1 URL", info?.imagePath1)
+                .escapedRow("Texture 2", info?.textureFile2)
+                .escapedRow("Texture 2 URL", info?.imagePath2)
+                .escapedRow("Effect", info?.effectFile)
+                .escapedRow("Sprite Size", info?.size?.let { "${it.width}, ${it.height}" })
+                .escapedRow("Border", info?.borderSize?.let { "${it.left}, ${it.top}, ${it.right}, ${it.bottom}" })
+                .row("Always Transparent", info?.alwaysTransparent?.takeIf { it }?.toString())
+                .row("Line", element.sourceLine.takeIf { it > 0 }?.toString())
+            for ((severity, message) in hit.issues) {
+                html.escapedRow(severity.name, message)
+            }
+            return html.build()
         }
 
         override fun getPreferredSize(): Dimension {
@@ -397,62 +285,54 @@ class GuiPreviewPanel(
             )
         }
 
-        override fun getPreferredScrollableViewportSize(): Dimension = preferredSize
-
-        override fun getScrollableUnitIncrement(visibleRect: Rectangle?, orientation: Int, direction: Int): Int {
-            return JBUIScale.scale(32)
+        override fun canDragNode(hit: GuiLayoutNode): Boolean {
+            if (hit.element.sourceOffset < 0) return false
+            if (hit.element.sourceFilePath.isNullOrBlank()) return false
+            if (hit.element.fullscreen) return false
+            if (hit.element.type.equals("background", ignoreCase = true)) return false
+            if (hit.element.position.xValue.percent || hit.element.position.yValue.percent) return false
+            return true
         }
 
-        override fun getScrollableBlockIncrement(visibleRect: Rectangle?, orientation: Int, direction: Int): Int {
-            return JBUIScale.scale(160)
+        override fun onNodeDragStarted(hit: GuiLayoutNode) {
+            dragBasePosition = hit.element.position
+            dragDeltaX = 0
+            dragDeltaY = 0
         }
 
-        override fun getScrollableTracksViewportWidth(): Boolean = false
-
-        override fun getScrollableTracksViewportHeight(): Boolean = false
-
-        override fun getToolTipText(event: MouseEvent?): String? {
-            if (lockedNode != null) return null
-            val node = event?.point?.let { findNodeAt(screenToLogical(it)) } ?: return null
-            return buildTooltipText(node)
+        override fun onNodeDragged(hit: GuiLayoutNode, startLogical: Point, currentLogical: Point) {
+            dragDeltaX = currentLogical.x - startLogical.x
+            dragDeltaY = currentLogical.y - startLogical.y
         }
 
-        override fun paintComponent(g: Graphics) {
-            super.paintComponent(g)
-            if (!ready) return
-            val g2 = g.create() as Graphics2D
-            try {
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-                g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
-                g2.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS, RenderingHints.VALUE_FRACTIONALMETRICS_ON)
-                g2.scale(zoomFactor, zoomFactor)
-                paintBackgroundGrid(g2)
-                for (node in nodes) {
-                    val boundsOffset = dragPaintOffset(node)
-                    if (boundsOffset != null) {
-                        val shifted = node.copy(
-                            bounds = Rectangle(
-                                node.bounds.x + boundsOffset.x,
-                                node.bounds.y + boundsOffset.y,
-                                node.bounds.width,
-                                node.bounds.height
-                            ),
-                            clipBounds = node.clipBounds?.let {
-                                Rectangle(it.x + boundsOffset.x, it.y + boundsOffset.y, it.width, it.height)
-                            }
-                        )
-                        paintNode(g2, shifted)
-                    } else {
-                        paintNode(g2, node)
-                    }
-                }
-                val selectedPaint = selected?.let { offsetNodeForPaint(it) }
-                selectedPaint?.let { paintSelection(g2, it, JBColor.BLUE) }
-                val hoveredPaint = hovered?.let { offsetNodeForPaint(it) }
-                hoveredPaint?.let { paintSelection(g2, it, JBColor(0xDA8B00, 0xE0A13A)) }
-            } finally {
-                g2.dispose()
+        override fun onNodeDragFinished(hit: GuiLayoutNode): Boolean {
+            val basePosition = dragBasePosition
+            val dx = dragDeltaX
+            val dy = dragDeltaY
+            dragBasePosition = null
+            dragDeltaX = 0
+            dragDeltaY = 0
+            if (basePosition != null && (dx != 0 || dy != 0)) {
+                commitElementDrag(hit, basePosition, dx, dy)
+            } else {
+                repaint()
             }
+            return true
+        }
+
+        override fun paintGraph(g2d: Graphics2D) {
+            if (!ready) return
+            paintBackgroundGrid(g2d)
+            for (node in nodes) {
+                val boundsOffset = dragPaintOffset(node)
+                if (boundsOffset != null) {
+                    paintNode(g2d, offsetNode(node, boundsOffset))
+                } else {
+                    paintNode(g2d, node)
+                }
+            }
+            nodeById(selectedId)?.let { paintSelection(g2d, offsetNodeForPaint(it), JBColor.BLUE) }
+            nodeById(hoveredId)?.let { paintSelection(g2d, offsetNodeForPaint(it), JBColor(0xDA8B00, 0xE0A13A)) }
         }
 
         override fun addNotify() {
@@ -465,11 +345,25 @@ class GuiPreviewPanel(
 
         override fun removeNotify() {
             preloadVersion.incrementAndGet()
-            ToolTipManager.sharedInstance().unregisterComponent(this)
-            cancelPendingSingleClick()
-            hideNodeHint(clearLocked = true)
             super.removeNotify()
             processedImageCache.clear()
+        }
+
+        private fun nodeById(id: String?): GuiLayoutNode? =
+            id?.let { key -> nodes.firstOrNull { hitId(it) == key } }
+
+        private fun offsetNode(node: GuiLayoutNode, offset: Point): GuiLayoutNode {
+            return node.copy(
+                bounds = Rectangle(
+                    node.bounds.x + offset.x,
+                    node.bounds.y + offset.y,
+                    node.bounds.width,
+                    node.bounds.height
+                ),
+                clipBounds = node.clipBounds?.let {
+                    Rectangle(it.x + offset.x, it.y + offset.y, it.width, it.height)
+                }
+            )
         }
 
         private fun layout(root: GuiElement): List<GuiLayoutNode> {
@@ -1428,139 +1322,9 @@ class GuiPreviewPanel(
             }
         }
 
-        private fun screenToLogical(point: Point): Point {
-            return Point((point.x / zoomFactor).roundToInt(), (point.y / zoomFactor).roundToInt())
-        }
-
-        private fun navigateTo(element: GuiElement) {
-            val path = element.sourceFilePath ?: return
-            val vf = ResourceFiles.toVirtualFile(path) ?: return
-            if (element.sourceLine > 0) {
-                OpenFileDescriptor(project, vf, element.sourceLine - 1, 0).navigate(true)
-            } else {
-                OpenFileDescriptor(project, vf).navigate(true)
-            }
-        }
-
-        private fun scheduleNodeHint(node: GuiLayoutNode, point: Point) {
-            cancelPendingSingleClick()
-            val hintPoint = Point(point)
-            singleClickTimer = Timer(PreviewHintSupport.multiClickInterval()) {
-                singleClickTimer = null
-                if (isShowing) showNodeHint(node, hintPoint)
-            }.apply {
-                isRepeats = false
-                start()
-            }
-        }
-
-        private fun cancelPendingSingleClick() {
-            singleClickTimer?.stop()
-            singleClickTimer = null
-        }
-
-        private fun showNodeHint(node: GuiLayoutNode, point: Point) {
-            hideNodeHint(clearLocked = false)
-            selected = node
-            lockedNode = node
-
-            val hint = PreviewHintSupport.showHint(this, point, buildDetailText(node)) { hiddenHint ->
-                if (lockedHint === hiddenHint) {
-                    lockedHint = null
-                    lockedNode = null
-                    repaint()
-                }
-            }
-            lockedHint = hint
-            repaint()
-        }
-
-        private fun hideNodeHint(clearLocked: Boolean) {
-            val hint = lockedHint
-            lockedHint = null
-            PreviewHintSupport.hideHint(hint)
-            if (clearLocked) lockedNode = null
-        }
-
-        private fun buildTooltipText(node: GuiLayoutNode): String {
-            val element = node.element
-            val sb = StringBuilder("<html>")
-            appendRow(sb, "Type", element.type)
-            appendRow(sb, "Name", element.name)
-            appendRow(sb, "Sprite", element.primarySprite)
-            appendRow(sb, "Line", element.sourceLine.takeIf { it > 0 }?.toString())
-            sb.append("</html>")
-            return sb.toString()
-        }
-
-        private fun buildDetailText(node: GuiLayoutNode): String {
-            val element = node.element
-            val text = element.text?.let { cachedLocalizedText(it) ?: it.trim('"') }
-            val sb = StringBuilder("<html>")
-            appendRow(sb, "Type", element.type)
-            appendRow(sb, "Name", element.name)
-            appendRow(sb, "Position", "${element.position.xValue}, ${element.position.yValue}")
-            appendRow(sb, "Bounds", "${node.bounds.x}, ${node.bounds.y}, ${node.bounds.width} x ${node.bounds.height}")
-            appendRow(sb, "Size", "${node.bounds.width} x ${node.bounds.height}")
-            appendRow(sb, "Orientation", element.orientation)
-            appendRow(sb, "Origo", element.origo)
-            appendRow(sb, "Scale", element.scale?.toString())
-            appendRow(sb, "Center Position", element.centerPosition.takeIf { it }?.toString())
-            appendRow(sb, "Preserve Aspect", element.preserveAspectRatio.takeIf { it }?.toString())
-            appendRow(sb, "Sprite", element.primarySprite)
-            val info = cachedSpriteInfo(element)
-            appendRow(sb, "Subtype", info?.subtype)
-            appendRow(sb, "Frame", element.frame?.toString() ?: info?.defaultFrame?.toString())
-            appendRow(sb, "Frame Index", info?.noOfFrames?.let { resolveFrameIndex(element.frame ?: info.defaultFrame, it.coerceAtLeast(1)).toString() })
-            appendRow(sb, "No Of Frames", info?.noOfFrames?.toString())
-            appendRow(sb, "Sprite URL", info?.primaryImagePath)
-            appendRow(sb, "Texture", info?.textureFile)
-            appendRow(sb, "Texture 1", info?.textureFile1)
-            appendRow(sb, "Texture 1 URL", info?.imagePath1)
-            appendRow(sb, "Texture 2", info?.textureFile2)
-            appendRow(sb, "Texture 2 URL", info?.imagePath2)
-            appendRow(sb, "Effect", info?.effectFile)
-            appendRow(sb, "Sprite Size", info?.size?.let { "${it.width}, ${it.height}" })
-            appendRow(sb, "Border", info?.borderSize?.let { "${it.left}, ${it.top}, ${it.right}, ${it.bottom}" })
-            appendRow(sb, "Always Transparent", info?.alwaysTransparent?.takeIf { it }?.toString())
-            appendRow(sb, "Text", text)
-            appendRow(sb, "Line", element.sourceLine.takeIf { it > 0 }?.toString())
-            for ((severity, message) in node.issues) appendRow(sb, severity.name, message)
-            sb.append("</html>")
-            return sb.toString()
-        }
-
-        private fun appendRow(sb: StringBuilder, label: String, value: String?) {
-            if (value.isNullOrBlank()) return
-            sb.append("<b>")
-                .append(escapeHtml(label))
-                .append(":</b> ")
-                .append(escapeHtml(value))
-                .append("<br>")
-        }
-
-        private fun escapeHtml(value: String): String {
-            return value
-                .replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-                .replace("\"", "&quot;")
-        }
-
-        private fun canDragNode(node: GuiLayoutNode): Boolean {
-            if (node.depth <= 0) return false
-            if (node.element.sourceOffset < 0) return false
-            if (node.element.sourceFilePath.isNullOrBlank()) return false
-            if (node.element.fullscreen) return false
-            if (node.element.type.equals("background", ignoreCase = true)) return false
-            // v1: only support absolute pixel positions
-            if (node.element.position.xValue.percent || node.element.position.yValue.percent) return false
-            return true
-        }
-
         private fun isDescendantOfDragged(node: GuiLayoutNode): Boolean {
-            val dragged = pressedNode ?: return false
-            if (!draggingElement) return false
+            val dragged = pressedHit ?: return false
+            if (!draggingNode) return false
             if (sameElement(node.element, dragged.element)) return true
             return containsElement(dragged.element, node.element)
         }
@@ -1573,7 +1337,7 @@ class GuiPreviewPanel(
         }
 
         private fun dragPaintOffset(node: GuiLayoutNode): Point? {
-            if (!draggingElement || pressedNode == null) return null
+            if (!draggingNode || pressedHit == null) return null
             if (!isDescendantOfDragged(node)) return null
             if (dragDeltaX == 0 && dragDeltaY == 0) return null
             return Point(dragDeltaX, dragDeltaY)
@@ -1581,17 +1345,7 @@ class GuiPreviewPanel(
 
         private fun offsetNodeForPaint(node: GuiLayoutNode): GuiLayoutNode {
             val offset = dragPaintOffset(node) ?: return node
-            return node.copy(
-                bounds = Rectangle(
-                    node.bounds.x + offset.x,
-                    node.bounds.y + offset.y,
-                    node.bounds.width,
-                    node.bounds.height
-                ),
-                clipBounds = node.clipBounds?.let {
-                    Rectangle(it.x + offset.x, it.y + offset.y, it.width, it.height)
-                }
-            )
+            return offsetNode(node, offset)
         }
 
         private fun commitElementDrag(node: GuiLayoutNode, basePosition: GuiPoint, dx: Int, dy: Int) {
@@ -1608,14 +1362,10 @@ class GuiPreviewPanel(
                 return
             }
             applyLocalPositionUpdate(node.element, GuiPoint(GuiValue.pixels(writeX), GuiValue.pixels(writeY)))
-            val selectedElement = selected?.element
-            val hoveredElement = hovered?.element
             val currentRoot = root
             if (currentRoot != null) {
                 nodes = layout(currentRoot)
                 logicalSize = computeLogicalSize(nodes)
-                selected = selectedElement?.let { el -> nodes.firstOrNull { it.element === el || sameElement(it.element, el) } }
-                hovered = hoveredElement?.let { el -> nodes.firstOrNull { it.element === el || sameElement(it.element, el) } }
                 revalidate()
             }
             repaint()
@@ -1653,11 +1403,6 @@ class GuiPreviewPanel(
             return if (changed) element.copy(children = nextChildren) else element
         }
 
-        private fun setScrollBarValue(scrollBar: javax.swing.JScrollBar?, value: Int) {
-            if (scrollBar == null) return
-            val max = scrollBar.maximum - scrollBar.visibleAmount
-            scrollBar.value = value.coerceIn(scrollBar.minimum, max.coerceAtLeast(scrollBar.minimum))
-        }
 
     }
 }

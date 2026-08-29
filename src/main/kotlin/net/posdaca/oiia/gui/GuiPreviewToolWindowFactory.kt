@@ -117,30 +117,24 @@ class GuiPreviewToolWindowFactory : ToolWindowFactory {
             updatePanel(createLoadingPanel())
 
             ApplicationManager.getApplication().executeOnPooledThread {
-                val previewFile = ApplicationManager.getApplication().runReadAction<GuiPreviewFile?> {
+                val structure = ApplicationManager.getApplication().runReadAction<GuiPreviewSnapshot?> {
                     if (!selectedFile.isValid || selectedFile.modificationStamp != stamp) return@runReadAction null
                     val psiFile: PsiFile = PsiManager.getInstance(project).findFile(selectedFile) ?: return@runReadAction null
-                    service.parseGuiFile(psiFile)
+                    service.loadSnapshot(psiFile)
                 }
-
-                val resources = if (previewFile != null && previewFile.roots.isNotEmpty()) {
-                    service.loadResources(previewFile.roots) { version != refreshVersion.get() }
-                } else {
-                    null
-                }
+                val snapshot = structure?.let { service.resolve(it) { version != refreshVersion.get() } }
 
                 ApplicationManager.getApplication().invokeLater({
                     if (version != refreshVersion.get()) return@invokeLater
                     if (selectedFile.modificationStamp != stamp || selectedFile.path != renderedFilePath) return@invokeLater
 
-                    if (previewFile == null || previewFile.roots.isEmpty()) {
+                    if (snapshot == null || snapshot.isEmpty) {
                         updateToolbar()
                         updatePanel(createNoContainerPanel())
                         return@invokeLater
                     }
-                    if (resources == null) return@invokeLater
 
-                    val previewPanel = GuiPreviewPanel(project, previewFile, service, resources)
+                    val previewPanel = GuiPreviewPanel(project, snapshot, service)
                     updateToolbar(previewPanel.statusComponent, previewPanel.rootSelectorActions)
                     updatePanel(previewPanel)
                 }, ModalityState.any())

@@ -1,5 +1,6 @@
 package net.posdaca.oiia.gui
 
+import net.posdaca.oiia.core.preview.PreviewSnapshot
 import net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteInfo
 import java.awt.Rectangle
 import java.awt.image.BufferedImage
@@ -16,6 +17,14 @@ data class GuiPreviewResources(
     val localisations: Map<String, String?> = emptyMap(),
     val images: Map<String, BufferedImage> = emptyMap()
 )
+
+
+data class GuiPreviewSnapshot(
+    val file: GuiPreviewFile,
+    val resources: GuiPreviewResources
+) : PreviewSnapshot {
+    override val isEmpty: Boolean get() = file.roots.isEmpty()
+}
 
 data class GuiElement(
     val type: String,
