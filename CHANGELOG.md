@@ -1,5 +1,18 @@
 # Oiia Changelog
 
+## [Unreleased]
+
+### Added
+
+- Unit-test anchors for the previously untested core logic: the GUI layout engine, the map preview's pure pixel math (province boundaries, render-zone uniformity), the sprite resolver's path/stamp seams, prefix icon lookup, and HOI4 resource-root planning (priority-mod matching and dependency traversal).
+
+### Changed
+
+- The GUI preview's layout engine (element sizing, bounds, anchors, issue detection) moved from the panel into `GuiPreviewService.layoutRoot`, a pure function over the parsed element tree and resolved resources; panels now only consume the laid-out nodes.
+- Map preview boundary detection and render-zone uniformity are extracted into the pure `MapPixels` object and shared by the service and panel.
+- The HOI4 resource-root implementation now lives under `core/files`, leaving `ResourceFiles` as the single resource-root facade.
+- Sprite and localisation facades now self-protect all PLS/PSI access with read actions, so background callers cannot trigger threading assertions.
+
 ## [1.1.1] - 2026-08-30
 
 ### Fixed
