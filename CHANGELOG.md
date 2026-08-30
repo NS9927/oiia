@@ -1,5 +1,11 @@
 # Oiia Changelog
 
+## [1.1.1] - 2026-08-30
+
+### Fixed
+
+- Technology folders are now laid out side by side (the next folder to the right of the previous one) in the game's tab order, instead of stacked vertically; each folder's trees stack vertically inside its own column.
+
 ## [1.1.0] - 2026-08-30
 
 Rebuilds all script parsing on Paradox Chronicle's PSI and aligns the technology tree preview with the game's tree layout.
