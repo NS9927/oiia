@@ -1,6 +1,8 @@
 # Oiia Changelog
 
-## [Unreleased]
+## [1.1.0] - 2026-08-30
+
+Rebuilds all script parsing on Paradox Chronicle's PSI and aligns the technology tree preview with the game's tree layout.
 
 ### Added
 
@@ -10,12 +12,10 @@
 
 - Technology trees now grow along the game's main axis: gridbox `format = "LEFT"` (quoted, as written in vanilla `countrytechtreeview.gui`) was not recognised, so horizontal trees rendered vertically. Gridboxes are also found in nested containers, trees match their gridbox by any member id when the start-tech name differs, and trees are ordered by their gridbox origin within the folder page.
 - Fixes a crash when resolving technology icons on a background thread ("Read access is allowed from inside read-action only"): the sprite resolver's `.gfx` PSI scan now runs fully inside a per-file read action.
-
 - Fixes a crash when dragging nodes ("Read access is allowed from inside read-action only"): the focus / GUI drag write-back now wraps its PSI lookup in a read action, as EDT no longer has implicit read access on current IntelliJ Platform builds.
 - Fixes a race in the sprite resolver where rebuilding the icon cache could corrupt concurrently memoised sprite lookups; caches are now swapped atomically.
 - Sprite and localisation caches now detect edits to `.gfx` / `.yml` files (short TTL fingerprinting) instead of staying stale until resource roots or preferences change.
 - Focus and technology previews parse on a background thread (no longer blocking the UI thread) and refresh automatically while the file is being edited.
-- The focus-tree text fallback parser now honours Paradox booleans (`default = yes` previously evaluated to false) and is built on the shared token parser.
 - Technology `force_use_small_tech_layout = yes` was evaluated as false; Paradox booleans are now honoured.
 - Technology icons resolve through the game's icon chain (`GFX_<techid>_medium`, falling back to the generic `GFX_technology_medium`) instead of ad-hoc name guesses.
 - GUI preview no longer duplicates the shared PLS localisation resolution; every module resolves localisation through `core/ParadoxLocalisationResolver`.
@@ -23,8 +23,8 @@
 ### Changed
 
 - All Paradox-script structure parsing now goes through PLS (Chronicle) PSI: the hand-written text fallback parsers for focus / technology / GUI / map state / strategic region / country files and the regex `.gfx` sprite scan were removed. `map/definition.csv` (CSV) and localisation yml merging remain custom by design.
-- Consolidates fallback language order and localisation scoring weights into `ParadoxLocalisationPreference` (previously four drifting copies across preview modules).
-- Moves the shared text fallback parser into `core/ParadoxTextParser` (used by the technology preview) and extracts the pure `.gfx` text parsing into `ParadoxGfxParser`.
+- Depends on Paradox Chronicle 3.0.1 (adapting to its updated APIs).
+- Consolidates fallback language order and localisation scoring weights into `ParadoxLocalisationPreference` (previously four drifting copies across preview modules) and extracts the pure `.gfx` text parsing into `ParadoxGfxParser`.
 - Removes unused resource-file APIs and the unused game GUI template loader.
 - Updates the `HOI4 via Shadow` run configuration to Shadow's `PDXGameLauncher hoi4 -playset <id>` CLI entry (replacing `--shadow-command hoi4.launch`).
 

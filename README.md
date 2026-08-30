@@ -14,7 +14,7 @@ It is based on [Paradox Chronicle](https://plugins.jetbrains.com/plugin/16825-pa
 ## Requirements
 - IntelliJ IDEA 2026.2 or later.
 - Java 21 (required for building from source).
-- Paradox Chronicle 3.0.0 (formerly Paradox Language Support).
+- Paradox Chronicle 3.0.1 (formerly Paradox Language Support).
 - A HOI4 mod project.
 For Shadow launch support, install and refresh Shadow once so its HOI4 mod index is available.
 It is recommended to configure your game and mod directories in Paradox Chronicle first, so that Oiia can correctly locate game resources and mod assets.
@@ -45,7 +45,7 @@ build/distributions
 ```
 ## Project Status
 Oiia is currently focused on improving preview and navigation workflows for HOI4 modding.  
-Version 1.0.2 adapts Oiia to Paradox Chronicle 3.0.0. Version 1.0.1 previously added project creation and Shadow launch workflows on top of the first stable preview feature set.
+Version 1.1.0 rebuilds all Paradox-script parsing on Paradox Chronicle's PSI and aligns the technology tree preview with the game's tree layout. Version 1.0.2 adapted Oiia to Paradox Chronicle 3.0.x. Version 1.0.1 previously added project creation and Shadow launch workflows on top of the first stable preview feature set.
 ## Issue Tracking
 Please report issues here:
 https://github.com/NS9927/oiia/issues
