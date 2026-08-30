@@ -298,6 +298,9 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         private var zoom = 1.0
         private var fillMode = MapPreviewMode.PROVINCE
         private var outlineMode = MapPreviewMode.PROVINCE
+        private var labelCacheData: LoadedMapData? = null
+        private var labelCacheMode: MapPreviewMode? = null
+        private var labelCache: List<MapLabelDraw> = emptyList()
         private var bordersVisible = showBorders
         private var smoothBorders = false
         private var hoverSelection: HoverSelection? = null
@@ -1102,8 +1105,6 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             val idFont = JBFont.label().deriveFont(java.awt.Font.PLAIN, 10f)
             val nameMetrics = g2.getFontMetrics(nameFont)
             val idMetrics = g2.getFontMetrics(idFont)
-            val whiteInk = JBColor(Color(255, 255, 255), Color(255, 255, 255))
-            val blackInk = JBColor(Color(20, 20, 20), Color(20, 20, 20))
             for (copy in 0 until LOOP_COPIES) {
                 val copyOffset = copy * scaledWidth
                 for (label in labels) {
@@ -1123,7 +1124,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
                     ) {
                         continue
                     }
-                    g2.color = label.ink
+                    g2.color = label.inkColor()
                     g2.font = nameFont
                     val nameBaseline = if (idText == null) {
                         cy + nameMetrics.ascent / 2
@@ -1133,7 +1134,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
                     g2.drawString(label.text, cx - nameWidth / 2, nameBaseline)
                     if (idText != null) {
                         g2.font = idFont
-                        g2.color = if (label.ink == whiteInk) JBColor(Color(255, 255, 255, 190), Color(255, 255, 255, 190)) else JBColor(Color(20, 20, 20, 190), Color(20, 20, 20, 190))
+                        g2.color = label.inkColor(alpha = 190)
                         g2.drawString(idText, cx - idWidth / 2, cy + LABEL_LINE_GAP + idMetrics.ascent / 2)
                     }
                 }
@@ -1141,40 +1142,43 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         }
 
         private fun labelsForMode(current: LoadedMapData, mode: MapPreviewMode): List<MapLabelDraw> {
-            val index = current.pixelIndex
-            fun ink(rgb: Int): JBColor = if (MapPixels.labelInkIsWhite(rgb)) {
-                JBColor(Color(255, 255, 255), Color(255, 255, 255))
-            } else {
-                JBColor(Color(20, 20, 20), Color(20, 20, 20))
+            // Cached per (data, mode): hover/pan repaints must not rebuild every label string.
+            labelCacheData?.let { cachedData ->
+                if (cachedData === current && labelCacheMode == mode) return labelCache
             }
-            return when (mode) {
+            val index = current.pixelIndex
+            val built = when (mode) {
                 MapPreviewMode.PROVINCE -> index.provinceLabelAnchors.mapNotNull { (id, anchor) ->
                     val bounds = index.provinceBounds[id] ?: return@mapNotNull null
                     val province = current.provinceById[id] ?: return@mapNotNull null
-                    MapLabelDraw(displayProvinceName(province), null, anchor.x, anchor.y, ink(anchor.renderRgb), bounds)
+                    MapLabelDraw(displayProvinceName(province), null, anchor.x, anchor.y, MapPixels.labelInkIsWhite(anchor.renderRgb), bounds)
                 }
 
                 MapPreviewMode.STATE -> index.stateLabelAnchors.mapNotNull { (id, anchor) ->
                     val bounds = index.stateBounds[id] ?: return@mapNotNull null
                     val state = current.stateById[id] ?: return@mapNotNull null
                     val name = state.localizedName ?: state.name ?: id.toString()
-                    MapLabelDraw(name, id.toString().takeUnless { it == name }, anchor.x, anchor.y, ink(anchor.renderRgb), bounds)
+                    MapLabelDraw(name, id.toString().takeUnless { it == name }, anchor.x, anchor.y, MapPixels.labelInkIsWhite(anchor.renderRgb), bounds)
                 }
 
                 MapPreviewMode.COUNTRY -> current.countryByTag.values.mapNotNull { country ->
                     val anchor = index.countryLabelAnchors[country.mapKey] ?: return@mapNotNull null
                     val bounds = index.countryBounds[country.mapKey] ?: return@mapNotNull null
                     val name = country.localizedName ?: country.tag
-                    MapLabelDraw(name, country.tag.takeUnless { it == name }, anchor.x, anchor.y, ink(anchor.renderRgb), bounds)
+                    MapLabelDraw(name, country.tag.takeUnless { it == name }, anchor.x, anchor.y, MapPixels.labelInkIsWhite(anchor.renderRgb), bounds)
                 }
 
                 MapPreviewMode.STRATEGIC_REGION -> index.strategicRegionLabelAnchors.mapNotNull { (id, anchor) ->
                     val bounds = index.strategicRegionBounds[id] ?: return@mapNotNull null
                     val region = current.strategicRegionById[id] ?: return@mapNotNull null
                     val name = region.localizedName ?: region.name ?: id.toString()
-                    MapLabelDraw(name, id.toString().takeUnless { it == name }, anchor.x, anchor.y, ink(anchor.renderRgb), bounds)
+                    MapLabelDraw(name, id.toString().takeUnless { it == name }, anchor.x, anchor.y, MapPixels.labelInkIsWhite(anchor.renderRgb), bounds)
                 }
             }
+            labelCacheData = current
+            labelCacheMode = mode
+            labelCache = built
+            return built
         }
 
         private fun createHoverOverlay(selection: HoverSelection): HoverOverlay? {
@@ -1424,9 +1428,15 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         val idText: String?,
         val x: Double,
         val y: Double,
-        val ink: JBColor,
+        val inkIsWhite: Boolean,
         val bounds: PixelBounds
-    )
+    ) {
+        fun inkColor(alpha: Int = 255): Color = if (inkIsWhite) {
+            Color(255, 255, 255, alpha)
+        } else {
+            Color(20, 20, 20, alpha)
+        }
+    }
     private data class SourceTarget(val path: java.nio.file.Path?, val line: Int)
     private data class ImageRect(val minX: Double, val minY: Double, val maxX: Double, val maxY: Double)
     private data class MapTileKey(val x: Int, val y: Int)

@@ -98,7 +98,8 @@ class TechnologyService(private val project: Project) {
                 "path" -> leadsTo.addAll(extractPathLeads(field))
                 "xor" -> xor.addAll(extractBlockValues(field))
                 "sub_technologies" -> subTechnologies.addAll(extractBlockValues(field))
-                "enable_equipments" -> enableEquipments = field.block != null || !field.value.isNullOrBlank()
+                "enable_equipments" -> enableEquipments =
+                    field.block != null || (field.value.parseParadoxBoolean() ?: !field.value.isNullOrBlank())
                 "force_use_small_tech_layout" -> forceUseSmallTechLayout = field.value.parseParadoxBoolean() ?: false
             }
         }
