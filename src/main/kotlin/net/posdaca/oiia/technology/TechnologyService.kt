@@ -15,6 +15,7 @@ import net.posdaca.oiia.core.ParadoxLocalisationResolver
 import net.posdaca.oiia.core.ParadoxSpriteResolver
 import net.posdaca.oiia.core.files.LocalisationFiles
 import net.posdaca.oiia.core.files.ResourceFiles
+import net.posdaca.oiia.core.parseParadoxBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 class TechnologyService(private val project: Project) {
@@ -94,7 +95,7 @@ class TechnologyService(private val project: Project) {
                 "xor" -> xor.addAll(extractBlockValues(field))
                 "sub_technologies" -> subTechnologies.addAll(extractBlockValues(field))
                 "enable_equipments" -> enableEquipments = field.block != null || !field.value.isNullOrBlank()
-                "force_use_small_tech_layout" -> forceUseSmallTechLayout = field.value?.toBoolean() ?: false
+                "force_use_small_tech_layout" -> forceUseSmallTechLayout = field.value.parseParadoxBoolean() ?: false
             }
         }
 
@@ -242,6 +243,14 @@ class TechnologyService(private val project: Project) {
                 val iconMap = spriteResolver.resolveForCandidates(iconNamesById).toMutableMap()
                 if (version != resolutionVersion.get()) return@executeOnPooledThread
 
+                // Nodes whose own sprite is missing fall back to the game's generic tech icon.
+                val fallbackIcon = spriteResolver.resolveSprite(FALLBACK_ICON_SPRITE)
+                if (fallbackIcon != null) {
+                    for (technology in allTechnologies) {
+                        iconMap.putIfAbsent(technology.id, fallbackIcon)
+                    }
+                }
+
                 val nextResolvedData = mutableMapOf<String, TechnologyData>()
                 for (technology in allTechnologies) {
                     val name = technology.localizedName ?: locMap[technology.id]
@@ -264,11 +273,8 @@ class TechnologyService(private val project: Project) {
     }
 
     private fun mergeTrees(trees: List<TechnologyTreeData>): List<TechnologyTreeData> {
-        return trees.groupBy { it.folderName }.map { (folder, grouped) ->
-            TechnologyTreeData(
-                folderName = folder,
-                technologies = grouped.flatMap { it.technologies }.distinctBy { it.id }
-            )
+        return trees.groupBy { it.folderName }.flatMap { (folder, grouped) ->
+            splitFolderIntoTrees(folder, grouped.flatMap { it.technologies }.distinctBy { it.id })
         }
     }
 
@@ -284,13 +290,16 @@ class TechnologyService(private val project: Project) {
     private fun buildIconNames(technologies: List<TechnologyData>): Map<String, List<String>> {
         val map = mutableMapOf<String, List<String>>()
         for (technology in technologies) {
-            val names = linkedSetOf<String>()
-            names.add(technology.id)
-            names.add("GFX_${technology.id}")
-            names.add("GFX_tech_${technology.id}")
-            names.add("tech_${technology.id}")
-            names.add("technologies/${technology.id}")
-            names.add("interface/technologies/${technology.id}")
+            // Mirrors the game's icon chain: technologies.gfx defines `GFX_<techid>_medium`.
+            val names = linkedSetOf(
+                "GFX_${technology.id}_medium",
+                technology.id,
+                "GFX_${technology.id}",
+                "GFX_tech_${technology.id}",
+                "tech_${technology.id}",
+                "technologies/${technology.id}",
+                "interface/technologies/${technology.id}"
+            )
             map[technology.id] = names.toList()
         }
         return map
@@ -299,10 +308,56 @@ class TechnologyService(private val project: Project) {
     companion object {
         private val LOG = Logger.getInstance(TechnologyService::class.java)
         private const val DEFAULT_FOLDER = "Technologies"
+        private const val FALLBACK_ICON_SPRITE = "GFX_technology_medium"
         private val NON_TECHNOLOGY_KEYS = setOf(
             "technologies", "folders", "folder", "path", "categories", "doctrine", "doctrine_name",
             "allow", "allow_branch", "ai_will_do", "research_cost", "start_year", "enable_equipments",
             "force_use_small_tech_layout", "xor", "sub_technologies", "on_research_complete"
         )
+    }
+}
+
+/**
+ * Splits one folder's technologies into connected components joined by [TechnologyData.leadsTo],
+ * mirroring how the game splits a folder page into one gridbox per tree. The component root is the
+ * member no other member leads to, falling back to the first member on ties or cycles.
+ */
+internal fun splitFolderIntoTrees(folder: String, technologies: List<TechnologyData>): List<TechnologyTreeData> {
+    if (technologies.isEmpty()) return emptyList()
+    val byId = technologies.associateByTo(linkedMapOf()) { it.id }
+    val parent = byId.keys.associateWith { it }.toMutableMap()
+
+    fun find(id: String): String {
+        var root = id
+        while (parent.getValue(root) != root) root = parent.getValue(root)
+        var current = id
+        while (parent.getValue(current) != current) {
+            val next = parent.getValue(current)
+            parent[current] = root
+            current = next
+        }
+        return root
+    }
+
+    for (technology in technologies) {
+        for (child in technology.leadsTo) {
+            if (child in byId) {
+                val rootTech = find(technology.id)
+                val rootChild = find(child)
+                if (rootTech != rootChild) parent[rootChild] = rootTech
+            }
+        }
+    }
+
+    val groups = linkedMapOf<String, MutableList<TechnologyData>>()
+    for (technology in technologies) {
+        groups.getOrPut(find(technology.id)) { mutableListOf() }.add(technology)
+    }
+
+    return groups.values.map { members ->
+        val root = members.firstOrNull { member ->
+            members.none { other -> other.id != member.id && member.id in other.leadsTo }
+        } ?: members.first()
+        TechnologyTreeData(folder, members, root.id)
     }
 }

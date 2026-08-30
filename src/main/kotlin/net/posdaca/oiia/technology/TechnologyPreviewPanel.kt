@@ -105,6 +105,7 @@ class TechnologyPreviewPanel(
             logicalPositions.clear()
             logicalNodeBounds.clear()
             logicalNodeHits.clear()
+            val treesPerFolder = technologyTrees.groupBy { it.folderName }
             var offsetY = padding
             for (tree in technologyTrees) {
                 if (tree.technologies.isEmpty()) continue
@@ -125,7 +126,7 @@ class TechnologyPreviewPanel(
                 }
                 g2d.font = JBFont.label().deriveFont(Font.BOLD, 13f)
                 g2d.color = PreviewNodeStyle.treeTitle
-                g2d.drawString(tree.folderName, padding, offsetY + JBUIScale.scale(14))
+                g2d.drawString(treeTitle(tree, treesPerFolder), padding, offsetY + JBUIScale.scale(14))
                 drawPathConnections(g2d, tree)
                 drawXorConnections(g2d, tree)
                 for (technology in tree.technologies) {
@@ -211,6 +212,14 @@ class TechnologyPreviewPanel(
                     path.lineTo(endCx.toDouble(), endCy.toDouble())
                     g2d.draw(path)
                 }
+            }
+        }
+
+        private fun treeTitle(tree: TechnologyTreeData, treesPerFolder: Map<String, List<TechnologyTreeData>>): String {
+            return if ((treesPerFolder[tree.folderName]?.size ?: 1) > 1) {
+                "${tree.folderName} · ${tree.startTechnology ?: "?"}"
+            } else {
+                tree.folderName
             }
         }
 

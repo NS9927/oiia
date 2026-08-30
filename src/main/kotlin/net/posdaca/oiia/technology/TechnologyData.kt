@@ -4,7 +4,9 @@ import net.posdaca.oiia.core.preview.PreviewSnapshot
 
 data class TechnologyTreeData(
     val folderName: String,
-    val technologies: List<TechnologyData> = emptyList()
+    val technologies: List<TechnologyData> = emptyList(),
+    /** Root technology of this connected component; matches the `<startTech>_tree` gridbox naming in the game GUI. */
+    val startTechnology: String? = null
 )
 
 data class TechnologyFolderData(

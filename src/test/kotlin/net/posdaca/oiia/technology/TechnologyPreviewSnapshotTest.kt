@@ -36,4 +36,66 @@ class TechnologyPreviewSnapshotTest {
         assertEquals("gfx/tech.dds", next.iconImagePath)
         assertEquals("infantry_folder", next.folderName)
     }
+
+    @Test
+    fun splitFolderIntoTreesSplitsDisconnectedChains() {
+        val trees = splitFolderIntoTrees(
+            "infantry_folder",
+            listOf(
+                tech("a", "b"),
+                tech("b"),
+                tech("x", "y"),
+                tech("y")
+            )
+        )
+
+        assertEquals(2, trees.size)
+        assertEquals("a", trees[0].startTechnology)
+        assertEquals(listOf("a", "b"), trees[0].technologies.map { it.id })
+        assertEquals("x", trees[1].startTechnology)
+        assertEquals(listOf("x", "y"), trees[1].technologies.map { it.id })
+    }
+
+    @Test
+    fun splitFolderIntoTreesKeepsMergedBranchesTogether() {
+        val trees = splitFolderIntoTrees(
+            "armor_folder",
+            listOf(
+                tech("root", "left", "right"),
+                tech("left", "join"),
+                tech("right", "join"),
+                tech("join")
+            )
+        )
+
+        assertEquals(1, trees.size)
+        assertEquals("root", trees[0].startTechnology)
+        assertEquals(4, trees[0].technologies.size)
+    }
+
+    @Test
+    fun splitFolderIntoTreesPrefersRootWithoutIncomingLeads() {
+        // Defined out of order: the lead source appears after its target.
+        val trees = splitFolderIntoTrees(
+            "naval_folder",
+            listOf(tech("child"), tech("root", "child"))
+        )
+
+        assertEquals(1, trees.size)
+        assertEquals("root", trees[0].startTechnology)
+    }
+
+    @Test
+    fun splitFolderIntoTreesFallsBackToFirstMemberOnCycles() {
+        val trees = splitFolderIntoTrees(
+            "loop_folder",
+            listOf(tech("a", "b"), tech("b", "a"))
+        )
+
+        assertEquals(1, trees.size)
+        assertEquals("a", trees[0].startTechnology)
+    }
+
+    private fun tech(id: String, vararg leadsTo: String): TechnologyData =
+        TechnologyData(id = id, folderName = "folder", leadsTo = leadsTo.toList())
 }
