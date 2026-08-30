@@ -7,6 +7,7 @@
 - Fixes a race in the sprite resolver where rebuilding the icon cache could corrupt concurrently memoised sprite lookups; caches are now swapped atomically.
 - Sprite and localisation caches now detect edits to `.gfx` / `.yml` files (short TTL fingerprinting) instead of staying stale until resource roots or preferences change.
 - Focus and technology previews parse on a background thread (no longer blocking the UI thread) and refresh automatically while the file is being edited.
+- The focus-tree text fallback parser now honours Paradox booleans (`default = yes` previously evaluated to false) and is built on the shared token parser.
 - GUI preview no longer duplicates the shared PLS localisation resolution; every module resolves localisation through `core/ParadoxLocalisationResolver`.
 
 ### Changed

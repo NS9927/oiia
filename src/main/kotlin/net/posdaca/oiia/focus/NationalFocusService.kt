@@ -30,8 +30,6 @@ class NationalFocusService(private val project: Project) {
         }
     }
 
-    private data class TextLine(val lineNumber: Int, val text: String)
-
     private val resolutionVersion = AtomicInteger(0)
     private val spriteResolver = ParadoxSpriteResolver(project)
     private val localisationResolver =
@@ -113,244 +111,15 @@ class NationalFocusService(private val project: Project) {
 
         try {
             val content = ResourceFiles.readText(path) ?: return
-            val lines = content.lines()
-            var inBlock = false
-            var blockKind: String? = null
-            var braceDepth = 0
-            val blockLines = mutableListOf<TextLine>()
-
-            for ((index, line) in lines.withIndex()) {
-                val lineNumber = index + 1
-                val trimmed = line.trim()
-                if (trimmed.startsWith("#") || trimmed.isEmpty()) continue
-                val stripped = stripLineComment(trimmed).trim()
-                if (!inBlock && Regex("""^focus_tree\s*=\s*\{""").containsMatchIn(stripped)) {
-                    inBlock = true
-                    blockKind = "focus_tree"
-                    braceDepth = braceDelta(stripped)
-                    blockLines.clear()
-                    blockLines.add(TextLine(lineNumber, stripped))
-                    if (braceDepth <= 0) {
-                        parseTextFocusTree(filePath, blockLines, focusTrees)
-                        inBlock = false
-                        blockKind = null
-                        blockLines.clear()
-                    }
-                    continue
-                }
-                if (!inBlock && Regex("""^shared_focus\s*=\s*\{""").containsMatchIn(stripped)) {
-                    inBlock = true
-                    blockKind = "shared_focus"
-                    braceDepth = braceDelta(stripped)
-                    blockLines.clear()
-                    blockLines.add(TextLine(lineNumber, stripped))
-                    if (braceDepth <= 0) {
-                        parseTextSharedFocus(filePath, blockLines)?.let { standaloneSharedFocuses.add(it) }
-                        inBlock = false
-                        blockKind = null
-                        blockLines.clear()
-                    }
-                    continue
-                }
-                if (inBlock) {
-                    blockLines.add(TextLine(lineNumber, stripped))
-                    braceDepth += braceDelta(stripped)
-                    if (braceDepth <= 0) {
-                        when (blockKind) {
-                            "focus_tree" -> parseTextFocusTree(filePath, blockLines, focusTrees)
-                            "shared_focus" -> parseTextSharedFocus(filePath, blockLines)?.let {
-                                standaloneSharedFocuses.add(it)
-                            }
-                        }
-                        inBlock = false
-                        blockKind = null
-                        blockLines.clear()
-                    }
-                }
-            }
+            val result = FocusTreeTextParser.parse(filePath, content)
+            focusTrees.addAll(result.trees)
+            standaloneSharedFocuses.addAll(result.standaloneSharedFocuses)
             LOG.info(
-                "Text parser found ${focusTrees.size} trees and ${standaloneSharedFocuses.size} shared focuses in $filePath"
+                "Text parser found ${result.trees.size} trees and ${result.standaloneSharedFocuses.size} shared focuses in $filePath"
             )
         } catch (e: Exception) {
             LOG.warn("Text parsing failed for $filePath", e)
         }
-    }
-
-    private fun parseTextFocusTree(
-        filePath: String,
-        lines: List<TextLine>,
-        focusTrees: MutableList<NationalFocusTreeData>
-    ) {
-        val rawLines = lines.map { it.text }
-        val id = extractValue(rawLines, "id") ?: return
-        val country = extractValue(rawLines, "country")
-        val defaultFocus = extractValue(rawLines, "default")?.toBoolean() ?: false
-
-        val focuses = mutableListOf<FocusData>()
-        val sharedFocuses = mutableListOf<FocusData>()
-        val sharedFocusReferences = mutableListOf<String>()
-
-        var inFocus = false
-        var focusIsShared = false
-        var focusBraceDepth = 0
-        var focusStartLine = 0
-        val focusBlockLines = mutableListOf<String>()
-
-        for (line in lines) {
-            val trimmed = line.text.trim()
-            if (!inFocus) {
-                val sharedRef = extractAssignmentValue(trimmed, "shared_focus")
-                if (sharedRef != null && !trimmed.contains("{")) {
-                    sharedFocusReferences.add(sharedRef)
-                    continue
-                }
-                if (trimmed.startsWith("focus = {") || trimmed.startsWith("shared_focus = {")) {
-                    inFocus = true
-                    focusIsShared = trimmed.startsWith("shared_focus")
-                    focusStartLine = line.lineNumber
-                    focusBraceDepth = braceDelta(trimmed)
-                    focusBlockLines.clear()
-                    focusBlockLines.add(trimmed)
-                    if (focusBraceDepth <= 0) {
-                        val fd = parseTextFocus(focusBlockLines, filePath, focusStartLine)
-                        if (fd != null) {
-                            if (focusIsShared) sharedFocuses.add(fd.copy(isSharedFocus = true))
-                            else focuses.add(fd)
-                        }
-                        inFocus = false
-                        focusIsShared = false
-                        focusStartLine = 0
-                        focusBlockLines.clear()
-                    }
-                    continue
-                }
-            }
-            if (inFocus) {
-                focusBlockLines.add(trimmed)
-                focusBraceDepth += braceDelta(trimmed)
-                if (focusBraceDepth <= 0) {
-                    val fd = parseTextFocus(focusBlockLines, filePath, focusStartLine)
-                    if (fd != null) {
-                        if (focusIsShared) sharedFocuses.add(fd.copy(isSharedFocus = true))
-                        else focuses.add(fd)
-                    }
-                    inFocus = false
-                    focusIsShared = false
-                    focusStartLine = 0
-                    focusBlockLines.clear()
-                }
-            }
-        }
-
-        focusTrees.add(
-            NationalFocusTreeData(
-                id = id,
-                country = country,
-                focuses = focuses,
-                sharedFocuses = sharedFocuses,
-                sharedFocusReferences = sharedFocusReferences,
-                defaultFocus = defaultFocus
-            )
-        )
-    }
-
-    private fun parseTextSharedFocus(filePath: String, lines: List<TextLine>): FocusData? {
-        val startLine = lines.firstOrNull()?.lineNumber ?: 0
-        return parseTextFocus(lines.map { it.text }, filePath, startLine)?.copy(isSharedFocus = true)
-    }
-
-    private fun parseTextFocus(lines: List<String>, sourceFilePath: String, sourceLine: Int): FocusData? {
-        val id = extractValue(lines, "id") ?: return null
-        val iconKey = extractValue(lines, "icon") ?: extractIconValue(lines)
-        val text = extractValue(lines, "text")
-        val x = extractValue(lines, "x")?.toDoubleOrNull() ?: 0.0
-        val y = extractValue(lines, "y")?.toDoubleOrNull() ?: 0.0
-        val cost = extractValue(lines, "cost")?.toDoubleOrNull() ?: 10.0
-        val relativePositionId = extractValue(lines, "relative_position_id")
-        val prerequisites = extractMultiValue(lines, "prerequisite")
-        val mutuallyExclusive = extractMultiValue(lines, "mutually_exclusive")
-        val completeTooltip = extractValue(lines, "complete_tooltip")
-
-        var aiWillDo: Double? = null
-        val aiIdx = lines.indexOfFirst { it.trim().startsWith("ai_will_da") || it.trim().startsWith("ai_will_do") }
-        if (aiIdx >= 0) {
-            for (i in aiIdx until (aiIdx + 10).coerceAtMost(lines.size)) {
-                val t = lines[i].trim()
-                if (t.startsWith("base_factor")) {
-                    aiWillDo = t.substringAfter("=").trim().toDoubleOrNull()
-                    break
-                }
-            }
-        }
-
-        return FocusData(
-            id = id, iconKey = iconKey, text = text,
-            x = x, y = y, cost = cost,
-            prerequisites = prerequisites, mutuallyExclusive = mutuallyExclusive,
-            relativePositionId = relativePositionId, aiWillDo = aiWillDo,
-            completeTooltip = completeTooltip,
-            prerequisitesText = if (prerequisites.isNotEmpty()) prerequisites.joinToString(", ") else null,
-            sourceFilePath = sourceFilePath,
-            sourceOffset = -1,
-            sourceLine = sourceLine
-        )
-    }
-
-    private fun extractValue(lines: List<String>, key: String): String? {
-        for (line in lines) {
-            val trimmed = line.trim()
-            val regex = Regex("""^\s*$key\s*=\s*"([^"]*)"\s*$""")
-            val match = regex.find(trimmed)
-            if (match != null) return match.groupValues[1]
-            val simpleRegex = Regex("""^\s*$key\s*=\s*(\S+)""")
-            val simpleMatch = simpleRegex.find(trimmed)
-            if (simpleMatch != null) {
-                val v = simpleMatch.groupValues[1]
-                if (v != "{" && !v.startsWith("\"")) return v
-            }
-        }
-        return null
-    }
-
-    private fun extractIconValue(lines: List<String>): String? {
-        var inBlock = false
-        var blockDepth = 0
-        for (line in lines) {
-            val trimmed = line.trim()
-            if (!inBlock && Regex("""^\s*icon\s*=\s*\{""").containsMatchIn(trimmed)) {
-                inBlock = true
-                blockDepth = braceDelta(trimmed)
-                extractAssignmentValue(trimmed, "value")?.let { return it }
-                if (blockDepth <= 0) inBlock = false
-                continue
-            }
-            if (inBlock) {
-                extractAssignmentValue(trimmed, "value")?.let { return it }
-                blockDepth += braceDelta(trimmed)
-                if (blockDepth <= 0) inBlock = false
-            }
-        }
-        return null
-    }
-
-    private fun extractMultiValue(lines: List<String>, blockKey: String): List<String> {
-        val result = mutableListOf<String>()
-        var inBlock = false
-        var blockDepth = 0
-        for (line in lines) {
-            val trimmed = line.trim()
-            if (trimmed.startsWith("$blockKey = {")) {
-                inBlock = true
-                blockDepth = braceDelta(trimmed)
-                continue
-            }
-            if (inBlock) {
-                extractAssignmentValue(trimmed, "focus")?.let { result.add(it) }
-                blockDepth += braceDelta(trimmed)
-                if (blockDepth <= 0) inBlock = false
-            }
-        }
-        return result
     }
 
     private fun parseRootProperty(
@@ -609,28 +378,6 @@ class NationalFocusService(private val project: Project) {
         }
         return map
     }
-
-    private fun extractAssignmentValue(line: String, key: String): String? {
-        val regex = Regex("""(?i)(?:^|\s)${Regex.escape(key)}\s*=\s*(?:"([^"]*)"|([^\s{}#]+))""")
-        val match = regex.find(line) ?: return null
-        return match.groupValues[1].ifEmpty { match.groupValues[2] }
-    }
-
-    private fun stripLineComment(line: String): String {
-        var inQuote = false
-        var escaped = false
-        for ((index, char) in line.withIndex()) {
-            when {
-                escaped -> escaped = false
-                char == '\\' -> escaped = true
-                char == '"' -> inQuote = !inQuote
-                char == '#' && !inQuote -> return line.substring(0, index)
-            }
-        }
-        return line
-    }
-
-    private fun braceDelta(line: String): Int = line.count { it == '{' } - line.count { it == '}' }
 
     private fun resolveIconKey(field: ParadoxScriptProperty): String? {
         field.block?.propertyList?.forEach { if (it.propertyKey.text == "value") return it.value }
