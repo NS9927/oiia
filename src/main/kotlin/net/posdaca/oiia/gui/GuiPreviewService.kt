@@ -140,6 +140,7 @@ class GuiPreviewService(private val project: Project) {
         var font: String? = null
         var buttonFont: String? = null
         var format: String? = null
+        var slotSize: GuiSize? = null
         var verticalAlignment: String? = null
         var sprite: String? = null
         var quadTextureSprite: String? = null
@@ -176,6 +177,7 @@ class GuiPreviewService(private val project: Project) {
                 "font" -> font = scalarValue(field)
                 "buttonFont", "buttonfont" -> buttonFont = scalarValue(field)
                 "format" -> format = scalarValue(field)
+                "slotsize", "slotSize" -> slotSize = parseSize(field.block) ?: slotSize
                 "vertical_alignment", "verticalAlignment" -> verticalAlignment = scalarValue(field)
                 "spriteType" -> sprite = scalarValue(field).also { it?.let(spriteCandidates::add) }
                 "quadTextureSprite" -> quadTextureSprite = scalarValue(field).also { it?.let(spriteCandidates::add) }
@@ -225,6 +227,7 @@ class GuiPreviewService(private val project: Project) {
             font = font,
             buttonFont = buttonFont,
             format = format,
+            slotSize = slotSize,
             verticalAlignment = verticalAlignment,
             sprite = sprite,
             quadTextureSprite = quadTextureSprite,

@@ -147,34 +147,48 @@ class TechnologyPreviewPanel(
         }
 
         private fun computeRawPositions(tree: TechnologyTreeData): Map<String, Point> {
+            val layout = tree.layout
+            val stepX = gridStep(layout?.slotWidth, nodeWidth + horizontalGap)
+            val stepY = gridStep(layout?.slotHeight, nodeHeight + verticalGap)
+            val format = layout?.format?.lowercase()
             val positions = mutableMapOf<String, Point>()
             for (technology in tree.technologies) {
                 val folderPosition = technology.positionIn(tree.folderName) ?: continue
-                positions[technology.id] = Point(
-                    folderPosition.x.toInt() * (nodeWidth + horizontalGap),
-                    folderPosition.y.toInt() * (nodeHeight + verticalGap)
-                )
+                val gx = folderPosition.x.toInt()
+                val gy = folderPosition.y.toInt()
+                // Mirrors the game's gridbox placement: down mirrors Y, left/right rotate the axes.
+                positions[technology.id] = when (format) {
+                    "left" -> Point(gy * stepX, gx * stepY)
+                    "right" -> Point(-gy * stepX, gx * stepY)
+                    "down" -> Point(gx * stepX, -gy * stepY)
+                    else -> Point(gx * stepX, gy * stepY)
+                }
             }
             return positions
         }
 
+        /** Honors the game's slot size when it demands more room than our cards need. */
+        private fun gridStep(slot: Int?, cardStep: Int): Int = if (slot != null && slot > cardStep) slot else cardStep
+
         private fun drawPathConnections(g2d: Graphics2D, tree: TechnologyTreeData) {
             val technologyIdsInFolder = tree.technologies.mapTo(hashSetOf()) { it.id }
+            val horizontal = tree.layout?.isHorizontal == true
             for (technology in tree.technologies) {
                 val startPt = logicalPositions[nodeKey(tree.folderName, technology.id)] ?: continue
-                val sx = startPt.x + nodeWidth / 2
-                val sy = startPt.y + nodeHeight
+                val sx = if (horizontal) startPt.x + nodeWidth else startPt.x + nodeWidth / 2
+                val sy = if (horizontal) startPt.y + nodeHeight / 2 else startPt.y + nodeHeight
                 for (nextId in technology.leadsTo.filter { it in technologyIdsInFolder }) {
                     val endPt = logicalPositions[nodeKey(tree.folderName, nextId)] ?: continue
-                    val endCx = endPt.x + nodeWidth / 2
-                    val endTop = endPt.y
+                    val ex = if (horizontal) endPt.x else endPt.x + nodeWidth / 2
+                    val ey = if (horizontal) endPt.y + nodeHeight / 2 else endPt.y
                     drawOrthogonalLink(
                         g2d,
                         sx,
                         sy,
-                        endCx,
-                        endTop,
-                        isHighlighted(technology.id, nextId)
+                        ex,
+                        ey,
+                        isHighlighted(technology.id, nextId),
+                        horizontalFirst = horizontal
                     )
                 }
             }

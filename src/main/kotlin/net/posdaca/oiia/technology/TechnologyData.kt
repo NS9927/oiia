@@ -6,8 +6,19 @@ data class TechnologyTreeData(
     val folderName: String,
     val technologies: List<TechnologyData> = emptyList(),
     /** Root technology of this connected component; matches the `<startTech>_tree` gridbox naming in the game GUI. */
-    val startTechnology: String? = null
+    val startTechnology: String? = null,
+    /** Grid layout declared by the matching gridbox in `countrytechtreeview.gui`, when found. */
+    val layout: TechTreeGridLayout? = null
 )
+
+data class TechTreeGridLayout(
+    /** Gridbox `format`: up / down / left / right — the tree's main axis. */
+    val format: String? = null,
+    val slotWidth: Int = 0,
+    val slotHeight: Int = 0
+) {
+    val isHorizontal: Boolean get() = format.equals("left", true) || format.equals("right", true)
+}
 
 data class TechnologyFolderData(
     val name: String,

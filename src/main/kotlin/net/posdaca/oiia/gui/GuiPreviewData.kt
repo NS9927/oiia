@@ -35,6 +35,7 @@ data class GuiElement(
     val font: String? = null,
     val buttonFont: String? = null,
     val format: String? = null,
+    val slotSize: GuiSize? = null,
     val verticalAlignment: String? = null,
     val sprite: String? = null,
     val quadTextureSprite: String? = null,

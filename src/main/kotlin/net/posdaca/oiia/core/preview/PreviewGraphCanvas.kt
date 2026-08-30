@@ -246,22 +246,38 @@ internal abstract class PreviewGraphCanvas<THit>(
         startY: Int,
         endX: Int,
         endY: Int,
-        active: Boolean
+        active: Boolean,
+        horizontalFirst: Boolean = false
     ) {
         g2d.color = if (active) PreviewNodeStyle.linkActive else PreviewNodeStyle.link
         g2d.stroke = BasicStroke(if (active) JBUIScale.scale(2.5f) else JBUIScale.scale(1.5f))
-        val midY = (startY + endY) / 2.0
         val path = Path2D.Double()
-        path.moveTo(startX.toDouble(), startY.toDouble())
-        path.lineTo(startX.toDouble(), midY)
-        path.lineTo(endX.toDouble(), midY)
-        path.lineTo(endX.toDouble(), endY.toDouble())
+        if (horizontalFirst) {
+            val midX = (startX + endX) / 2.0
+            path.moveTo(startX.toDouble(), startY.toDouble())
+            path.lineTo(midX, startY.toDouble())
+            path.lineTo(midX, endY.toDouble())
+            path.lineTo(endX.toDouble(), endY.toDouble())
+        } else {
+            val midY = (startY + endY) / 2.0
+            path.moveTo(startX.toDouble(), startY.toDouble())
+            path.lineTo(startX.toDouble(), midY)
+            path.lineTo(endX.toDouble(), midY)
+            path.lineTo(endX.toDouble(), endY.toDouble())
+        }
         g2d.draw(path)
         val arrowSize = JBUIScale.scale(8)
         val arrow = Polygon()
-        arrow.addPoint(endX, endY)
-        arrow.addPoint(endX - arrowSize / 2, endY + arrowSize)
-        arrow.addPoint(endX + arrowSize / 2, endY + arrowSize)
+        if (horizontalFirst && endX != startX) {
+            val sign = if (endX > startX) -1 else 1
+            arrow.addPoint(endX, endY)
+            arrow.addPoint(endX + sign * arrowSize, endY - arrowSize / 2)
+            arrow.addPoint(endX + sign * arrowSize, endY + arrowSize / 2)
+        } else {
+            arrow.addPoint(endX, endY)
+            arrow.addPoint(endX - arrowSize / 2, endY + arrowSize)
+            arrow.addPoint(endX + arrowSize / 2, endY + arrowSize)
+        }
         g2d.fill(arrow)
     }
 

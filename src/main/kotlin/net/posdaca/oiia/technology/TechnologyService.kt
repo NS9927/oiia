@@ -16,6 +16,7 @@ import net.posdaca.oiia.core.ParadoxSpriteResolver
 import net.posdaca.oiia.core.files.LocalisationFiles
 import net.posdaca.oiia.core.files.ResourceFiles
 import net.posdaca.oiia.core.parseParadoxBoolean
+import net.posdaca.oiia.gui.GuiPreviewService
 import java.util.concurrent.atomic.AtomicInteger
 
 class TechnologyService(private val project: Project) {
@@ -24,6 +25,9 @@ class TechnologyService(private val project: Project) {
     private val spriteResolver = ParadoxSpriteResolver(project)
     private val localisationResolver =
         ParadoxLocalisationResolver(project, ParadoxLocalisationPreference.DEFAULT_FALLBACK_LANGUAGES)
+
+    /** Reused so GUI-file parsing for tree layouts keeps the shared sprite/localisation caches warm. */
+    private val guiService by lazy { GuiPreviewService(project) }
 
     fun parseTechnologyTreesFromFile(psiFile: PsiFile): List<TechnologyTreeData> {
         val technologies = mutableListOf<TechnologyData>()
@@ -211,7 +215,69 @@ class TechnologyService(private val project: Project) {
                 }
             }
         }
-        return TechnologyPreviewSnapshot(mergeTrees(trees))
+        val merged = mergeTrees(trees)
+        return TechnologyPreviewSnapshot(attachTreeLayouts(merged))
+    }
+
+    /**
+     * Reads `countrytechtreeview.gui` / `countrydoctrinetreeview.gui` and maps each
+     * `<startTech>_tree` gridbox to a [TechTreeGridLayout]. Must run inside a read action.
+     */
+    private fun attachTreeLayouts(trees: List<TechnologyTreeData>): List<TechnologyTreeData> {
+        if (trees.none { it.startTechnology != null }) return trees
+        val layouts = try {
+            loadTreeLayouts()
+        } catch (e: Exception) {
+            LOG.warn("Tech tree GUI layout load failed", e)
+            emptyMap()
+        }
+        if (layouts.isEmpty()) return trees
+        return trees.map { tree ->
+            tree.startTechnology?.let { layouts[it] }?.let { tree.copy(layout = it) } ?: tree
+        }
+    }
+
+    private fun loadTreeLayouts(): Map<String, TechTreeGridLayout> {
+        val layouts = mutableMapOf<String, TechTreeGridLayout>()
+        for (fileName in TREE_VIEW_GUI_FILES) {
+            val psiFile = findGuiPsi("interface/$fileName") ?: continue
+            val roots = try {
+                guiService.parseGuiFile(psiFile).roots
+            } catch (_: Exception) {
+                continue
+            }
+            val treeViews = roots.filter { it.name.equals(TREE_VIEW_WINDOW, ignoreCase = true) || it.name.equals(DOCTRINE_VIEW_WINDOW, ignoreCase = true) }
+            for (view in treeViews) {
+                for (folderView in view.children) {
+                    if (!folderView.type.equals(FOLDER_VIEW_TYPE, ignoreCase = true)) continue
+                    for (gridbox in folderView.children) {
+                        if (!gridbox.type.equals(GRIDBOX_TYPE, ignoreCase = true)) continue
+                        val name = gridbox.name ?: continue
+                        val treeName = name.removeSuffix(TREE_GRIDBOX_SUFFIX)
+                        if (treeName == name) continue
+                        layouts[treeName] = TechTreeGridLayout(
+                            format = gridbox.format,
+                            slotWidth = gridbox.slotSize?.width ?: 0,
+                            slotHeight = gridbox.slotSize?.height ?: 0
+                        )
+                    }
+                }
+            }
+        }
+        return layouts
+    }
+
+    private fun findGuiPsi(relativePath: String): ParadoxScriptFile? {
+        val roots = ResourceFiles.resourceRoots(project, projectFirst = true, gameFirst = false)
+        val manager = PsiManager.getInstance(project)
+        for (root in roots) {
+            val path = root.resolve(relativePath).normalize()
+            if (!java.nio.file.Files.isRegularFile(path)) continue
+            val vf = ResourceFiles.toVirtualFile(path) ?: continue
+            val psi = manager.findFile(vf) as? ParadoxScriptFile ?: continue
+            return psi
+        }
+        return null
     }
 
     fun resolve(snapshot: TechnologyPreviewSnapshot, onReady: (TechnologyPreviewSnapshot) -> Unit) {
@@ -309,6 +375,12 @@ class TechnologyService(private val project: Project) {
         private val LOG = Logger.getInstance(TechnologyService::class.java)
         private const val DEFAULT_FOLDER = "Technologies"
         private const val FALLBACK_ICON_SPRITE = "GFX_technology_medium"
+        private const val TREE_VIEW_WINDOW = "countrytechtreeview"
+        private const val DOCTRINE_VIEW_WINDOW = "countrydoctrineview"
+        private const val FOLDER_VIEW_TYPE = "containerWindowType"
+        private const val GRIDBOX_TYPE = "gridboxType"
+        private const val TREE_GRIDBOX_SUFFIX = "_tree"
+        private val TREE_VIEW_GUI_FILES = listOf("countrytechtreeview.gui", "countrydoctrinetreeview.gui")
         private val NON_TECHNOLOGY_KEYS = setOf(
             "technologies", "folders", "folder", "path", "categories", "doctrine", "doctrine_name",
             "allow", "allow_branch", "ai_will_do", "research_cost", "start_year", "enable_equipments",
