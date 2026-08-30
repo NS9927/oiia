@@ -421,10 +421,10 @@ class MapPreviewService(private val project: Project) {
         val width = provincesImage.width
         val height = provincesImage.height
         val size = width * height
-        val provinceKeys = IntArray(size) { UNKNOWN_KEY }
-        val stateKeys = IntArray(size) { UNKNOWN_KEY }
-        val countryKeys = IntArray(size) { UNKNOWN_KEY }
-        val strategicRegionKeys = IntArray(size) { UNKNOWN_KEY }
+        val provinceKeys = IntArray(size) { MapPixels.UNKNOWN_KEY }
+        val stateKeys = IntArray(size) { MapPixels.UNKNOWN_KEY }
+        val countryKeys = IntArray(size) { MapPixels.UNKNOWN_KEY }
+        val strategicRegionKeys = IntArray(size) { MapPixels.UNKNOWN_KEY }
         val rgbKeys = IntArray(size)
         val provinceBounds = mutableMapOf<Int, MutablePixelBounds>()
         val stateBounds = mutableMapOf<Int, MutablePixelBounds>()
@@ -453,18 +453,18 @@ class MapPreviewService(private val project: Project) {
                 if (province == null) continue
 
                 val provinceKey = province.id
-                val stateKey = state?.id ?: UNKNOWN_KEY
-                val countryKey = state?.owner?.let { mapCountryKey(it) } ?: UNKNOWN_KEY
-                val strategicRegionKey = strategicRegion?.id ?: UNKNOWN_KEY
+                val stateKey = state?.id ?: MapPixels.UNKNOWN_KEY
+                val countryKey = state?.owner?.let { mapCountryKey(it) } ?: MapPixels.UNKNOWN_KEY
+                val strategicRegionKey = strategicRegion?.id ?: MapPixels.UNKNOWN_KEY
 
                 provinceKeys[index] = provinceKey
                 stateKeys[index] = stateKey
                 countryKeys[index] = countryKey
                 strategicRegionKeys[index] = strategicRegionKey
                 provinceBounds.getOrPut(provinceKey) { MutablePixelBounds() }.include(x, y)
-                if (stateKey != UNKNOWN_KEY) stateBounds.getOrPut(stateKey) { MutablePixelBounds() }.include(x, y)
-                if (countryKey != UNKNOWN_KEY) countryBounds.getOrPut(countryKey) { MutablePixelBounds() }.include(x, y)
-                if (strategicRegionKey != UNKNOWN_KEY) {
+                if (stateKey != MapPixels.UNKNOWN_KEY) stateBounds.getOrPut(stateKey) { MutablePixelBounds() }.include(x, y)
+                if (countryKey != MapPixels.UNKNOWN_KEY) countryBounds.getOrPut(countryKey) { MutablePixelBounds() }.include(x, y)
+                if (strategicRegionKey != MapPixels.UNKNOWN_KEY) {
                     strategicRegionBounds.getOrPut(strategicRegionKey) { MutablePixelBounds() }.include(x, y)
                 }
             }
@@ -544,7 +544,7 @@ class MapPreviewService(private val project: Project) {
 
         while (!pending.isEmpty()) {
             val zone = pending.removeLast()
-            val rgb = sameRgbInZone(rgbKeys, width, zone)
+            val rgb = MapPixels.sameRgbInZone(rgbKeys, width, zone)
             if (rgb != null) {
                 areas.getOrPut(rgb) {
                     createRenderAreaBuilder(
@@ -565,19 +565,6 @@ class MapPreviewService(private val project: Project) {
         return areas.values
             .map { it.toArea() }
             .sortedWith(compareBy<MapRenderArea> { it.provinceId ?: Int.MAX_VALUE }.thenBy { it.rgb })
-    }
-
-    private fun sameRgbInZone(rgbKeys: IntArray, width: Int, zone: MapRenderZone): Int? {
-        val first = rgbKeys[zone.y * width + zone.x]
-        val maxY = zone.y + zone.height
-        val maxX = zone.x + zone.width
-        for (y in zone.y until maxY) {
-            val rowOffset = y * width
-            for (x in zone.x until maxX) {
-                if (rgbKeys[rowOffset + x] != first) return null
-            }
-        }
-        return first
     }
 
     private fun splitRenderZone(zone: MapRenderZone, pending: java.util.ArrayDeque<MapRenderZone>) {
@@ -621,9 +608,9 @@ class MapPreviewService(private val project: Project) {
         val province = provinceByColor[rgb]
         val state = province?.let { stateByProvinceId[it.id] }
         val strategicRegion = province?.let { strategicRegionByProvinceId[it.id] }
-        val stateKey = state?.id ?: UNKNOWN_KEY
-        val countryKey = state?.owner?.let { mapCountryKey(it) } ?: UNKNOWN_KEY
-        val strategicRegionKey = strategicRegion?.id ?: UNKNOWN_KEY
+        val stateKey = state?.id ?: MapPixels.UNKNOWN_KEY
+        val countryKey = state?.owner?.let { mapCountryKey(it) } ?: MapPixels.UNKNOWN_KEY
+        val strategicRegionKey = strategicRegion?.id ?: MapPixels.UNKNOWN_KEY
         return MapRenderAreaBuilder(
             rgb = rgb,
             provinceId = province?.id,
@@ -756,13 +743,13 @@ class MapPreviewService(private val project: Project) {
         for (edgeY in 0..height) {
             var x = 0
             while (x < width) {
-                if (!isHorizontalPixelBorder(keys, width, height, x, edgeY)) {
+                if (!MapPixels.isHorizontalPixelBorder(keys, width, height, x, edgeY)) {
                     x++
                     continue
                 }
                 val startX = x
                 x++
-                while (x < width && isHorizontalPixelBorder(keys, width, height, x, edgeY)) x++
+                while (x < width && MapPixels.isHorizontalPixelBorder(keys, width, height, x, edgeY)) x++
                 addHorizontalBorderSegment(segmentsByChunk, chunkColumns, width, height, startX, x, edgeY)
             }
         }
@@ -778,13 +765,13 @@ class MapPreviewService(private val project: Project) {
         for (edgeX in 0 until width) {
             var y = 0
             while (y < height) {
-                if (!isVerticalPixelBorder(keys, width, edgeX, y)) {
+                if (!MapPixels.isVerticalPixelBorder(keys, width, edgeX, y)) {
                     y++
                     continue
                 }
                 val startY = y
                 y++
-                while (y < height && isVerticalPixelBorder(keys, width, edgeX, y)) y++
+                while (y < height && MapPixels.isVerticalPixelBorder(keys, width, edgeX, y)) y++
                 addVerticalBorderSegment(segmentsByChunk, chunkColumns, height, edgeX, startY, y)
             }
         }
@@ -831,18 +818,6 @@ class MapPreviewService(private val project: Project) {
         }
     }
 
-    private fun isHorizontalPixelBorder(keys: IntArray, width: Int, height: Int, x: Int, edgeY: Int): Boolean {
-        val upperKey = if (edgeY == 0) UNKNOWN_KEY else keys[(edgeY - 1) * width + x]
-        val lowerKey = if (edgeY == height) UNKNOWN_KEY else keys[edgeY * width + x]
-        return upperKey != lowerKey && (upperKey != UNKNOWN_KEY || lowerKey != UNKNOWN_KEY)
-    }
-
-    private fun isVerticalPixelBorder(keys: IntArray, width: Int, edgeX: Int, y: Int): Boolean {
-        val rowOffset = y * width
-        val leftKey = keys[rowOffset + if (edgeX == 0) width - 1 else edgeX - 1]
-        val rightKey = keys[rowOffset + edgeX]
-        return leftKey != rightKey && (leftKey != UNKNOWN_KEY || rightKey != UNKNOWN_KEY)
-    }
 
     private fun buildSmoothBorderSegments(
         pixelIndex: MapPixelIndex,
@@ -863,10 +838,10 @@ class MapPreviewService(private val project: Project) {
             val rowOffset = y * width
             for (x in 0 until width) {
                 val key = keys[rowOffset + x]
-                if (key == UNKNOWN_KEY) continue
+                if (key == MapPixels.UNKNOWN_KEY) continue
 
                 val leftKey = keys[rowOffset + if (x == 0) width - 1 else x - 1]
-                if (leftKey == UNKNOWN_KEY) {
+                if (leftKey == MapPixels.UNKNOWN_KEY) {
                     edges.add(BorderEdge(BorderPoint(x.toDouble(), y.toDouble()), BorderPoint(x.toDouble(), (y + 1).toDouble())))
                 }
 
@@ -877,7 +852,7 @@ class MapPreviewService(private val project: Project) {
 
                 if (y > 0) {
                     val upKey = keys[rowOffset - width + x]
-                    if (upKey == UNKNOWN_KEY) {
+                    if (upKey == MapPixels.UNKNOWN_KEY) {
                         edges.add(BorderEdge(BorderPoint(x.toDouble(), y.toDouble()), BorderPoint((x + 1).toDouble(), y.toDouble())))
                     }
                 }
@@ -1216,7 +1191,6 @@ class MapPreviewService(private val project: Project) {
         private const val COUNTRY_TAGS_PATH = "common/country_tags"
         private const val COUNTRIES_PATH = "common/countries"
         private const val RGB_MASK = 0xFFFFFF
-        private const val UNKNOWN_KEY = -1
         private const val RENDER_ZONE_BLOCK_SIZE = 256
         private const val SMOOTH_EDGE_SIMPLIFY_TOLERANCE = 0.85
         private val NUMBER_TOKEN_REGEX = Regex("""-?\d+""")

@@ -1153,12 +1153,12 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
                 var x = bounds.minX
                 while (x <= bounds.maxX) {
                     val index = rowOffset + x
-                    if (keys[index] == selection.key && isBoundaryPixel(keys, current.pixelIndex.width, index)) {
+                    if (keys[index] == selection.key && MapPixels.isBoundaryPixel(keys, current.pixelIndex.width, index)) {
                         val startX = x
                         x++
                         while (x <= bounds.maxX &&
                             keys[rowOffset + x] == selection.key &&
-                            isBoundaryPixel(keys, current.pixelIndex.width, rowOffset + x)
+                            MapPixels.isBoundaryPixel(keys, current.pixelIndex.width, rowOffset + x)
                         ) {
                             x++
                         }
@@ -1187,22 +1187,6 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
                 MapPreviewMode.COUNTRY -> index.countryKeys
                 MapPreviewMode.STRATEGIC_REGION -> index.strategicRegionKeys
             }
-        }
-
-        private fun isBoundaryPixel(keys: IntArray, width: Int, index: Int): Boolean {
-            val key = keys[index]
-            if (key < 0) return false
-            val height = keys.size / width
-            val x = index % width
-            val y = index / width
-            val rowOffset = y * width
-            val leftIndex = rowOffset + if (x == 0) width - 1 else x - 1
-            val rightIndex = rowOffset + if (x + 1 == width) 0 else x + 1
-            return y == 0 || y + 1 == height ||
-                    keys[leftIndex] != key ||
-                    keys[rightIndex] != key ||
-                    keys[index - width] != key ||
-                    keys[index + width] != key
         }
 
         private fun buildDetailText(sample: ProvinceSample): String {
