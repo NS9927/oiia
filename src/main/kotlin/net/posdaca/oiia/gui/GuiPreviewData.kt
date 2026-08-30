@@ -2,6 +2,7 @@ package net.posdaca.oiia.gui
 
 import net.posdaca.oiia.core.preview.PreviewSnapshot
 import net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteInfo
+import java.awt.Dimension
 import java.awt.Rectangle
 import java.awt.image.BufferedImage
 import kotlin.math.roundToInt
@@ -15,6 +16,11 @@ data class GuiPreviewResources(
     val localisationKey: String,
     val sprites: Map<String, SpriteInfo?> = emptyMap(),
     val localisations: Map<String, String?> = emptyMap(),
+    /**
+     * Render inputs keyed by image path. Treat as read-only: services only decode into it and
+     * panels only draw from it; neither side may mutate the [BufferedImage] pixel data, since
+     * these maps are shared between the resource caches and the immutable snapshot contract.
+     */
     val images: Map<String, BufferedImage> = emptyMap()
 )
 
@@ -190,6 +196,50 @@ data class GuiPreviewIssue(
 enum class GuiIssueSeverity {
     INFO,
     WARNING
+}
+
+data class GuiLayoutResult(
+    val nodes: List<GuiLayoutNode>,
+    val logicalSize: Dimension
+)
+
+internal enum class GuiFrameDirection { HORIZONTAL, VERTICAL }
+
+internal fun guiFrameDirection(imageWidth: Int, imageHeight: Int, frames: Int): GuiFrameDirection {
+    if (frames <= 1) return GuiFrameDirection.VERTICAL
+    val horizontalFrameWidth = imageWidth / frames
+    val verticalFrameHeight = imageHeight / frames
+    if (horizontalFrameWidth <= 0) return GuiFrameDirection.VERTICAL
+    if (verticalFrameHeight <= 0) return GuiFrameDirection.HORIZONTAL
+    val horizontalRatio = horizontalFrameWidth.toDouble() / imageHeight.toDouble()
+    val verticalRatio = imageWidth.toDouble() / verticalFrameHeight.toDouble()
+    return if (kotlin.math.abs(horizontalRatio - 1.0) <= kotlin.math.abs(verticalRatio - 1.0)) {
+        GuiFrameDirection.HORIZONTAL
+    } else {
+        GuiFrameDirection.VERTICAL
+    }
+}
+
+/** One animation frame's native size derived from the texture dimensions. */
+internal fun guiNativeSpriteSize(imageWidth: Int, imageHeight: Int, spriteInfo: SpriteInfo): Dimension? {
+    if (spriteInfo.usesDeclaredSpriteSize) spriteInfo.size?.toGuiDimension()?.let { return it }
+    val frames = spriteInfo.noOfFrames?.coerceAtLeast(1) ?: 1
+    if (frames <= 1) return Dimension(imageWidth, imageHeight)
+    return when (guiFrameDirection(imageWidth, imageHeight, frames)) {
+        GuiFrameDirection.HORIZONTAL -> Dimension((imageWidth / frames).coerceAtLeast(1), imageHeight)
+        GuiFrameDirection.VERTICAL -> Dimension(imageWidth, (imageHeight / frames).coerceAtLeast(1))
+    }
+}
+
+internal val SpriteInfo.usesCompositeTextures: Boolean
+    get() = subtype == "progressbar" || subtype == "circular_progressbar" || subtype == "masked_shield"
+
+internal val SpriteInfo.usesDeclaredSpriteSize: Boolean
+    get() = subtype == "progressbar" || subtype == "circular_progressbar"
+
+internal fun net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteSize.toGuiDimension(): Dimension? {
+    if (width <= 0 || height <= 0) return null
+    return Dimension(width, height)
 }
 
 private fun normalisedToken(value: String?): String? {

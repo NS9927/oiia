@@ -20,8 +20,13 @@ import net.posdaca.oiia.core.script.ScriptBlocks
 import net.posdaca.oiia.core.ParadoxSpriteResolver
 import net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteInfo
 import net.posdaca.oiia.core.PreviewImageLoader
+import java.awt.Dimension
+import java.awt.Point
+import java.awt.Rectangle
 import java.awt.image.BufferedImage
 import java.nio.file.Path
+import kotlin.math.max
+import kotlin.math.roundToInt
 
 class GuiPreviewService(private val project: Project) {
 
@@ -53,6 +58,242 @@ class GuiPreviewService(private val project: Project) {
         val resolved = localisationResolver.resolve(key)
         if (resolved == null && key != null) LOG.info("GUI localisation not resolved: key=$key")
         return resolved
+    }
+
+    // ---- Layout engine (pure over the parsed element tree + resolved resources; no UI access) ----
+
+    /**
+     * Computes absolute bounds for [root] and its descendants. Pure: reads only the element tree
+     * and the already-resolved [resources], so it is unit-testable and safe on any thread.
+     */
+    fun layoutRoot(
+        root: GuiElement,
+        resources: GuiPreviewResources,
+        padding: Int,
+        minimumSize: Dimension
+    ): GuiLayoutResult {
+        val nodes = mutableListOf<GuiLayoutNode>()
+        val viewport = Rectangle(padding, padding, PREVIEW_SCREEN_WIDTH, PREVIEW_SCREEN_HEIGHT)
+        val rootSize = resolveElementSize(root, viewport, null, resources)
+        val rootBounds = Rectangle(padding, padding, rootSize.width.coerceAtLeast(1), rootSize.height.coerceAtLeast(1))
+        val rootClip = if (root.clipping || root.fullscreen) rootBounds else null
+        collectLayout(root, null, rootBounds, rootClip, 0, resources, nodes)
+        return GuiLayoutResult(nodes, computeLayoutSize(nodes, padding, minimumSize))
+    }
+
+    private fun collectLayout(
+        element: GuiElement,
+        parentBounds: Rectangle?,
+        bounds: Rectangle,
+        inheritedClip: Rectangle?,
+        depth: Int,
+        resources: GuiPreviewResources,
+        result: MutableList<GuiLayoutNode>
+    ) {
+        val issues = buildLayoutIssues(element, parentBounds, bounds, resources)
+        val paintClip = intersectRect(inheritedClip, bounds)
+        val childClip = if (element.clipping) paintClip else inheritedClip
+        result.add(GuiLayoutNode(element, bounds, paintClip, depth, issues))
+        for (child in element.children) {
+            val childSize = resolveElementSize(child, bounds, element, resources)
+            val childBounds = resolveElementBounds(child, bounds, childSize)
+            collectLayout(child, bounds, childBounds, childClip, depth + 1, resources, result)
+        }
+    }
+
+    private fun intersectRect(a: Rectangle?, b: Rectangle): Rectangle? {
+        if (a == null) return Rectangle(b)
+        val intersection = a.intersection(b)
+        return if (intersection.width <= 0 || intersection.height <= 0) null else intersection
+    }
+
+    private fun resolveElementSize(
+        element: GuiElement,
+        parentBounds: Rectangle,
+        parentElement: GuiElement?,
+        resources: GuiPreviewResources
+    ): Dimension {
+        if (element.fullscreen) return Dimension(parentBounds.width.coerceAtLeast(1), parentBounds.height.coerceAtLeast(1))
+        if (element.type.equals("background", ignoreCase = true) && element.size == null) {
+            return Dimension(parentBounds.width.coerceAtLeast(1), parentBounds.height.coerceAtLeast(1))
+        }
+        val declared = element.size
+        val spriteSize = resolvedSpriteInfo(element, resources)?.let { nativeSpriteSizeOf(it, resources) }
+        val textSize = textSizeFallback(element, parentBounds)
+        val baseWidth = declared?.resolveWidth(parentBounds.width)
+            ?: textSize?.width
+            ?: spriteSize?.width
+            ?: defaultElementSize(element).width
+        val baseHeight = declared?.resolveHeight(parentBounds.height)
+            ?: textSize?.height
+            ?: spriteSize?.height
+            ?: defaultElementSize(element).height
+        val scale = element.scale?.takeIf { it > 0.0 } ?: 1.0
+        var width = (baseWidth * scale).roundToInt().coerceAtLeast(1)
+        var height = (baseHeight * scale).roundToInt().coerceAtLeast(1)
+
+        if (element.preserveAspectRatio && declared != null && spriteSize != null && spriteSize.width > 0 && spriteSize.height > 0) {
+            val ratio = spriteSize.width.toDouble() / spriteSize.height.toDouble()
+            if (declared.widthValue.percent && !declared.heightValue.percent) {
+                height = (width / ratio).roundToInt().coerceAtLeast(1)
+            } else if (declared.heightValue.percent && !declared.widthValue.percent) {
+                width = (height * ratio).roundToInt().coerceAtLeast(1)
+            } else {
+                val fitted = fitAspectRatio(width, height, ratio)
+                width = fitted.width
+                height = fitted.height
+            }
+        }
+
+        if (parentElement?.type == "extendedScrollbarType" && element.size == null && element.type in setOf("slider", "track", "increaseButton", "decreaseButton")) {
+            if (spriteSize != null) return Dimension(spriteSize.width.coerceAtLeast(1), spriteSize.height.coerceAtLeast(1))
+        }
+        return Dimension(width, height)
+    }
+
+    private fun textSizeFallback(element: GuiElement, parentBounds: Rectangle): Dimension? {
+        if (!isTextElement(element)) return null
+        val width = element.maxWidth?.resolveSize(parentBounds.width)
+        val height = element.maxHeight?.resolveSize(parentBounds.height)
+        if (width == null && height == null) return null
+        val fallback = element.preferredSize
+        return Dimension(
+            (width ?: fallback.width).coerceAtLeast(1),
+            (height ?: fallback.height).coerceAtLeast(1)
+        )
+    }
+
+    private fun isTextElement(element: GuiElement): Boolean {
+        return element.type.equals("instantTextBoxType", ignoreCase = true) ||
+                element.type.equals("instantTextboxType", ignoreCase = true)
+    }
+
+    private fun fitAspectRatio(width: Int, height: Int, ratio: Double): Dimension {
+        val widthFromHeight = (height * ratio).roundToInt().coerceAtLeast(1)
+        if (widthFromHeight <= width) return Dimension(widthFromHeight, height)
+        val heightFromWidth = (width / ratio).roundToInt().coerceAtLeast(1)
+        return Dimension(width, heightFromWidth)
+    }
+
+    private fun resolveElementBounds(
+        element: GuiElement,
+        parentBounds: Rectangle,
+        size: Dimension
+    ): Rectangle {
+        val anchor = orientationAnchor(element.orientation, parentBounds)
+        val offsetX = element.position.resolveX(parentBounds.width)
+        val offsetY = element.position.resolveY(parentBounds.height)
+        val origo = if (element.centerPosition) GuiAnchor.CENTER else origoAnchor(element.origo)
+        val x = anchor.x + offsetX - (size.width * origo.xFactor).roundToInt()
+        val y = anchor.y + offsetY - (size.height * origo.yFactor).roundToInt()
+        return Rectangle(x, y, size.width.coerceAtLeast(1), size.height.coerceAtLeast(1))
+    }
+
+    private fun orientationAnchor(value: String?, parentBounds: Rectangle): Point {
+        val anchor = anchorFromGuiValue(value) ?: GuiAnchor.UPPER_LEFT
+        return Point(
+            parentBounds.x + (parentBounds.width * anchor.xFactor).roundToInt(),
+            parentBounds.y + (parentBounds.height * anchor.yFactor).roundToInt()
+        )
+    }
+
+    private fun origoAnchor(value: String?): GuiAnchor {
+        return anchorFromGuiValue(value) ?: GuiAnchor.UPPER_LEFT
+    }
+
+    private fun anchorFromGuiValue(value: String?): GuiAnchor? {
+        val normalized = value?.trim()?.trim('"')?.lowercase()?.replace('-', '_') ?: return null
+        return when (normalized) {
+            "upper_left" -> GuiAnchor.UPPER_LEFT
+            "up", "upper", "center_up", "center_upper", "upper_center" -> GuiAnchor.UP
+            "upper_right" -> GuiAnchor.UPPER_RIGHT
+            "left", "center_left" -> GuiAnchor.LEFT
+            "center", "centre" -> GuiAnchor.CENTER
+            "right", "center_right" -> GuiAnchor.RIGHT
+            "lower_left" -> GuiAnchor.LOWER_LEFT
+            "down", "lower", "center_down", "center_lower", "lower_center" -> GuiAnchor.DOWN
+            "lower_right" -> GuiAnchor.LOWER_RIGHT
+            else -> null
+        }
+    }
+
+    private fun buildLayoutIssues(
+        element: GuiElement,
+        parentBounds: Rectangle?,
+        bounds: Rectangle,
+        resources: GuiPreviewResources
+    ): List<GuiPreviewIssue> {
+        val issues = mutableListOf<GuiPreviewIssue>()
+        val declaredSize = element.size
+        if (declaredSize != null && declaredSize.width == 0 && declaredSize.height == 0) {
+            issues.add(GuiPreviewIssue(GuiIssueSeverity.WARNING, "size is 0 x 0"))
+        }
+        if (element.primarySprite != null && isSpriteKnownMissing(element, resources)) {
+            issues.add(GuiPreviewIssue(GuiIssueSeverity.WARNING, "sprite not resolved: ${element.primarySprite}"))
+        }
+        if (element.text != null && isLocalisationKnownMissing(element.text, resources)) {
+            issues.add(GuiPreviewIssue(GuiIssueSeverity.INFO, "localisation not resolved: ${element.text}"))
+        }
+        if (parentBounds != null && !parentBounds.contains(bounds)) {
+            issues.add(GuiPreviewIssue(GuiIssueSeverity.WARNING, "extends outside parent bounds"))
+        }
+        return issues
+    }
+
+    private fun resolvedSpriteInfo(element: GuiElement, resources: GuiPreviewResources): SpriteInfo? {
+        for (sprite in element.resolvedSpriteCandidates()) {
+            val info = resources.sprites[sprite]
+            if (info?.primaryImagePath != null) return info
+        }
+        return null
+    }
+
+    private fun nativeSpriteSizeOf(spriteInfo: SpriteInfo, resources: GuiPreviewResources): Dimension? {
+        val image = spriteInfo.primaryImagePath?.let { resources.images[it] }
+        val native = image?.let { guiNativeSpriteSize(it.width, it.height, spriteInfo) }
+        if (native != null) return native
+        if (spriteInfo.usesDeclaredSpriteSize) return spriteInfo.size?.toGuiDimension()
+        return null
+    }
+
+    private fun isSpriteKnownMissing(element: GuiElement, resources: GuiPreviewResources): Boolean {
+        val candidates = element.resolvedSpriteCandidates()
+        return candidates.isNotEmpty() && candidates.all { sprite ->
+            resources.sprites.containsKey(sprite) && resources.sprites[sprite]?.primaryImagePath == null
+        }
+    }
+
+    private fun isLocalisationKnownMissing(key: String, resources: GuiPreviewResources): Boolean {
+        val normalised = key.trim().trim('"').takeIf { it.isNotBlank() } ?: return false
+        return resources.localisations.containsKey(normalised) && resources.localisations[normalised] == null
+    }
+
+    private fun defaultElementSize(element: GuiElement): Dimension {
+        if (element.type == "containerWindowType" && element.size == null && element.primarySprite == null) {
+            return Dimension(1, 1)
+        }
+        val preferred = element.preferredSize
+        return Dimension(preferred.width, preferred.height)
+    }
+
+    private fun computeLayoutSize(nodes: List<GuiLayoutNode>, padding: Int, minimumSize: Dimension): Dimension {
+        val maxX = nodes.maxOfOrNull { it.bounds.x + it.bounds.width } ?: minimumSize.width
+        val maxY = nodes.maxOfOrNull { it.bounds.y + it.bounds.height } ?: minimumSize.height
+        return Dimension(max(maxX + padding, minimumSize.width), max(maxY + padding, minimumSize.height))
+    }
+
+    private data class GuiAnchor(val xFactor: Double, val yFactor: Double) {
+        companion object {
+            val UPPER_LEFT = GuiAnchor(0.0, 0.0)
+            val UP = GuiAnchor(0.5, 0.0)
+            val UPPER_RIGHT = GuiAnchor(1.0, 0.0)
+            val LEFT = GuiAnchor(0.0, 0.5)
+            val CENTER = GuiAnchor(0.5, 0.5)
+            val RIGHT = GuiAnchor(1.0, 0.5)
+            val LOWER_LEFT = GuiAnchor(0.0, 1.0)
+            val DOWN = GuiAnchor(0.5, 1.0)
+            val LOWER_RIGHT = GuiAnchor(1.0, 1.0)
+        }
     }
 
     fun resolveSpriteInfo(spriteName: String?): SpriteInfo? {
@@ -527,6 +768,8 @@ class GuiPreviewService(private val project: Project) {
     companion object {
         private val LOG = Logger.getInstance(GuiPreviewService::class.java)
         private const val ROOT_TYPE = "containerWindowType"
+        private const val PREVIEW_SCREEN_WIDTH = 1920
+        private const val PREVIEW_SCREEN_HEIGHT = 1080
         private val ROOT_WRAPPER_TYPES = setOf("guiTypes", "windowTypes")
         fun localisationCacheKey(): String {
             return ParadoxLocalisationPreference.cacheKey(ParadoxLocalisationPreference.DEFAULT_FALLBACK_LANGUAGES)

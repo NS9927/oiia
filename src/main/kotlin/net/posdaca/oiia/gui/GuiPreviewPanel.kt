@@ -36,7 +36,6 @@ import javax.swing.JComponent
 import javax.swing.JList
 import javax.swing.JPanel
 import javax.swing.SwingUtilities
-import kotlin.math.max
 import kotlin.math.roundToInt
 
 class GuiPreviewPanel(
@@ -141,8 +140,6 @@ class GuiPreviewPanel(
         private var ready = false
 
         companion object {
-            private const val PREVIEW_SCREEN_WIDTH = 1920
-            private const val PREVIEW_SCREEN_HEIGHT = 1080
             private val LOG = Logger.getInstance(GuiCanvas::class.java)
         }
 
@@ -169,31 +166,12 @@ class GuiPreviewPanel(
             val alwaysTransparent: Boolean?
         )
 
-        private enum class FrameDirection {
-            HORIZONTAL,
-            VERTICAL
-        }
-
         private enum class ProgressEffect {
             NORMAL,
             REVERSE,
             START_END,
             MIN_MAX,
             RADIAL
-        }
-
-        private data class GuiAnchor(val xFactor: Double, val yFactor: Double) {
-            companion object {
-                val UPPER_LEFT = GuiAnchor(0.0, 0.0)
-                val UP = GuiAnchor(0.5, 0.0)
-                val UPPER_RIGHT = GuiAnchor(1.0, 0.0)
-                val LEFT = GuiAnchor(0.0, 0.5)
-                val CENTER = GuiAnchor(0.5, 0.5)
-                val RIGHT = GuiAnchor(1.0, 0.5)
-                val LOWER_LEFT = GuiAnchor(0.0, 1.0)
-                val DOWN = GuiAnchor(0.5, 1.0)
-                val LOWER_RIGHT = GuiAnchor(1.0, 1.0)
-            }
         }
 
         init {
@@ -207,14 +185,13 @@ class GuiPreviewPanel(
             refreshLocalisationPreference()
             if (isRootReady(nextRoot)) {
                 ready = true
-                nodes = layout(nextRoot)
-                logicalSize = computeLogicalSize(nodes)
+                applyLayout(nextRoot)
                 revalidate()
                 repaint()
             } else {
                 ready = false
                 nodes = emptyList()
-                logicalSize = Dimension(JBUIScale.scale(800), JBUIScale.scale(520))
+                logicalSize = defaultLogicalSize()
                 revalidate()
                 repaint()
                 preloadResources(nextRoot, version)
@@ -366,183 +343,28 @@ class GuiPreviewPanel(
             )
         }
 
-        private fun layout(root: GuiElement): List<GuiLayoutNode> {
-            val result = mutableListOf<GuiLayoutNode>()
-            val viewport = Rectangle(padding, padding, PREVIEW_SCREEN_WIDTH, PREVIEW_SCREEN_HEIGHT)
-            val rootSize = resolveElementSize(root, viewport, null)
-            val rootBounds = Rectangle(padding, padding, rootSize.width.coerceAtLeast(1), rootSize.height.coerceAtLeast(1))
-            val rootClip = if (root.clipping || root.fullscreen) rootBounds else null
-            collectLayout(
-                element = root,
-                parentBounds = null,
-                bounds = rootBounds,
-                inheritedClip = rootClip,
-                depth = 0,
-                result = result
-            )
-            return result
+        /** Delegates bounds computation to the Service layout engine over the merged resource caches. */
+        private fun applyLayout(target: GuiElement) {
+            val result = service.layoutRoot(target, currentResources(), padding, defaultLogicalSize())
+            nodes = result.nodes
+            logicalSize = result.logicalSize
         }
 
-        private fun collectLayout(
-            element: GuiElement,
-            parentBounds: Rectangle?,
-            bounds: Rectangle,
-            inheritedClip: Rectangle?,
-            depth: Int,
-            result: MutableList<GuiLayoutNode>
-        ) {
-            val issues = buildIssues(element, parentBounds, bounds)
-            val paintClip = intersectRect(inheritedClip, bounds)
-            val childClip = if (element.clipping) paintClip else inheritedClip
-            result.add(GuiLayoutNode(element, bounds, paintClip, depth, issues))
-            for (child in element.children) {
-                val childSize = resolveElementSize(child, bounds, element)
-                val childBounds = resolveElementBounds(child, bounds, childSize)
-                collectLayout(child, bounds, childBounds, childClip, depth + 1, result)
-            }
+        private fun defaultLogicalSize(): Dimension = Dimension(JBUIScale.scale(800), JBUIScale.scale(520))
+
+        private fun currentResources(): GuiPreviewResources {
+            return GuiPreviewResources(
+                localisationCacheKey ?: GuiPreviewService.localisationCacheKey(),
+                spriteInfoCache.toMap(),
+                localisationCache.toMap(),
+                imageCache.toMap()
+            )
         }
 
         private fun intersectRect(a: Rectangle?, b: Rectangle): Rectangle? {
             if (a == null) return Rectangle(b)
             val intersection = a.intersection(b)
             return if (intersection.width <= 0 || intersection.height <= 0) null else intersection
-        }
-
-        private fun resolveElementSize(
-            element: GuiElement,
-            parentBounds: Rectangle,
-            parentElement: GuiElement?
-        ): Dimension {
-            if (element.fullscreen) return Dimension(parentBounds.width.coerceAtLeast(1), parentBounds.height.coerceAtLeast(1))
-            if (element.type.equals("background", ignoreCase = true) && element.size == null) {
-                return Dimension(parentBounds.width.coerceAtLeast(1), parentBounds.height.coerceAtLeast(1))
-            }
-            val declared = element.size
-            val spriteSize = cachedSpriteInfo(element)?.let { nativeElementSize(it) }
-            val textSize = textSizeFallback(element, parentBounds)
-            val baseWidth = declared?.resolveWidth(parentBounds.width)
-                ?: textSize?.width
-                ?: spriteSize?.width
-                ?: defaultElementSize(element).width
-            val baseHeight = declared?.resolveHeight(parentBounds.height)
-                ?: textSize?.height
-                ?: spriteSize?.height
-                ?: defaultElementSize(element).height
-            val scale = element.scale?.takeIf { it > 0.0 } ?: 1.0
-            var width = (baseWidth * scale).roundToInt().coerceAtLeast(1)
-            var height = (baseHeight * scale).roundToInt().coerceAtLeast(1)
-
-            if (element.preserveAspectRatio && declared != null && spriteSize != null && spriteSize.width > 0 && spriteSize.height > 0) {
-                val ratio = spriteSize.width.toDouble() / spriteSize.height.toDouble()
-                if (declared.widthValue.percent && !declared.heightValue.percent) {
-                    height = (width / ratio).roundToInt().coerceAtLeast(1)
-                } else if (declared.heightValue.percent && !declared.widthValue.percent) {
-                    width = (height * ratio).roundToInt().coerceAtLeast(1)
-                } else {
-                    val fitted = fitAspectRatio(width, height, ratio)
-                    width = fitted.width
-                    height = fitted.height
-                }
-            }
-
-            if (parentElement?.type == "extendedScrollbarType" && element.size == null && element.type in setOf("slider", "track", "increaseButton", "decreaseButton")) {
-                if (spriteSize != null) return Dimension(spriteSize.width.coerceAtLeast(1), spriteSize.height.coerceAtLeast(1))
-            }
-            return Dimension(width, height)
-        }
-
-        private fun textSizeFallback(element: GuiElement, parentBounds: Rectangle): Dimension? {
-            if (!isTextElement(element)) return null
-            val width = element.maxWidth?.resolveSize(parentBounds.width)
-            val height = element.maxHeight?.resolveSize(parentBounds.height)
-            if (width == null && height == null) return null
-            val fallback = element.preferredSize
-            return Dimension(
-                (width ?: fallback.width).coerceAtLeast(1),
-                (height ?: fallback.height).coerceAtLeast(1)
-            )
-        }
-
-        private fun isTextElement(element: GuiElement): Boolean {
-            return element.type.equals("instantTextBoxType", ignoreCase = true) ||
-                    element.type.equals("instantTextboxType", ignoreCase = true)
-        }
-
-        private fun fitAspectRatio(width: Int, height: Int, ratio: Double): Dimension {
-            val widthFromHeight = (height * ratio).roundToInt().coerceAtLeast(1)
-            if (widthFromHeight <= width) return Dimension(widthFromHeight, height)
-            val heightFromWidth = (width / ratio).roundToInt().coerceAtLeast(1)
-            return Dimension(width, heightFromWidth)
-        }
-
-        private fun resolveElementBounds(
-            element: GuiElement,
-            parentBounds: Rectangle,
-            size: Dimension
-        ): Rectangle {
-            val anchor = orientationAnchor(element.orientation, parentBounds)
-            val offsetX = element.position.resolveX(parentBounds.width)
-            val offsetY = element.position.resolveY(parentBounds.height)
-            val origo = if (element.centerPosition) GuiAnchor.CENTER else origoAnchor(element.origo)
-            val x = anchor.x + offsetX - (size.width * origo.xFactor).roundToInt()
-            val y = anchor.y + offsetY - (size.height * origo.yFactor).roundToInt()
-            return Rectangle(x, y, size.width.coerceAtLeast(1), size.height.coerceAtLeast(1))
-        }
-
-        private fun orientationAnchor(value: String?, parentBounds: Rectangle): Point {
-            val anchor = anchorFromGuiValue(value) ?: GuiAnchor.UPPER_LEFT
-            return Point(
-                parentBounds.x + (parentBounds.width * anchor.xFactor).roundToInt(),
-                parentBounds.y + (parentBounds.height * anchor.yFactor).roundToInt()
-            )
-        }
-
-        private fun origoAnchor(value: String?): GuiAnchor {
-            return anchorFromGuiValue(value) ?: GuiAnchor.UPPER_LEFT
-        }
-
-        private fun anchorFromGuiValue(value: String?): GuiAnchor? {
-            val normalized = value?.trim()?.trim('"')?.lowercase()?.replace('-', '_') ?: return null
-            return when (normalized) {
-                "upper_left" -> GuiAnchor.UPPER_LEFT
-                "up", "upper", "center_up", "center_upper", "upper_center" -> GuiAnchor.UP
-                "upper_right" -> GuiAnchor.UPPER_RIGHT
-                "left", "center_left" -> GuiAnchor.LEFT
-                "center", "centre" -> GuiAnchor.CENTER
-                "right", "center_right" -> GuiAnchor.RIGHT
-                "lower_left" -> GuiAnchor.LOWER_LEFT
-                "down", "lower", "center_down", "center_lower", "lower_center" -> GuiAnchor.DOWN
-                "lower_right" -> GuiAnchor.LOWER_RIGHT
-                else -> null
-            }
-        }
-
-        private fun buildIssues(
-            element: GuiElement,
-            parentBounds: Rectangle?,
-            bounds: Rectangle
-        ): List<GuiPreviewIssue> {
-            val issues = mutableListOf<GuiPreviewIssue>()
-            val declaredSize = element.size
-            if (declaredSize != null && declaredSize.width == 0 && declaredSize.height == 0) {
-                issues.add(GuiPreviewIssue(GuiIssueSeverity.WARNING, "size is 0 x 0"))
-            }
-            if (element.primarySprite != null && isSpriteKnownMissing(element)) {
-                issues.add(GuiPreviewIssue(GuiIssueSeverity.WARNING, "sprite not resolved: ${element.primarySprite}"))
-            }
-            if (element.text != null && isLocalisationKnownMissing(element.text)) {
-                issues.add(GuiPreviewIssue(GuiIssueSeverity.INFO, "localisation not resolved: ${element.text}"))
-            }
-            if (parentBounds != null && !parentBounds.contains(bounds)) {
-                issues.add(GuiPreviewIssue(GuiIssueSeverity.WARNING, "extends outside parent bounds"))
-            }
-            return issues
-        }
-
-        private fun computeLogicalSize(nodes: List<GuiLayoutNode>): Dimension {
-            val maxX = nodes.maxOfOrNull { it.bounds.x + it.bounds.width } ?: JBUIScale.scale(800)
-            val maxY = nodes.maxOfOrNull { it.bounds.y + it.bounds.height } ?: JBUIScale.scale(520)
-            return Dimension(max(maxX + padding, JBUIScale.scale(800)), max(maxY + padding, JBUIScale.scale(520)))
         }
 
         private fun paintBackgroundGrid(g: Graphics2D) {
@@ -692,32 +514,12 @@ class GuiPreviewPanel(
             return value?.trim()?.trim('"')?.lowercase()?.replace('-', '_')
         }
 
-        private fun nativeSpriteSize(image: BufferedImage, spriteInfo: SpriteInfo): Dimension {
-            if (spriteInfo.usesDeclaredSpriteSize) {
-                spriteInfo.size?.toDimension()?.let { return it }
-            }
-            val frames = spriteInfo.noOfFrames?.coerceAtLeast(1) ?: 1
-            if (frames <= 1) return Dimension(image.width, image.height)
-            return when (frameDirection(image, frames)) {
-                FrameDirection.HORIZONTAL -> Dimension((image.width / frames).coerceAtLeast(1), image.height)
-                FrameDirection.VERTICAL -> Dimension(image.width, (image.height / frames).coerceAtLeast(1))
-            }
-        }
-
         private fun nativeElementSize(spriteInfo: SpriteInfo): Dimension? {
             val image = spriteInfo.primaryImagePath?.let { imageCache[it] }
-            val native = image?.let { nativeSpriteSize(it, spriteInfo) }
+            val native = image?.let { guiNativeSpriteSize(it.width, it.height, spriteInfo) }
             if (native != null) return native
-            if (spriteInfo.usesDeclaredSpriteSize) return spriteInfo.size?.toDimension()
+            if (spriteInfo.usesDeclaredSpriteSize) return spriteInfo.size?.toGuiDimension()
             return null
-        }
-
-        private fun defaultElementSize(element: GuiElement): Dimension {
-            if (element.type == "containerWindowType" && element.size == null && element.primarySprite == null) {
-                return Dimension(1, 1)
-            }
-            val preferred = element.preferredSize
-            return Dimension(preferred.width, preferred.height)
         }
 
         private fun preprocessedSpriteImage(
@@ -759,13 +561,13 @@ class GuiPreviewPanel(
         ): BufferedImage {
             val frames = spriteInfo.noOfFrames?.coerceAtLeast(1) ?: 1
             if (frames <= 1) return image
-            val direction = frameDirection(image, frames)
+            val direction = guiFrameDirection(image.width, image.height, frames)
             val frame = resolveFrameIndex(element.frame ?: spriteInfo.defaultFrame, frames)
             return when (direction) {
-                FrameDirection.HORIZONTAL -> {
+                GuiFrameDirection.HORIZONTAL -> {
                     cropFrame(image, spriteInfo, element, frames, frame, direction, horizontal = true)
                 }
-                FrameDirection.VERTICAL -> {
+                GuiFrameDirection.VERTICAL -> {
                     cropFrame(image, spriteInfo, element, frames, frame, direction, horizontal = false)
                 }
             }
@@ -777,7 +579,7 @@ class GuiPreviewPanel(
             element: GuiElement,
             frames: Int,
             frame: Int,
-            direction: FrameDirection,
+            direction: GuiFrameDirection,
             horizontal: Boolean
         ): BufferedImage {
             val total = if (horizontal) image.width else image.height
@@ -792,25 +594,17 @@ class GuiPreviewPanel(
             return image.getSubimage(sx, sy, width, height)
         }
 
-        private fun frameDirection(image: BufferedImage, frames: Int): FrameDirection {
-            if (frames <= 1) return FrameDirection.VERTICAL
-            val horizontalFrameWidth = image.width / frames
-            val verticalFrameHeight = image.height / frames
-            if (horizontalFrameWidth <= 0) return FrameDirection.VERTICAL
-            if (verticalFrameHeight <= 0) return FrameDirection.HORIZONTAL
-            val horizontalRatio = horizontalFrameWidth.toDouble() / image.height.toDouble()
-            val verticalRatio = image.width.toDouble() / verticalFrameHeight.toDouble()
-            return if (kotlin.math.abs(horizontalRatio - 1.0) <= kotlin.math.abs(verticalRatio - 1.0)) {
-                FrameDirection.HORIZONTAL
-            } else {
-                FrameDirection.VERTICAL
-            }
-        }
-
         private fun resolveFrameIndex(frame: Int?, frames: Int): Int {
             if (frame == null) return 0
             if (frame <= 0) return 0
             return (frame - 1).coerceIn(0, frames - 1)
+        }
+
+        private fun fitAspectRatio(width: Int, height: Int, ratio: Double): Dimension {
+            val widthFromHeight = (height * ratio).roundToInt().coerceAtLeast(1)
+            if (widthFromHeight <= width) return Dimension(widthFromHeight, height)
+            val heightFromWidth = (width / ratio).roundToInt().coerceAtLeast(1)
+            return Dimension(width, heightFromWidth)
         }
 
         private fun aspectFitBounds(sourceImage: BufferedImage, targetWidth: Int, targetHeight: Int): Rectangle {
@@ -981,17 +775,6 @@ class GuiPreviewPanel(
             val overlay = spriteInfo.imagePath2?.let { imageCache[it] }
             g.drawImage(base, bounds.x, bounds.y, bounds.width, bounds.height, null)
             if (overlay != null) g.drawImage(overlay, bounds.x, bounds.y, bounds.width, bounds.height, null)
-        }
-
-        private val SpriteInfo.usesCompositeTextures: Boolean
-            get() = subtype == "progressbar" || subtype == "circular_progressbar" || subtype == "masked_shield"
-
-        private val SpriteInfo.usesDeclaredSpriteSize: Boolean
-            get() = subtype == "progressbar" || subtype == "circular_progressbar"
-
-        private fun net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteSize.toDimension(): Dimension? {
-            if (width <= 0 || height <= 0) return null
-            return Dimension(width, height)
         }
 
         private fun steppedProgressRatio(element: GuiElement, spriteInfo: SpriteInfo): Double {
@@ -1250,8 +1033,7 @@ class GuiPreviewPanel(
 
             mergeResources(result)
             ready = true
-            nodes = layout(preloadRoot)
-            logicalSize = computeLogicalSize(nodes)
+            applyLayout(preloadRoot)
             revalidate()
             repaint()
         }
@@ -1364,8 +1146,7 @@ class GuiPreviewPanel(
             applyLocalPositionUpdate(node.element, GuiPoint(GuiValue.pixels(writeX), GuiValue.pixels(writeY)))
             val currentRoot = root
             if (currentRoot != null) {
-                nodes = layout(currentRoot)
-                logicalSize = computeLogicalSize(nodes)
+                applyLayout(currentRoot)
                 revalidate()
             }
             repaint()
