@@ -93,4 +93,62 @@ class MapPixelsTest {
         assertEquals(7, MapPixels.sameRgbInZone(keys, width = 3, zone = MapRenderZone(0, 0, 2, 2)))
         assertNull(MapPixels.sameRgbInZone(keys, width = 3, zone = MapRenderZone(0, 0, 3, 2)))
     }
+
+    @Test
+    fun mergeCentroidsWeightsByMass() {
+        val merged = MapPixels.mergeCentroids(
+            listOf(
+                MapPixels.CentroidPart(cx = 10.0, cy = 5.0, mass = 2, minX = 0, maxX = 20),
+                MapPixels.CentroidPart(cx = 20.0, cy = 15.0, mass = 2, minX = 0, maxX = 40)
+            ),
+            width = 1000
+        )
+
+        assertEquals(15.0, merged?.first!!, 1e-9)
+        assertEquals(10.0, merged.second, 1e-9)
+    }
+
+    @Test
+    fun mergeCentroidsWrapsPartsAcrossTheMapSeam() {
+        // A region hugging the right edge plus a part at the left edge merge across the seam.
+        val merged = MapPixels.mergeCentroids(
+            listOf(
+                MapPixels.CentroidPart(cx = 95.0, cy = 10.0, mass = 3, minX = 90, maxX = 99),
+                MapPixels.CentroidPart(cx = 2.0, cy = 10.0, mass = 1, minX = 0, maxX = 5)
+            ),
+            width = 100
+        )
+
+        // Without the wrap correction the naive centroid would jump to ~73 (mid-map).
+        assertEquals(96.75, merged?.first!!, 1e-9)
+        assertEquals(10.0, merged.second, 1e-9)
+    }
+
+    @Test
+    fun mergeCentroidsDoesNotWrapMidMapRegions() {
+        val merged = MapPixels.mergeCentroids(
+            listOf(
+                MapPixels.CentroidPart(cx = 40.0, cy = 0.0, mass = 1, minX = 35, maxX = 45),
+                MapPixels.CentroidPart(cx = 60.0, cy = 0.0, mass = 1, minX = 55, maxX = 65)
+            ),
+            width = 100
+        )
+
+        assertEquals(50.0, merged?.first!!, 1e-9)
+    }
+
+    @Test
+    fun mergeCentroidsReturnsNullWithoutMass() {
+        assertNull(MapPixels.mergeCentroids(emptyList(), width = 100))
+    }
+
+    @Test
+    fun labelInkTurnsWhiteOnDarkColoursAndBlackOnLight() {
+        assertTrue(MapPixels.labelInkIsWhite(0x202020))
+        assertFalse(MapPixels.labelInkIsWhite(0xF0F0F0))
+        // The reference weights green heavily: 0x808080 (384) just crosses the threshold.
+        assertFalse(MapPixels.labelInkIsWhite(0x808080))
+        assertTrue(MapPixels.labelInkIsWhite(0x787878))
+        assertFalse(MapPixels.labelInkIsWhite(0x80E080))
+    }
 }

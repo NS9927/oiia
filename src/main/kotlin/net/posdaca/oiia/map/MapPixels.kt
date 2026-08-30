@@ -57,4 +57,50 @@ internal object MapPixels {
         }
         return first
     }
+
+    /** One region part's centroid and horizontal extent, used as merge input. */
+    data class CentroidPart(
+        val cx: Double,
+        val cy: Double,
+        val mass: Int,
+        val minX: Int,
+        val maxX: Int
+    )
+
+    /**
+     * Mass-weighted merge of part centroids. When every part hugs one side of the map seam
+     * (the cylindrical wrap), parts on the right half are shifted by one map width so the
+     * merged centroid stays on the wrapped edge instead of jumping to mid-map.
+     */
+    fun mergeCentroids(parts: List<CentroidPart>, width: Int): Pair<Double, Double>? {
+        if (parts.isEmpty() || width <= 0) return null
+        val quarter = width * 0.25
+        val half = width * 0.5
+        val nearSeam = parts.all { it.maxX < quarter || it.minX > width - quarter }
+        var massX = 0.0
+        var massY = 0.0
+        var mass = 0L
+        for (part in parts) {
+            if (part.mass <= 0) continue
+            val shift = if (nearSeam && part.cx > half) -width.toDouble() else 0.0
+            massX += (part.cx + shift) * part.mass
+            massY += part.cy * part.mass
+            mass += part.mass
+        }
+        if (mass == 0L) return null
+        var x = massX / mass
+        if (x < 0) x += width
+        return x to massY / mass
+    }
+
+    /**
+     * Reference label-ink rule: on a high-luminance background the ink turns black, otherwise
+     * white. Green counts heavily, matching perceived brightness on map colours.
+     */
+    fun labelInkIsWhite(renderRgb: Int): Boolean {
+        val r = (renderRgb shr 16) and 0xFF
+        val g = (renderRgb shr 8) and 0xFF
+        val b = renderRgb and 0xFF
+        return r * 0.7 + g * 2.0 + b * 0.3 <= 3 * 0x7F
+    }
 }

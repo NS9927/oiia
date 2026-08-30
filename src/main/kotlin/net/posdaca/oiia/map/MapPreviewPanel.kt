@@ -1095,50 +1095,84 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             if (labels.isEmpty()) return
             val imageWidth = current.provincesImage.width
             val scaledWidth = (imageWidth * zoom).toInt()
-            g2.font = JBFont.label().deriveFont(java.awt.Font.BOLD, (12f * zoom.toFloat()).coerceIn(11f, 24f))
-            val foreground = JBColor(Color(245, 245, 245, 220), Color(245, 245, 245, 230))
-            val shadow = JBColor(Color(0, 0, 0, 180), Color(0, 0, 0, 190))
-            val metrics = g2.fontMetrics
+            g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+            g2.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS, RenderingHints.VALUE_FRACTIONALMETRICS_ON)
+            // Labels stay screen-sized (like the game's), instead of scaling with the map zoom.
+            val nameFont = JBFont.label().deriveFont(java.awt.Font.PLAIN, 12f)
+            val idFont = JBFont.label().deriveFont(java.awt.Font.PLAIN, 10f)
+            val nameMetrics = g2.getFontMetrics(nameFont)
+            val idMetrics = g2.getFontMetrics(idFont)
+            val whiteInk = JBColor(Color(255, 255, 255), Color(255, 255, 255))
+            val blackInk = JBColor(Color(20, 20, 20), Color(20, 20, 20))
             for (copy in 0 until LOOP_COPIES) {
                 val copyOffset = copy * scaledWidth
                 for (label in labels) {
-                    val textWidth = metrics.stringWidth(label.text)
-                    val x = copyOffset + (label.x * zoom).roundToInt() - textWidth / 2
-                    val y = (label.y * zoom).roundToInt() + metrics.ascent / 2
-                    if (x + textWidth < clip.x || x > clip.x + clip.width ||
-                        y + metrics.descent < clip.y || y - metrics.ascent > clip.y + clip.height
+                    val onScreenWidth = (label.bounds.maxX - label.bounds.minX + 1) * zoom
+                    val onScreenHeight = (label.bounds.maxY - label.bounds.minY + 1) * zoom
+                    if (onScreenWidth < LABEL_MIN_WIDTH || onScreenHeight < LABEL_MIN_HEIGHT) continue
+                    val idText = label.idText?.takeIf {
+                        onScreenWidth >= LABEL_ID_MIN_WIDTH && onScreenHeight >= LABEL_ID_MIN_HEIGHT
+                    }
+                    val nameWidth = nameMetrics.stringWidth(label.text)
+                    val idWidth = idText?.let { idMetrics.stringWidth(it) } ?: 0
+                    val halfWidth = maxOf(nameWidth, idWidth) / 2
+                    val cx = copyOffset + (label.x * zoom).roundToInt()
+                    val cy = (label.y * zoom).roundToInt()
+                    if (cx + halfWidth < clip.x || cx - halfWidth > clip.x + clip.width ||
+                        cy + nameMetrics.height < clip.y || cy - nameMetrics.height > clip.y + clip.height
                     ) {
                         continue
                     }
-                    g2.color = shadow
-                    g2.drawString(label.text, x + 1, y + 1)
-                    g2.color = foreground
-                    g2.drawString(label.text, x, y)
+                    g2.color = label.ink
+                    g2.font = nameFont
+                    val nameBaseline = if (idText == null) {
+                        cy + nameMetrics.ascent / 2
+                    } else {
+                        cy - LABEL_LINE_GAP + nameMetrics.ascent / 2
+                    }
+                    g2.drawString(label.text, cx - nameWidth / 2, nameBaseline)
+                    if (idText != null) {
+                        g2.font = idFont
+                        g2.color = if (label.ink == whiteInk) JBColor(Color(255, 255, 255, 190), Color(255, 255, 255, 190)) else JBColor(Color(20, 20, 20, 190), Color(20, 20, 20, 190))
+                        g2.drawString(idText, cx - idWidth / 2, cy + LABEL_LINE_GAP + idMetrics.ascent / 2)
+                    }
                 }
             }
         }
 
-        private fun labelsForMode(current: LoadedMapData, mode: MapPreviewMode): List<MapLabel> {
+        private fun labelsForMode(current: LoadedMapData, mode: MapPreviewMode): List<MapLabelDraw> {
             val index = current.pixelIndex
+            fun ink(rgb: Int): JBColor = if (MapPixels.labelInkIsWhite(rgb)) {
+                JBColor(Color(255, 255, 255), Color(255, 255, 255))
+            } else {
+                JBColor(Color(20, 20, 20), Color(20, 20, 20))
+            }
             return when (mode) {
-                MapPreviewMode.PROVINCE -> current.provinceById.values.mapNotNull { province ->
-                    val bounds = index.provinceBounds[province.id] ?: return@mapNotNull null
-                    MapLabel(displayProvinceName(province), bounds.centerX(), bounds.centerY())
+                MapPreviewMode.PROVINCE -> index.provinceLabelAnchors.mapNotNull { (id, anchor) ->
+                    val bounds = index.provinceBounds[id] ?: return@mapNotNull null
+                    val province = current.provinceById[id] ?: return@mapNotNull null
+                    MapLabelDraw(displayProvinceName(province), null, anchor.x, anchor.y, ink(anchor.renderRgb), bounds)
                 }
 
-                MapPreviewMode.STATE -> current.stateById.values.mapNotNull { state ->
-                    val bounds = index.stateBounds[state.id] ?: return@mapNotNull null
-                    MapLabel(state.localizedName ?: state.name ?: state.id.toString(), bounds.centerX(), bounds.centerY())
+                MapPreviewMode.STATE -> index.stateLabelAnchors.mapNotNull { (id, anchor) ->
+                    val bounds = index.stateBounds[id] ?: return@mapNotNull null
+                    val state = current.stateById[id] ?: return@mapNotNull null
+                    val name = state.localizedName ?: state.name ?: id.toString()
+                    MapLabelDraw(name, id.toString().takeUnless { it == name }, anchor.x, anchor.y, ink(anchor.renderRgb), bounds)
                 }
 
                 MapPreviewMode.COUNTRY -> current.countryByTag.values.mapNotNull { country ->
+                    val anchor = index.countryLabelAnchors[country.mapKey] ?: return@mapNotNull null
                     val bounds = index.countryBounds[country.mapKey] ?: return@mapNotNull null
-                    MapLabel(country.localizedName ?: country.tag, bounds.centerX(), bounds.centerY())
+                    val name = country.localizedName ?: country.tag
+                    MapLabelDraw(name, country.tag.takeUnless { it == name }, anchor.x, anchor.y, ink(anchor.renderRgb), bounds)
                 }
 
-                MapPreviewMode.STRATEGIC_REGION -> current.strategicRegionById.values.mapNotNull { region ->
-                    val bounds = index.strategicRegionBounds[region.id] ?: return@mapNotNull null
-                    MapLabel(region.localizedName ?: region.name ?: region.id.toString(), bounds.centerX(), bounds.centerY())
+                MapPreviewMode.STRATEGIC_REGION -> index.strategicRegionLabelAnchors.mapNotNull { (id, anchor) ->
+                    val bounds = index.strategicRegionBounds[id] ?: return@mapNotNull null
+                    val region = current.strategicRegionById[id] ?: return@mapNotNull null
+                    val name = region.localizedName ?: region.name ?: id.toString()
+                    MapLabelDraw(name, id.toString().takeUnless { it == name }, anchor.x, anchor.y, ink(anchor.renderRgb), bounds)
                 }
             }
         }
@@ -1385,7 +1419,14 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
     private data class HoverSelection(val mode: MapPreviewMode, val key: Int)
     private data class HoverSpan(val x: Int, val y: Int, val length: Int)
     private data class HoverOverlay(val spans: List<HoverSpan>)
-    private data class MapLabel(val text: String, val x: Int, val y: Int)
+    private data class MapLabelDraw(
+        val text: String,
+        val idText: String?,
+        val x: Double,
+        val y: Double,
+        val ink: JBColor,
+        val bounds: PixelBounds
+    )
     private data class SourceTarget(val path: java.nio.file.Path?, val line: Int)
     private data class ImageRect(val minX: Double, val minY: Double, val maxX: Double, val maxY: Double)
     private data class MapTileKey(val x: Int, val y: Int)
@@ -1413,9 +1454,6 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         val maxTileY: Int
     )
 
-    private fun PixelBounds.centerX(): Int = (minX + maxX) / 2
-    private fun PixelBounds.centerY(): Int = (minY + maxY) / 2
-
     private fun ImageRect.intersectsSegment(x1: Double, y1: Double, x2: Double, y2: Double, padding: Double): Boolean {
         val segmentMinX = minOf(x1, x2) - padding
         val segmentMaxX = maxOf(x1, x2) + padding
@@ -1434,6 +1472,12 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         private const val MAP_TILE_SIZE = 256
         private const val BORDER_TILE_PADDING = 2
         private const val BORDER_PREFETCH_MARGIN = 1
+        // Labels of regions smaller than this on screen are hidden to keep low zooms readable.
+        private const val LABEL_MIN_WIDTH = 32
+        private const val LABEL_MIN_HEIGHT = 16
+        private const val LABEL_ID_MIN_WIDTH = 64
+        private const val LABEL_ID_MIN_HEIGHT = 28
+        private const val LABEL_LINE_GAP = 5
         private const val BORDER_RENDER_BATCH_SIZE = 8
         private const val ZOOM_SETTLE_DELAY_MS = 110
         private const val MAX_TILE_CACHE_SIZE = 512

@@ -13,7 +13,19 @@ class MapPixelIndex(
     val provinceBounds: Map<Int, PixelBounds>,
     val stateBounds: Map<Int, PixelBounds>,
     val countryBounds: Map<Int, PixelBounds>,
-    val strategicRegionBounds: Map<Int, PixelBounds>
+    val strategicRegionBounds: Map<Int, PixelBounds>,
+    val provinceLabelAnchors: Map<Int, MapLabelAnchor> = emptyMap(),
+    val stateLabelAnchors: Map<Int, MapLabelAnchor> = emptyMap(),
+    val countryLabelAnchors: Map<Int, MapLabelAnchor> = emptyMap(),
+    val strategicRegionLabelAnchors: Map<Int, MapLabelAnchor> = emptyMap()
+)
+
+/** Mass-weighted centroid of a region plus its rendered colour, for map label placement. */
+data class MapLabelAnchor(
+    val x: Double,
+    val y: Double,
+    val mass: Int,
+    val renderRgb: Int
 )
 
 data class PixelBounds(

@@ -430,7 +430,10 @@ class MapPreviewService(private val project: Project) {
         val stateBounds = mutableMapOf<Int, MutablePixelBounds>()
         val countryBounds = mutableMapOf<Int, MutablePixelBounds>()
         val strategicRegionBounds = mutableMapOf<Int, MutablePixelBounds>()
+        val provinceMassAcc = HashMap<Int, LongArray>()
+        val provinceRgbById = HashMap<Int, Int>()
         val states = stateByProvinceId.values.distinctBy { it.id }
+        val stateById = states.associateBy { it.id }
         val stateColorById = states.associate { it.id to colorForId(it.id) }
         val countryColorByStateId = states.associate { state ->
             val countryColor = countryDefinitions[state.owner?.uppercase()]?.color ?: colorForKey(state.owner)
@@ -462,11 +465,43 @@ class MapPreviewService(private val project: Project) {
                 countryKeys[index] = countryKey
                 strategicRegionKeys[index] = strategicRegionKey
                 provinceBounds.getOrPut(provinceKey) { MutablePixelBounds() }.include(x, y)
+                provinceMassAcc.getOrPut(provinceKey) { LongArray(3) }.let { acc ->
+                    acc[0]++
+                    acc[1] += x.toLong()
+                    acc[2] += y.toLong()
+                }
+                provinceRgbById.putIfAbsent(provinceKey, rgb)
                 if (stateKey != MapPixels.UNKNOWN_KEY) stateBounds.getOrPut(stateKey) { MutablePixelBounds() }.include(x, y)
                 if (countryKey != MapPixels.UNKNOWN_KEY) countryBounds.getOrPut(countryKey) { MutablePixelBounds() }.include(x, y)
                 if (strategicRegionKey != MapPixels.UNKNOWN_KEY) {
                     strategicRegionBounds.getOrPut(strategicRegionKey) { MutablePixelBounds() }.include(x, y)
                 }
+            }
+        }
+
+        val provinceLabelAnchors = HashMap<Int, MapLabelAnchor>()
+        for ((id, acc) in provinceMassAcc) {
+            val mass = acc[0].toInt()
+            if (mass <= 0) continue
+            val rgb = provinceRgbById[id] ?: continue
+            provinceLabelAnchors[id] = MapLabelAnchor(
+                acc[1] / mass.toDouble(),
+                acc[2] / mass.toDouble(),
+                mass,
+                rgb
+            )
+        }
+        val provinceBoundValues = provinceBounds.mapValues { it.value.toBounds() }
+        val stateBoundValues = stateBounds.mapValues { it.value.toBounds() }
+        val stateLabelAnchors = buildLabelAnchors(provinceLabelAnchors, provinceBoundValues, width) { id ->
+            stateByProvinceId[id]?.let { it.id to stateColorById.getValue(it.id) }
+        }
+        val strategicRegionLabelAnchors = buildLabelAnchors(provinceLabelAnchors, provinceBoundValues, width) { id ->
+            strategicRegionByProvinceId[id]?.let { it.id to strategicRegionColorById.getValue(it.id) }
+        }
+        val countryLabelAnchors = buildLabelAnchors(stateLabelAnchors, stateBoundValues, width) { stateId ->
+            stateById[stateId]?.owner?.takeIf { it.isNotBlank() }?.let { owner ->
+                mapCountryKey(owner) to countryColorByStateId.getValue(stateId)
             }
         }
 
@@ -476,10 +511,14 @@ class MapPreviewService(private val project: Project) {
             stateKeys = stateKeys,
             countryKeys = countryKeys,
             strategicRegionKeys = strategicRegionKeys,
-            provinceBounds = provinceBounds.mapValues { it.value.toBounds() },
-            stateBounds = stateBounds.mapValues { it.value.toBounds() },
+            provinceBounds = provinceBoundValues,
+            stateBounds = stateBoundValues,
             countryBounds = countryBounds.mapValues { it.value.toBounds() },
-            strategicRegionBounds = strategicRegionBounds.mapValues { it.value.toBounds() }
+            strategicRegionBounds = strategicRegionBounds.mapValues { it.value.toBounds() },
+            provinceLabelAnchors = provinceLabelAnchors,
+            stateLabelAnchors = stateLabelAnchors,
+            countryLabelAnchors = countryLabelAnchors,
+            strategicRegionLabelAnchors = strategicRegionLabelAnchors
         )
         val smoothBorderSegments = buildSmoothBorderSegments(pixelIndex, width, height)
         val renderAreas = buildRenderAreas(
@@ -515,6 +554,35 @@ class MapPreviewService(private val project: Project) {
         }
 
         fun toBounds(): PixelBounds = PixelBounds(minX, minY, maxX, maxY)
+    }
+
+    /**
+     * Groups sub-region label anchors into their parent region ([classify] maps a source id to
+     * the parent key and the parent's rendered colour) and merges each group's centroids with
+     * seam-aware mass weighting.
+     */
+    private fun <K> buildLabelAnchors(
+        sourceAnchors: Map<Int, MapLabelAnchor>,
+        sourceBounds: Map<Int, PixelBounds>,
+        width: Int,
+        classify: (Int) -> Pair<K, Int>?
+    ): Map<K, MapLabelAnchor> {
+        val partsByGroup = LinkedHashMap<K, MutableList<MapPixels.CentroidPart>>()
+        val rgbByGroup = HashMap<K, Int>()
+        for ((id, anchor) in sourceAnchors) {
+            val (groupKey, rgb) = classify(id) ?: continue
+            val bounds = sourceBounds[id] ?: continue
+            rgbByGroup.putIfAbsent(groupKey, rgb)
+            partsByGroup.getOrPut(groupKey) { mutableListOf() }
+                .add(MapPixels.CentroidPart(anchor.x, anchor.y, anchor.mass, bounds.minX, bounds.maxX))
+        }
+        val anchors = HashMap<K, MapLabelAnchor>()
+        for ((groupKey, parts) in partsByGroup) {
+            val merged = MapPixels.mergeCentroids(parts, width) ?: continue
+            val rgb = rgbByGroup[groupKey] ?: continue
+            anchors[groupKey] = MapLabelAnchor(merged.first, merged.second, parts.sumOf { it.mass }, rgb)
+        }
+        return anchors
     }
 
     private fun buildRenderAreas(

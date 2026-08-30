@@ -4,7 +4,8 @@
 
 ### Added
 
-- Unit-test anchors for the previously untested core logic: the GUI layout engine, the map preview's pure pixel math (province boundaries, render-zone uniformity), the sprite resolver's path/stamp seams, prefix icon lookup, and HOI4 resource-root planning (priority-mod matching and dependency traversal).
+- Map labels now anchor to each region's mass-weighted pixel centroid (with seam-aware wrap correction for regions crossing the map edge), draw a second dim line with the region id, use a screen-fixed font instead of scaling with zoom, pick black/white ink by the region's rendered colour, and hide labels of regions too small on screen at low zoom - matching the label model of the hoi4modutilities reference.
+- Unit-test anchors for the previously untested core logic: the GUI layout engine, the map preview's pure pixel math (province boundaries, render-zone uniformity, centroid merging, label ink), the sprite resolver's path/stamp seams, prefix icon lookup, and HOI4 resource-root planning (priority-mod matching and dependency traversal).
 
 ### Changed
 
