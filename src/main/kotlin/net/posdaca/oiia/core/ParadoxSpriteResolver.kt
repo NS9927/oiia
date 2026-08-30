@@ -3,10 +3,14 @@ package net.posdaca.oiia.core
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.psi.PsiFile
+import com.intellij.psi.PsiManager
 import icu.windea.pls.lang.search.ParadoxDefinitionSearch
 import icu.windea.pls.lang.search.ParadoxFilePathSearch
 import icu.windea.pls.lang.util.ParadoxDefinitionManager
 import icu.windea.pls.lang.util.ParadoxImageManager
+import icu.windea.pls.script.psi.ParadoxScriptBlock
+import icu.windea.pls.script.psi.ParadoxScriptFile
 import icu.windea.pls.script.psi.ParadoxScriptProperty
 import net.posdaca.oiia.core.files.ResourceFiles
 import net.posdaca.oiia.core.PrefixIconLookup
@@ -265,46 +269,61 @@ class ParadoxSpriteResolver(private val project: Project) {
     private fun cacheSpriteDefinitions(root: Path, spriteDefinitions: MutableList<SpriteDefinition>) {
         val gfxFiles = ResourceFiles.listFiles(listOf(root), listOf("gfx", "interface"), setOf(".gfx"), maxDepth = 6)
         for (path in gfxFiles) {
-            parseGfxFile(root, path, spriteDefinitions)
+            // `.gfx` is a Paradox-script extension, so the file parses to ParadoxScriptFile PSI;
+            // per-file read actions keep write actions interleavable during the bulk scan.
+            val vf = ResourceFiles.toVirtualFile(path) ?: continue
+            val psiFile = ApplicationManager.getApplication().runReadAction<PsiFile?> {
+                PsiManager.getInstance(project).findFile(vf)
+            } as? ParadoxScriptFile ?: continue
+            val rootBlock = psiFile.block ?: continue
+            collectSpriteDefinitions(rootBlock.propertyList, root, spriteDefinitions)
         }
     }
 
-
-    private fun parseGfxFile(root: Path, path: Path, spriteDefinitions: MutableList<SpriteDefinition>) {
-        val content = ResourceFiles.readText(path) ?: return
-        ParadoxGfxParser.findSpriteBlocks(content).forEach { spriteBlock ->
-            val body = spriteBlock.body
-            val assignmentBody = ParadoxGfxParser.stripLineComments(body)
-            val name = ParadoxGfxParser.parseAssignmentValue(assignmentBody, "name")?.takeIf { it.isNotBlank() }
-                ?: return@forEach
-            val texture = ParadoxGfxParser.parseAssignmentValue(assignmentBody, "textureFile")
-            val texture1 = ParadoxGfxParser.parseAssignmentValue(assignmentBody, "textureFile1")
-            val texture2 = ParadoxGfxParser.parseAssignmentValue(assignmentBody, "textureFile2")
-            val effectFile = ParadoxGfxParser.parseAssignmentValue(assignmentBody, "effectFile")
-            if (texture == null && texture1 == null && texture2 == null) return@forEach
-            spriteDefinitions.add(
-                SpriteDefinition(
-                    name = name,
-                    textureFile = texture,
-                    root = root,
-                    subtype = ParadoxGfxParser.subtypeFromPropertyKey(spriteBlock.key),
-                    borderSize = ParadoxGfxParser.parseBorderSize(assignmentBody),
-                    size = ParadoxGfxParser.parseSpriteSize(assignmentBody),
-                    tilingCenter = ParadoxGfxParser.parseAssignmentValue(assignmentBody, "tilingCenter").parseParadoxBoolean() ?: false,
-                    noOfFrames = ParadoxGfxParser.parseAssignmentValue(assignmentBody, "noOfFrames")?.parseParadoxInt(),
-                    defaultFrame = ParadoxGfxParser.parseAssignmentValue(assignmentBody, "default_frame")?.parseParadoxInt(),
-                    textureFile1 = texture1,
-                    textureFile2 = texture2,
-                    effectFile = effectFile,
-                    horizontal = ParadoxGfxParser.parseAssignmentValue(assignmentBody, "horizontal").parseParadoxBoolean(),
-                    steps = ParadoxGfxParser.parseAssignmentValue(assignmentBody, "steps")?.parseParadoxInt(),
-                    rotation = ParadoxGfxParser.parseAssignmentValue(assignmentBody, "rotation")?.parseParadoxInt(),
-                    amount = ParadoxGfxParser.parseAssignmentValue(assignmentBody, "amount")?.parseParadoxInt(),
-                    alwaysTransparent = ParadoxGfxParser.parseAssignmentValue(assignmentBody, "alwaystransparent").parseParadoxBoolean()
-                        ?: ParadoxGfxParser.parseAssignmentValue(assignmentBody, "allwaystransparent").parseParadoxBoolean()
-                )
-            )
+    private fun collectSpriteDefinitions(
+        properties: List<ParadoxScriptProperty>,
+        root: Path,
+        spriteDefinitions: MutableList<SpriteDefinition>
+    ) {
+        for (prop in properties) {
+            val key = prop.propertyKey.text.lowercase()
+            val inner = prop.block
+            when {
+                inner == null -> continue
+                key in ParadoxGfxParser.SPRITE_TYPE_KEYS -> spriteDefinition(prop, root)?.let { spriteDefinitions.add(it) }
+                else -> collectSpriteDefinitions(inner.propertyList, root, spriteDefinitions)
+            }
         }
+    }
+
+    private fun spriteDefinition(prop: ParadoxScriptProperty, root: Path): SpriteDefinition? {
+        val block = prop.block ?: return null
+        val name = block.propertyValue("name")?.let { ParadoxGfxParser.cleanToken(it) }?.takeIf { it.isNotBlank() }
+            ?: return null
+        val texture = block.propertyValue("textureFile")?.let { ParadoxGfxParser.cleanToken(it) }
+        val texture1 = block.propertyValue("textureFile1")?.let { ParadoxGfxParser.cleanToken(it) }
+        val texture2 = block.propertyValue("textureFile2")?.let { ParadoxGfxParser.cleanToken(it) }
+        if (texture == null && texture1 == null && texture2 == null) return null
+        return SpriteDefinition(
+            name = name,
+            textureFile = texture,
+            root = root,
+            subtype = ParadoxGfxParser.subtypeFromPropertyKey(prop.propertyKey.text),
+            borderSize = block.propertyBlock("borderSize")?.let(::parseInsets),
+            size = block.propertyBlock("size")?.let(::parseSize),
+            tilingCenter = block.propertyValue("tilingCenter").parseParadoxBoolean() ?: false,
+            noOfFrames = block.propertyValue("noOfFrames")?.parseParadoxInt(),
+            defaultFrame = block.propertyValue("default_frame")?.parseParadoxInt(),
+            textureFile1 = texture1,
+            textureFile2 = texture2,
+            effectFile = block.propertyValue("effectFile")?.let { ParadoxGfxParser.cleanToken(it) },
+            horizontal = block.propertyValue("horizontal").parseParadoxBoolean(),
+            steps = block.propertyValue("steps")?.parseParadoxInt(),
+            rotation = block.propertyValue("rotation")?.parseParadoxInt(),
+            amount = block.propertyValue("amount")?.parseParadoxInt(),
+            alwaysTransparent = block.propertyValue("alwaystransparent").parseParadoxBoolean()
+                ?: block.propertyValue("allwaystransparent").parseParadoxBoolean()
+        )
     }
 
     private fun cacheIconFile(root: Path, file: Path, iconFiles: MutableMap<String, String>) {
