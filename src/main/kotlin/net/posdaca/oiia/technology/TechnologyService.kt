@@ -13,14 +13,8 @@ import icu.windea.pls.script.psi.ParadoxScriptProperty
 import net.posdaca.oiia.core.ParadoxLocalisationPreference
 import net.posdaca.oiia.core.ParadoxLocalisationResolver
 import net.posdaca.oiia.core.ParadoxSpriteResolver
-import net.posdaca.oiia.core.ParadoxTextEntry
-import net.posdaca.oiia.core.ParadoxTextParser
-import net.posdaca.oiia.core.atomValue
-import net.posdaca.oiia.core.blockEntries
-import net.posdaca.oiia.core.enumValues
 import net.posdaca.oiia.core.files.LocalisationFiles
 import net.posdaca.oiia.core.files.ResourceFiles
-import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicInteger
 
 class TechnologyService(private val project: Project) {
@@ -33,7 +27,6 @@ class TechnologyService(private val project: Project) {
     fun parseTechnologyTreesFromFile(psiFile: PsiFile): List<TechnologyTreeData> {
         val technologies = mutableListOf<TechnologyData>()
         if (psiFile is ParadoxScriptFile) parseFromPlsPsi(psiFile, technologies)
-        if (technologies.isEmpty()) parseFromText(psiFile.virtualFile?.path, technologies)
         val grouped = sortedMapOf<String, MutableList<TechnologyData>>(String.CASE_INSENSITIVE_ORDER)
         for (technology in technologies) {
             val folderNames = technology.folders.keys.takeIf { it.isNotEmpty() }
@@ -301,120 +294,6 @@ class TechnologyService(private val project: Project) {
             map[technology.id] = names.toList()
         }
         return map
-    }
-
-    private fun parseFromText(filePath: String?, technologies: MutableList<TechnologyData>) {
-        if (filePath == null) return
-        val path = Path.of(filePath)
-        if (!ResourceFiles.isRegularFile(path)) return
-
-        val entries = ParadoxTextParser.parse(ResourceFiles.readText(path) ?: return)
-        val technologyEntries = entries
-            .filter { it.key == "technologies" }
-            .flatMap { it.value.blockEntries() }
-            .ifEmpty { entries }
-
-        for (entry in technologyEntries) {
-            parseTextTechnology(filePath, entry)?.let { technologies.add(it) }
-        }
-    }
-
-    private fun parseTextTechnology(filePath: String, entry: ParadoxTextEntry): TechnologyData? {
-        if (entry.key in NON_TECHNOLOGY_KEYS) return null
-        val blockEntries = entry.value.blockEntries().takeIf { it.isNotEmpty() } ?: return null
-        val folders = linkedMapOf<String, TechnologyFolderData>()
-        var startYear: Int? = null
-        val categories = mutableListOf<String>()
-        val leadsTo = mutableListOf<String>()
-        val xor = mutableListOf<String>()
-        val subTechnologies = mutableListOf<String>()
-        var enableEquipments = false
-        var forceUseSmallTechLayout = false
-
-        for (field in blockEntries) {
-            when (field.key) {
-                "folder" -> extractTextFolders(field).forEach { folders[it.name] = it }
-                "start_year" -> startYear = field.value.atomValue()?.toIntOrNull()
-                "categories" -> categories.addAll(extractTextEnumValues(field))
-                "path" -> leadsTo.addAll(extractTextPathLeads(field))
-                "xor" -> xor.addAll(extractTextEnumValues(field))
-                "sub_technologies" -> subTechnologies.addAll(extractTextEnumValues(field))
-                "enable_equipments" -> enableEquipments = field.value != null
-                "force_use_small_tech_layout" -> forceUseSmallTechLayout = field.value.atomValue()?.toBoolean() ?: false
-            }
-        }
-
-        val primaryFolder = folders.values.firstOrNull()
-        return TechnologyData(
-            id = entry.key,
-            folderName = primaryFolder?.name,
-            folders = folders,
-            x = primaryFolder?.x ?: 0.0,
-            y = primaryFolder?.y ?: 0.0,
-            startYear = startYear,
-            categories = categories.distinct(),
-            leadsTo = leadsTo.distinct(),
-            xor = xor.distinct(),
-            subTechnologies = subTechnologies.distinct(),
-            enableEquipments = enableEquipments,
-            forceUseSmallTechLayout = forceUseSmallTechLayout,
-            sourceFilePath = filePath,
-            sourceLine = entry.lineNumber
-        )
-    }
-
-    private fun extractTextFolders(entry: ParadoxTextEntry): List<TechnologyFolderData> {
-        val blockEntries = entry.value.blockEntries()
-        if (blockEntries.isEmpty()) {
-            return entry.value.atomValue()?.let { listOf(TechnologyFolderData(it)) } ?: emptyList()
-        }
-
-        val directName = blockEntries.firstOrNull { it.key == "name" }?.value.atomValue()
-        if (directName != null) {
-            val position = blockEntries.firstOrNull { it.key == "position" }
-            return listOf(TechnologyFolderData(directName, extractTextPositionX(position), extractTextPositionY(position)))
-        }
-
-        val result = mutableListOf<TechnologyFolderData>()
-        for (folderEntry in blockEntries) {
-            val nestedEntries = folderEntry.value.blockEntries()
-            if (folderEntry.key == "position" || nestedEntries.isEmpty()) continue
-            val nestedName = nestedEntries.firstOrNull { it.key == "name" }?.value.atomValue() ?: folderEntry.key
-            val position = nestedEntries.firstOrNull { it.key == "position" }
-            result.add(TechnologyFolderData(nestedName, extractTextPositionX(position), extractTextPositionY(position)))
-        }
-        return result
-    }
-
-    private fun extractTextPositionX(position: ParadoxTextEntry?): Double {
-        val entries = position?.value.blockEntries()
-        return extractTextNamedNumber(entries, "x") ?: extractTextIndexedNumber(entries, 0) ?: 0.0
-    }
-
-    private fun extractTextPositionY(position: ParadoxTextEntry?): Double {
-        val entries = position?.value.blockEntries()
-        return extractTextNamedNumber(entries, "y") ?: extractTextIndexedNumber(entries, 1) ?: 0.0
-    }
-
-    private fun extractTextNamedNumber(entries: List<ParadoxTextEntry>?, key: String): Double? {
-        return entries?.firstOrNull { it.key == key }?.value.atomValue()?.toDoubleOrNull()
-    }
-
-    private fun extractTextIndexedNumber(entries: List<ParadoxTextEntry>?, index: Int): Double? {
-        val entry = entries?.getOrNull(index) ?: return null
-        return entry.value.atomValue()?.toDoubleOrNull() ?: entry.key.toDoubleOrNull()
-    }
-
-    private fun extractTextPathLeads(entry: ParadoxTextEntry): List<String> {
-        val direct = entry.value.atomValue()
-        if (direct != null) return listOf(direct)
-        return entry.value.blockEntries().mapNotNull { pathField ->
-            if (pathField.key == "leads_to_tech") pathField.value.atomValue() else null
-        }
-    }
-
-    private fun extractTextEnumValues(entry: ParadoxTextEntry): List<String> {
-        return entry.enumValues()
     }
 
     companion object {

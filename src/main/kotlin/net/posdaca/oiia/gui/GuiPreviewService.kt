@@ -324,11 +324,7 @@ class GuiPreviewService(private val project: Project) {
         val fromProperties = block.propertyList.mapNotNull { field ->
             field.value ?: field.propertyKey.text
         }
-        if (fromProperties.isNotEmpty()) return fromProperties.map { it.trim().trim('"') }
-        return TOKEN_REGEX.findAll(block.text)
-            .map { it.value.trim('"') }
-            .filterNot { it == "{" || it == "}" }
-            .toList()
+        return fromProperties.map { it.trim().trim('"') }
     }
 
     private fun ParadoxScriptValue.cleanValueText(): String {
@@ -562,6 +558,5 @@ class GuiPreviewService(private val project: Project) {
             "increaseButton",
             "decreaseButton"
         )
-        private val TOKEN_REGEX = Regex(""""[^"]*"|[^\s{}=]+""")
     }
 }

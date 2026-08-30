@@ -43,10 +43,6 @@ class NationalFocusService(private val project: Project) {
             parseFocusTreeFromPlsPsi(psiFile, focusTrees, standaloneSharedFocuses)
         }
 
-        if (focusTrees.isEmpty() && standaloneSharedFocuses.isEmpty()) {
-            parseFocusTreeFromText(psiFile.virtualFile?.path, focusTrees, standaloneSharedFocuses)
-        }
-
         if (focusTrees.isEmpty() && standaloneSharedFocuses.isNotEmpty()) {
             return listOf(
                 NationalFocusTreeData(
@@ -98,28 +94,6 @@ class NationalFocusService(private val project: Project) {
         LOG.info(
             "PLS PSI parsed ${focusTrees.size} trees and ${standaloneSharedFocuses.size} shared focuses from ${psiFile.virtualFile?.path ?: "?"}"
         )
-    }
-
-    private fun parseFocusTreeFromText(
-        filePath: String?,
-        focusTrees: MutableList<NationalFocusTreeData>,
-        standaloneSharedFocuses: MutableList<FocusData>
-    ) {
-        if (filePath == null) return
-        val path = Path.of(filePath)
-        if (!ResourceFiles.isRegularFile(path)) return
-
-        try {
-            val content = ResourceFiles.readText(path) ?: return
-            val result = FocusTreeTextParser.parse(filePath, content)
-            focusTrees.addAll(result.trees)
-            standaloneSharedFocuses.addAll(result.standaloneSharedFocuses)
-            LOG.info(
-                "Text parser found ${result.trees.size} trees and ${result.standaloneSharedFocuses.size} shared focuses in $filePath"
-            )
-        } catch (e: Exception) {
-            LOG.warn("Text parsing failed for $filePath", e)
-        }
     }
 
     private fun parseRootProperty(
@@ -338,11 +312,14 @@ class NationalFocusService(private val project: Project) {
         return keys
     }
 
+    /** Caller must hold a read action (reached from [parseFocusTreeFromFile] / [resolve]). */
     private fun loadSharedFocusDefinitionsByFile(): Map<String, List<FocusData>> {
         val result = linkedMapOf<String, List<FocusData>>()
         for (path in findNationalFocusScriptFiles()) {
+            val vf = ResourceFiles.toVirtualFile(path.toString()) ?: continue
+            val psiFile = PsiManager.getInstance(project).findFile(vf) as? ParadoxScriptFile ?: continue
             val standalone = mutableListOf<FocusData>()
-            parseFocusTreeFromText(path.toString(), mutableListOf(), standalone)
+            parseFocusTreeFromPlsPsi(psiFile, mutableListOf(), standalone)
             if (standalone.isNotEmpty()) {
                 result[path.toAbsolutePath().normalize().toString()] = standalone
             }
