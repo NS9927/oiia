@@ -1,4 +1,4 @@
-package net.posdaca.oiia.core
+package net.posdaca.oiia.core.files
 
 import com.intellij.openapi.project.Project
 import icu.windea.pls.lang.settings.ChronicleProfilesSettings
@@ -66,7 +66,7 @@ internal object HoI4ResourceRoots {
         return if (path.isDirectory()) path.toAbsolutePath().normalize() else null
     }
 
-    private fun orderedModRootPlan(
+    internal fun orderedModRootPlan(
         modSettings: Collection<ParadoxModSettingsState>,
         priorityRoot: Path?
     ): ModRootPlan {
@@ -176,7 +176,7 @@ internal object HoI4ResourceRoots {
                 pathKey.startsWith(rootKey.trimEnd('\\', '/') + File.separatorChar)
     }
 
-    private fun expandPath(value: String): String {
+    internal fun expandPath(value: String): String {
         var result = value.trim()
         val userHome = System.getProperty("user.home")
         if (!userHome.isNullOrBlank()) {
@@ -202,7 +202,7 @@ internal object HoI4ResourceRoots {
         return gameType == ParadoxGameType.Hoi4 || finalGameType == ParadoxGameType.Hoi4
     }
 
-    private data class ModRootPlan(
+    internal data class ModRootPlan(
         val roots: List<Path>,
         val settings: List<ParadoxModSettingsState>
     )

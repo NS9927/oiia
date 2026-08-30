@@ -4,8 +4,8 @@ import com.google.gson.Gson
 import com.google.gson.GsonBuilder
 import com.google.gson.annotations.SerializedName
 import com.intellij.openapi.project.Project
-import net.posdaca.oiia.core.HoI4ModLoadOrderEntry
-import net.posdaca.oiia.core.HoI4ResourceRoots
+import net.posdaca.oiia.core.files.HoI4ModLoadOrderEntry
+import net.posdaca.oiia.core.files.HoI4ResourceRoots
 import java.io.IOException
 import java.io.File
 import java.nio.charset.StandardCharsets

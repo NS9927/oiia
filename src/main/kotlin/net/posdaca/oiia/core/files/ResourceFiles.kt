@@ -4,7 +4,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
-import net.posdaca.oiia.core.HoI4ResourceRoots
+import net.posdaca.oiia.core.files.HoI4ResourceRoots
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path

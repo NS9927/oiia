@@ -95,11 +95,14 @@ class ParadoxSpriteResolver(private val project: Project) {
     @Volatile private var lastStampCheckMillis = Long.MIN_VALUE
 
     fun resolveDefinitionImage(definition: ParadoxScriptProperty): String? {
+        // Self-protecting: callers may hold a definition parsed elsewhere and resolve from any thread.
         return runCatching {
-            ParadoxImageManager.resolveUrlByDefinition(definition)
-                ?: ParadoxDefinitionManager.getPrimaryImages(definition).firstOrNull()?.virtualFile?.let { vf ->
-                    ParadoxImageManager.resolveUrlByFile(vf, project) ?: vf.path
-                }
+            ApplicationManager.getApplication().runReadAction<String?> {
+                ParadoxImageManager.resolveUrlByDefinition(definition)
+                    ?: ParadoxDefinitionManager.getPrimaryImages(definition).firstOrNull()?.virtualFile?.let { vf ->
+                        ParadoxImageManager.resolveUrlByFile(vf, project) ?: vf.path
+                    }
+            }
         }.getOrNull()
     }
 
@@ -249,7 +252,7 @@ class ParadoxSpriteResolver(private val project: Project) {
      * Cheap fingerprint over the `.gfx` files backing the cache, so edits to those files
      * invalidate the cache within [STAMP_CHECK_INTERVAL_MS] instead of living until roots change.
      */
-    private fun computeGfxStamp(roots: List<Path>): Long {
+    internal fun computeGfxStamp(roots: List<Path>): Long {
         var stamp = roots.size.toLong()
         for (root in roots) {
             val files = ResourceFiles.listFiles(listOf(root), listOf("gfx", "interface"), setOf(".gfx"), maxDepth = 6)
@@ -425,7 +428,7 @@ class ParadoxSpriteResolver(private val project: Project) {
         return resolveTexturePathIn(cleanPath, rootHint, cache.iconFiles)
     }
 
-    private fun resolveTexturePathIn(rawPath: String?, rootHint: Path?, iconFiles: Map<String, String>): String? {
+    internal fun resolveTexturePathIn(rawPath: String?, rootHint: Path?, iconFiles: Map<String, String>): String? {
         val cleanPath = rawPath?.let { ParadoxGfxParser.cleanToken(it) }?.takeIf { it.isNotBlank() } ?: return null
         if (rootHint != null) {
             val directPath = resolveGamePath(rootHint, cleanPath)

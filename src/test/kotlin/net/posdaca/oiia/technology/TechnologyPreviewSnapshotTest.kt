@@ -96,6 +96,18 @@ class TechnologyPreviewSnapshotTest {
         assertEquals("a", trees[0].startTechnology)
     }
 
+    @Test
+    fun splitFolderIntoTreesIgnoresLeadsToUnknownTechnologies() {
+        val trees = splitFolderIntoTrees(
+            "cross_folder",
+            listOf(tech("a", "ghost_id", "b"), tech("b"))
+        )
+
+        assertEquals(1, trees.size)
+        assertEquals("a", trees[0].startTechnology)
+        assertEquals(listOf("a", "b"), trees[0].technologies.map { it.id })
+    }
+
     private fun tech(id: String, vararg leadsTo: String): TechnologyData =
         TechnologyData(id = id, folderName = "folder", leadsTo = leadsTo.toList())
 }
