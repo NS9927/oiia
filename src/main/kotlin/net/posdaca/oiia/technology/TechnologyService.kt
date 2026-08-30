@@ -225,26 +225,34 @@ class TechnologyService(private val project: Project) {
      */
     private fun attachTreeLayouts(trees: List<TechnologyTreeData>): List<TechnologyTreeData> {
         if (trees.none { it.startTechnology != null }) return trees
-        val layouts = try {
-            loadTreeLayouts()
+        val gui = try {
+            loadTreeGuiInfo()
         } catch (e: Exception) {
             LOG.warn("Tech tree GUI layout load failed", e)
-            emptyMap()
+            TechTreeGuiInfo(emptyMap(), emptyMap())
         }
-        if (layouts.isEmpty()) return trees
-        return trees.map { tree ->
+        if (gui.layouts.isEmpty()) return trees
+        val attached = trees.map { tree ->
             // The game names gridboxes after a tree's start tech; fall back to any member id
             // when our computed root differs from the game's choice.
-            val layout = tree.startTechnology?.let { layouts[it] }
-                ?: tree.technologies.firstNotNullOfOrNull { layouts[it.id] }
+            val layout = tree.startTechnology?.let { gui.layouts[it] }
+                ?: tree.technologies.firstNotNullOfOrNull { gui.layouts[it.id] }
             layout?.let { tree.copy(layout = it) } ?: tree
-        }.let(::sortTreesByLayout)
+        }
+        return sortTreesByLayout(attached, gui.folderOrder)
     }
 
-    /** Keeps trees of one folder in the game's page order (gridbox origin, top-to-bottom). */
-    private fun sortTreesByLayout(trees: List<TechnologyTreeData>): List<TechnologyTreeData> {
-        if (trees.none { it.layout != null }) return trees
-        val result = trees.toMutableList()
+    /** Keeps folders in the game's tab order and trees of one folder in gridbox page order. */
+    private fun sortTreesByLayout(trees: List<TechnologyTreeData>, folderOrder: Map<String, Int>): List<TechnologyTreeData> {
+        if (folderOrder.isEmpty() && trees.none { it.layout != null }) return trees
+        val orderedByFolder = if (folderOrder.isEmpty()) {
+            trees
+        } else {
+            // Stable: folders without a gui entry keep their relative order at the end.
+            trees.sortedWith(compareBy { folderOrder[it.folderName] ?: Int.MAX_VALUE })
+        }
+        if (orderedByFolder.none { it.layout != null }) return orderedByFolder
+        val result = orderedByFolder.toMutableList()
         var start = 0
         while (start < result.size) {
             var end = start + 1
@@ -260,8 +268,14 @@ class TechnologyService(private val project: Project) {
         return result
     }
 
-    private fun loadTreeLayouts(): Map<String, TechTreeGridLayout> {
+    private class TechTreeGuiInfo(
+        val layouts: Map<String, TechTreeGridLayout>,
+        val folderOrder: Map<String, Int>
+    )
+
+    private fun loadTreeGuiInfo(): TechTreeGuiInfo {
         val layouts = mutableMapOf<String, TechTreeGridLayout>()
+        val folderOrder = mutableMapOf<String, Int>()
         for (fileName in TREE_VIEW_GUI_FILES) {
             val psiFile = findGuiPsi("interface/$fileName") ?: continue
             val roots = try {
@@ -273,6 +287,7 @@ class TechnologyService(private val project: Project) {
             for (view in treeViews) {
                 for (folderView in view.children) {
                     if (!folderView.type.equals(FOLDER_VIEW_TYPE, ignoreCase = true)) continue
+                    folderView.name?.let { name -> folderOrder.putIfAbsent(name, folderOrder.size) }
                     // Gridboxes can sit in intermediate containers (e.g. techtree_stripes), so walk descendants.
                     for (gridbox in folderView.descendants(GRIDBOX_TYPE)) {
                         val name = gridbox.name ?: continue
@@ -289,7 +304,7 @@ class TechnologyService(private val project: Project) {
                 }
             }
         }
-        return layouts
+        return TechTreeGuiInfo(layouts, folderOrder)
     }
 
     private fun findGuiPsi(relativePath: String): ParadoxScriptFile? {

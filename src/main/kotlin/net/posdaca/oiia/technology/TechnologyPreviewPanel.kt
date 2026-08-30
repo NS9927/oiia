@@ -46,6 +46,9 @@ class TechnologyPreviewPanel(
 
         override val horizontalGap: Int = JBUIScale.scale(68)
         override val verticalGap: Int = JBUIScale.scale(72)
+        private val titleHeight = JBUIScale.scale(24)
+        private val labelHeight = JBUIScale.scale(16)
+        private val folderGap = JBUIScale.scale(72)
 
         fun applySnapshot(next: TechnologyPreviewSnapshot) {
             val resolvedById = next.allTechnologies.associateBy { it.id }
@@ -86,64 +89,119 @@ class TechnologyPreviewPanel(
         }
 
         override fun computeLogicalSize(): Dimension {
-            var maxW = 400
-            var currentY = padding
-            for (tree in technologyTrees) {
-                if (tree.technologies.isEmpty()) continue
-                val positions = computeRawPositions(tree)
-                val minX = positions.values.minOfOrNull { it.x } ?: 0
-                val maxX = positions.values.maxOfOrNull { it.x } ?: 0
-                val minY = positions.values.minOfOrNull { it.y } ?: 0
-                val maxY = positions.values.maxOfOrNull { it.y } ?: 0
-                maxW = maxOf(maxW, maxX - minX + nodeWidth + padding * 2)
-                currentY += (maxY - minY) + nodeHeight + padding * 2
-            }
-            return Dimension(maxW, currentY.coerceAtLeast(300))
+            val columns = layoutFolderColumns()
+            if (columns.isEmpty()) return Dimension(400, 300)
+            val last = columns.last()
+            return Dimension(
+                (last.x + last.width + padding).coerceAtLeast(400),
+                (columns.maxOf { it.height } + padding).coerceAtLeast(300)
+            )
         }
 
         override fun paintGraph(g2d: Graphics2D) {
             logicalPositions.clear()
             logicalNodeBounds.clear()
             logicalNodeHits.clear()
-            val treesPerFolder = technologyTrees.groupBy { it.folderName }
-            var offsetY = padding
-            for (tree in technologyTrees) {
-                if (tree.technologies.isEmpty()) continue
-                val rawPositions = computeRawPositions(tree)
-                val minRawX = rawPositions.values.minOfOrNull { it.x } ?: 0
-                val minRawY = rawPositions.values.minOfOrNull { it.y } ?: 0
-                val shiftX = padding - minRawX
-                val treeOffsetY = offsetY + padding - minRawY
-                for ((technologyId, rawPos) in rawPositions) {
-                    val px = rawPos.x + shiftX
-                    val py = rawPos.y + treeOffsetY
-                    val key = nodeKey(tree.folderName, technologyId)
-                    logicalPositions[key] = Point(px, py)
-                    logicalNodeBounds[key] = java.awt.Rectangle(px, py, nodeWidth, nodeHeight)
-                    tree.technologies.firstOrNull { it.id == technologyId }?.let {
-                        logicalNodeHits[key] = TechnologyHit(key, tree.folderName, it)
-                    }
-                }
+            for (column in layoutFolderColumns()) {
                 g2d.font = JBFont.label().deriveFont(Font.BOLD, 13f)
                 g2d.color = PreviewNodeStyle.treeTitle
-                g2d.drawString(treeTitle(tree, treesPerFolder), padding, offsetY + JBUIScale.scale(14))
-                drawPathConnections(g2d, tree)
-                drawXorConnections(g2d, tree)
-                for (technology in tree.technologies) {
-                    val pos = logicalPositions[nodeKey(tree.folderName, technology.id)] ?: continue
-                    drawNodeCard(
-                        g2d = g2d,
-                        pos = pos,
-                        title = technology.displayName,
-                        iconPath = technology.iconImagePath,
-                        fallbackText = technology.id,
-                        selected = technology.id == selectedId,
-                        hovered = technology.id == hoveredId
-                    )
+                g2d.drawString(column.folderName, column.x, padding + JBUIScale.scale(14))
+                for (box in column.boxes) {
+                    box.rootLabel?.let { label ->
+                        g2d.font = JBFont.label().deriveFont(Font.PLAIN, 11f)
+                        g2d.color = PreviewNodeStyle.treeTitle
+                        g2d.drawString(label, column.x, box.labelY + JBUIScale.scale(11))
+                    }
+                    for ((technologyId, pos) in box.positions) {
+                        val key = nodeKey(column.folderName, technologyId)
+                        logicalPositions[key] = pos
+                        logicalNodeBounds[key] = java.awt.Rectangle(pos.x, pos.y, nodeWidth, nodeHeight)
+                        box.tree.technologies.firstOrNull { it.id == technologyId }?.let {
+                            logicalNodeHits[key] = TechnologyHit(key, column.folderName, it)
+                        }
+                    }
+                    drawPathConnections(g2d, box.tree)
+                    drawXorConnections(g2d, box.tree)
+                    for (technology in box.tree.technologies) {
+                        val pos = box.positions[technology.id] ?: continue
+                        drawNodeCard(
+                            g2d = g2d,
+                            pos = pos,
+                            title = technology.displayName,
+                            iconPath = technology.iconImagePath,
+                            fallbackText = technology.id,
+                            selected = technology.id == selectedId,
+                            hovered = technology.id == hoveredId
+                        )
+                    }
                 }
-                val maxRawY = rawPositions.values.maxOfOrNull { it.y } ?: 0
-                offsetY += (maxRawY - minRawY) + nodeHeight + padding * 2
             }
+        }
+
+        private data class TreeBox(
+            val tree: TechnologyTreeData,
+            val rootLabel: String?,
+            val labelY: Int,
+            val positions: Map<String, Point>,
+            val width: Int,
+            val height: Int
+        )
+
+        private data class FolderColumn(
+            val folderName: String,
+            val boxes: List<TreeBox>,
+            val x: Int,
+            val width: Int,
+            val height: Int
+        )
+
+        /**
+         * Folders become side-by-side columns (next folder to the right, like the game's tabs);
+         * each folder's trees stack vertically inside its column.
+         */
+        private fun layoutFolderColumns(): List<FolderColumn> {
+            val columns = mutableListOf<FolderColumn>()
+            var cursorX = padding
+            for ((folder, treesInFolder) in technologyTrees.groupBy { it.folderName }) {
+                val visible = treesInFolder.filter { it.technologies.isNotEmpty() }
+                if (visible.isEmpty()) continue
+                val multiTree = visible.size > 1
+                val boxes = mutableListOf<TreeBox>()
+                var cursorY = padding + titleHeight
+                var columnWidth = 0
+                for (tree in visible) {
+                    val rawPositions = computeRawPositions(tree)
+                    if (rawPositions.isEmpty()) continue
+                    val minX = rawPositions.values.minOf { it.x }
+                    val maxX = rawPositions.values.maxOf { it.x }
+                    val minY = rawPositions.values.minOf { it.y }
+                    val maxY = rawPositions.values.maxOf { it.y }
+                    var labelY = 0
+                    if (multiTree) {
+                        labelY = cursorY
+                        cursorY += labelHeight
+                    }
+                    val positions = rawPositions.mapValues { (_, raw) ->
+                        Point(cursorX + raw.x - minX, cursorY + raw.y - minY)
+                    }
+                    val width = maxX - minX + nodeWidth
+                    val height = maxY - minY + nodeHeight
+                    boxes += TreeBox(
+                        tree,
+                        if (multiTree) tree.startTechnology else null,
+                        labelY,
+                        positions,
+                        width,
+                        height
+                    )
+                    cursorY += height + verticalGap
+                    columnWidth = maxOf(columnWidth, width)
+                }
+                if (boxes.isEmpty()) continue
+                columns += FolderColumn(folder, boxes, cursorX, columnWidth, cursorY - verticalGap)
+                cursorX += columnWidth + folderGap
+            }
+            return columns
         }
 
         private fun computeRawPositions(tree: TechnologyTreeData): Map<String, Point> {
@@ -226,14 +284,6 @@ class TechnologyPreviewPanel(
                     path.lineTo(endCx.toDouble(), endCy.toDouble())
                     g2d.draw(path)
                 }
-            }
-        }
-
-        private fun treeTitle(tree: TechnologyTreeData, treesPerFolder: Map<String, List<TechnologyTreeData>>): String {
-            return if ((treesPerFolder[tree.folderName]?.size ?: 1) > 1) {
-                "${tree.folderName} · ${tree.startTechnology ?: "?"}"
-            } else {
-                tree.folderName
             }
         }
 
