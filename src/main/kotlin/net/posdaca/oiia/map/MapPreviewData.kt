@@ -59,6 +59,8 @@ data class MapRenderArea(
     val stateColor: Int,
     val countryColor: Int,
     val strategicRegionColor: Int,
+    val terrainColor: Int,
+    val controllerColor: Int,
     val zones: List<MapRenderZone>,
     val bounds: PixelBounds
 ) {
@@ -68,6 +70,8 @@ data class MapRenderArea(
             MapPreviewMode.STATE -> stateColor
             MapPreviewMode.COUNTRY -> countryColor
             MapPreviewMode.STRATEGIC_REGION -> strategicRegionColor
+            MapPreviewMode.TERRAIN -> terrainColor
+            MapPreviewMode.CONTROLLER -> controllerColor
         }
     }
 }
@@ -81,7 +85,9 @@ data class MapRenderCell(
     val provinceColor: Int,
     val stateColor: Int,
     val countryColor: Int,
-    val strategicRegionColor: Int
+    val strategicRegionColor: Int,
+    val terrainColor: Int,
+    val controllerColor: Int
 ) {
     fun colorFor(mode: MapPreviewMode): Int {
         return when (mode) {
@@ -89,6 +95,8 @@ data class MapRenderCell(
             MapPreviewMode.STATE -> stateColor
             MapPreviewMode.COUNTRY -> countryColor
             MapPreviewMode.STRATEGIC_REGION -> strategicRegionColor
+            MapPreviewMode.TERRAIN -> terrainColor
+            MapPreviewMode.CONTROLLER -> controllerColor
         }
     }
 }
@@ -120,7 +128,31 @@ enum class MapPreviewMode(val messageKey: String) {
     PROVINCE("toolwindow.MapPreview.mode.province"),
     STATE("toolwindow.MapPreview.mode.state"),
     COUNTRY("toolwindow.MapPreview.mode.country"),
-    STRATEGIC_REGION("toolwindow.MapPreview.mode.strategic.region")
+    STRATEGIC_REGION("toolwindow.MapPreview.mode.strategic.region"),
+    TERRAIN("toolwindow.MapPreview.mode.terrain"),
+    CONTROLLER("toolwindow.MapPreview.mode.controller")
+}
+
+/** Fill palette for terrain-mode colouring; unknown or missing terrain falls back to grey. */
+object MapTerrainColors {
+    private val COLORS = mapOf(
+        "plains" to 0xA8C078,
+        "forest" to 0x55884F,
+        "hills" to 0xC2A36B,
+        "mountain" to 0x8A8A92,
+        "marsh" to 0x7FA08A,
+        "desert" to 0xE3D29B,
+        "urban" to 0xB06A6A,
+        "ocean" to 0x4A7EBB,
+        "lake" to 0x4A7EBB,
+        "unknown" to 0x606060
+    )
+    private const val FALLBACK = 0x606060
+
+    fun colorFor(terrain: String?): Int {
+        val key = terrain?.trim()?.trim('"')?.lowercase() ?: return FALLBACK
+        return COLORS[key] ?: FALLBACK
+    }
 }
 
 enum class MapLoadStep(val messageKey: String) {
@@ -159,7 +191,10 @@ data class StateInfo(
     val stateBuildings: Map<String, Int>,
     val provinceBuildings: Map<Int, Map<String, Int>>,
     val victoryPoints: Map<Int, Int>,
-    val path: Path
+    val path: Path,
+    val impassable: Boolean = false,
+    val controller: String? = null,
+    val demilitarizedZone: Boolean = false
 )
 
 data class CountryInfo(
@@ -208,7 +243,11 @@ data class LoadedMapData(
     val strategicRegionPaths: List<Path>,
     val localisationPaths: List<Path>,
     val localisations: Map<String, String>,
-    val sourceStamp: Long
+    val sourceStamp: Long,
+    /** Border segments around regions whose passability differs; always drawn in red. */
+    val impassableBorderChunks: List<MapBorderChunk> = emptyList(),
+    /** Per-pixel 0/1 mask of demilitarized-zone provinces, drawn as a hatch overlay. */
+    val demilitarizedZoneMask: ByteArray? = null
 ) : PreviewSnapshot {
     override val isEmpty: Boolean
         get() = false
@@ -216,6 +255,10 @@ data class LoadedMapData(
     fun borderChunksFor(mode: MapPreviewMode): List<MapBorderChunk> = borderChunks[mode].orEmpty()
 
     fun smoothBorderSegmentsFor(mode: MapPreviewMode): List<MapLineSegment> = smoothBorderSegments[mode].orEmpty()
+
+    /** Only non-null when at least one state is a demilitarized zone. */
+    val hasDemilitarizedZones: Boolean
+        get() = demilitarizedZoneMask != null
 }
 
 internal fun mapCountryKey(tag: String): Int {

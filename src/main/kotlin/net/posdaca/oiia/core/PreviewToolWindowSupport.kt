@@ -16,6 +16,7 @@ object PreviewToolWindowSupport {
     val TechnologyIcon: Icon = IconLoader.getIcon("/icons/technologyPreview.svg", PreviewToolWindowSupport::class.java)
     val GuiIcon: Icon = IconLoader.getIcon("/icons/guiPreview.svg", PreviewToolWindowSupport::class.java)
     val MapIcon: Icon = IconLoader.getIcon("/icons/mapPreview.svg", PreviewToolWindowSupport::class.java)
+    val GfxIcon: Icon = IconLoader.getIcon("/icons/gfxPreview.svg", PreviewToolWindowSupport::class.java)
 
     fun configure(toolWindow: ToolWindow, titleProvider: () -> String, icon: Icon) {
         toolWindow.setStripeTitleProvider(titleProvider)

@@ -4,6 +4,11 @@
 
 ### Added
 
+- New GFX tool window: opening a `.gfx` file now shows a grid of every sprite it declares, rendered from the resolved textures, with name/texture/frame tooltips and double-click source navigation.
+- Map preview color sets `Terrain` and `Controller` (game-start controller falls back to the owner), alongside the existing region fills.
+- Map preview now marks impassable states with red boundaries (visible when borders are shown) and overlays demilitarized-zone provinces with a diagonal hatch; state details include controller, impassable and demilitarized-zone rows.
+- Map preview toolbar gained a locate field: jump to a state / province / country / region by id or (localized) name, highlighting it and centering the viewport.
+
 - Map labels now anchor to each region's mass-weighted pixel centroid (with seam-aware wrap correction for regions crossing the map edge), draw a second dim line with the region id, use a screen-fixed font instead of scaling with zoom, pick black/white ink by the region's rendered colour, and hide labels of regions too small on screen at low zoom - matching the label model of the hoi4modutilities reference.
 - Unit-test anchors for the previously untested core logic: the GUI layout engine, the map preview's pure pixel math (province boundaries, render-zone uniformity, centroid merging, label ink), the sprite resolver's path/stamp seams, prefix icon lookup, and HOI4 resource-root planning (priority-mod matching and dependency traversal).
 

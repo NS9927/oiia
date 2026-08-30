@@ -44,6 +44,7 @@ import javax.swing.JCheckBox
 import javax.swing.JComponent
 import javax.swing.JList
 import javax.swing.JPanel
+import javax.swing.JTextField
 import javax.swing.JViewport
 import javax.swing.Scrollable
 import javax.swing.SwingConstants
@@ -159,6 +160,14 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         }
         val reloadButton = JButton(msg("reload"))
         reloadButton.addActionListener { reload() }
+        val searchField = JTextField(14)
+        searchField.toolTipText = msg("search")
+        searchField.addActionListener {
+            if (!canvas.search(searchField.text)) {
+                statusLabel.text = msg("search.notfound", searchField.text)
+            }
+        }
+        actions.add(searchField)
         actions.add(JBLabel(msg("color.mode")))
         actions.add(colorSelector)
         actions.add(JBLabel(msg("border.mode")))
@@ -310,6 +319,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         private val paintColorCache = mutableMapOf<Int, Color>()
         private var renderChunkIndex: Map<MapTileKey, MapRenderChunk> = emptyMap()
         private var borderChunkIndex: Map<MapPreviewMode, Map<MapTileKey, MapBorderChunk>> = emptyMap()
+        private var impassableChunkIndex: Map<MapTileKey, MapBorderChunk> = emptyMap()
         private val tileCache = object : LinkedHashMap<MapTileKey, BufferedImage>(64, 0.75f, true) {
             override fun removeEldestEntry(eldest: MutableMap.MutableEntry<MapTileKey, BufferedImage>?): Boolean {
                 return size > MAX_TILE_CACHE_SIZE
@@ -452,6 +462,9 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
                     chunks.associateBy { MapTileKey(it.x / MAP_TILE_SIZE, it.y / MAP_TILE_SIZE) }
                 }
                 .orEmpty()
+            impassableChunkIndex = nextData?.impassableBorderChunks
+                ?.associateBy { MapTileKey(it.x / MAP_TILE_SIZE, it.y / MAP_TILE_SIZE) }
+                .orEmpty()
             fitToMinimumAfterLayout = nextData != null
             zoom = nextData?.let { zoomInBounds(minZoom(it)) } ?: 1.0
             hoverSelection = null
@@ -593,7 +606,39 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             } finally {
                 g2.dispose()
             }
+            blendDemilitarizedZoneHatch(current, tile, tileLeft, tileTop)
             return tile
+        }
+
+        /** Demilitarized-zone provinces get a diagonal hatch baked into the cached tile. */
+        private fun blendDemilitarizedZoneHatch(
+            current: LoadedMapData,
+            tile: BufferedImage,
+            tileLeft: Int,
+            tileTop: Int
+        ) {
+            val mask = current.demilitarizedZoneMask ?: return
+            val width = current.provincesImage.width
+            val height = current.provincesImage.height
+            for (ty in 0 until tile.height) {
+                val mapY = tileTop + ty
+                if (mapY < 0 || mapY >= height) continue
+                val rowOffset = mapY * width
+                for (tx in 0 until tile.width) {
+                    val mapX = tileLeft + tx
+                    if (mapX < 0 || mapX >= width) continue
+                    if (mask[rowOffset + mapX].toInt() == 0) continue
+                    // Diagonal stripes, blended over the fill colour.
+                    if (((mapX + mapY) / 5) % 2 == 0) {
+                        val rgb = tile.getRGB(tx, ty)
+                        tile.setRGB(
+                            tx,
+                            ty,
+                            ((rgb and 0xFEFEFE) shr 1) and 0xFFFFFF
+                        )
+                    }
+                }
+            }
         }
 
         private fun paintTileAreas(g2: Graphics2D, key: MapTileKey) {
@@ -684,13 +729,21 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             smooth: Boolean
         ): BorderTileRequest {
             val bounds = tileScreenBounds(current, key, scale)
+            // Terrain/controller fills have no boundary keys of their own: fall back to the
+            // closest meaningful border source.
+            val borderSourceMode = when (mode) {
+                MapPreviewMode.TERRAIN -> MapPreviewMode.PROVINCE
+                MapPreviewMode.CONTROLLER -> MapPreviewMode.STATE
+                else -> mode
+            }
             return BorderTileRequest(
                 cacheKey = BorderTileKey(key.x, key.y, mode, smooth, scale.toBits()),
                 bounds = bounds,
                 zoom = scale,
                 smooth = smooth,
-                pixelSegments = if (smooth) emptyList() else borderChunkIndex[mode]?.get(key)?.segments.orEmpty(),
-                smoothSegments = if (smooth) current.smoothBorderSegmentsFor(mode) else emptyList(),
+                pixelSegments = if (smooth) emptyList() else borderChunkIndex[borderSourceMode]?.get(key)?.segments.orEmpty(),
+                impassableSegments = impassableChunkIndex[key]?.segments.orEmpty(),
+                smoothSegments = if (smooth) current.smoothBorderSegmentsFor(borderSourceMode) else emptyList(),
                 tileRect = tileImageRect(current, key, padding = 1.0 / scale)
             )
         }
@@ -849,6 +902,21 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             for (segment in request.pixelSegments) {
                 g2.drawLine(segment.x1, segment.y1, segment.x2, segment.y2)
             }
+            paintImpassableSegments(g2, request)
+        }
+
+        /** Impassability boundaries are always drawn in red, like the game's impassable edges. */
+        private fun paintImpassableSegments(g2: Graphics2D, request: BorderTileRequest) {
+            if (request.impassableSegments.isEmpty()) return
+            g2.color = Color(190, 40, 40, 230)
+            g2.stroke = BasicStroke(
+                (1.25 / request.zoom).coerceIn(0.4, 1.6).toFloat(),
+                BasicStroke.CAP_BUTT,
+                BasicStroke.JOIN_MITER
+            )
+            for (segment in request.impassableSegments) {
+                g2.drawLine(segment.x1, segment.y1, segment.x2, segment.y2)
+            }
         }
 
         private fun paintSmoothBorderTile(g2: Graphics2D, request: BorderTileRequest) {
@@ -867,6 +935,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
                 BasicStroke.JOIN_ROUND
             )
             g2.draw(path)
+            paintImpassableSegments(g2, request)
         }
 
         private fun tileSource(current: LoadedMapData, key: MapTileKey): MapTileSource {
@@ -1017,6 +1086,56 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             }
         }
 
+        /**
+         * Locates a state / province / country / region by id or name, highlights it and centers
+         * the viewport. Returns false when nothing matches.
+         */
+        fun search(query: String): Boolean {
+            val current = data ?: return false
+            val selection = findSelectionForQuery(current, query.trim()) ?: return false
+            val bounds = boundsForSelection(current.pixelIndex, selection) ?: return false
+            hoverSelection = selection
+            hoverOverlay = createHoverOverlay(selection)
+            centerViewportOn(
+                ((bounds.minX + bounds.maxX) / 2.0 * zoom).roundToInt(),
+                ((bounds.minY + bounds.maxY) / 2.0 * zoom).roundToInt()
+            )
+            repaint()
+            return true
+        }
+
+        private fun centerViewportOn(viewX: Int, viewY: Int) {
+            val sp = scrollPane ?: return
+            val hsb = sp.horizontalScrollBar ?: return
+            val vsb = sp.verticalScrollBar ?: return
+            hsb.value = (viewX - sp.viewport.width / 2)
+                .coerceIn(hsb.minimum, (hsb.maximum - hsb.visibleAmount).coerceAtLeast(hsb.minimum))
+            vsb.value = (viewY - sp.viewport.height / 2)
+                .coerceIn(vsb.minimum, (vsb.maximum - vsb.visibleAmount).coerceAtLeast(vsb.minimum))
+        }
+
+        private fun findSelectionForQuery(current: LoadedMapData, query: String): HoverSelection? {
+            if (query.isEmpty()) return null
+            val asId = query.toIntOrNull()
+            if (asId != null) {
+                current.stateById[asId]?.let { return HoverSelection(MapPreviewMode.STATE, it.id) }
+                current.provinceById[asId]?.let { return HoverSelection(MapPreviewMode.PROVINCE, it.id) }
+                current.strategicRegionById[asId]?.let { return HoverSelection(MapPreviewMode.STRATEGIC_REGION, it.id) }
+            }
+            val needle = query.lowercase()
+            current.stateById.values.firstOrNull { matchesQuery(needle, it.localizedName, it.name) }
+                ?.let { return HoverSelection(MapPreviewMode.STATE, it.id) }
+            current.countryByTag.values.firstOrNull { it.tag.lowercase() == needle || matchesQuery(needle, it.localizedName) }
+                ?.let { return HoverSelection(MapPreviewMode.COUNTRY, it.mapKey) }
+            current.strategicRegionById.values.firstOrNull { matchesQuery(needle, it.localizedName, it.name) }
+                ?.let { return HoverSelection(MapPreviewMode.STRATEGIC_REGION, it.id) }
+            return null
+        }
+
+        private fun matchesQuery(needle: String, vararg values: String?): Boolean {
+            return values.any { it?.lowercase()?.contains(needle) == true }
+        }
+
         private fun updateHoverStatus(point: Point) {
             val sample = sampleProvince(point) ?: return
             updateHoverSelection(sample)
@@ -1025,11 +1144,11 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             val country = sample.country
             val strategicRegion = sample.strategicRegion
             statusLabel.text = when (outlineMode) {
-                MapPreviewMode.PROVINCE -> province?.let {
+                MapPreviewMode.PROVINCE, MapPreviewMode.TERRAIN -> province?.let {
                     msg("status.province", it.id, sample.x, sample.y, "%06X".format(sample.rgb))
                 } ?: msg("status.pixel.no.definition", sample.x, sample.y, "%06X".format(sample.rgb))
 
-                MapPreviewMode.STATE -> state?.let {
+                MapPreviewMode.STATE, MapPreviewMode.CONTROLLER -> state?.let {
                     msg("status.state", it.id, " - ${displayStateName(it)}", province?.id ?: "?")
                 } ?: msg("status.no.state", province?.id ?: "?")
 
@@ -1060,8 +1179,8 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
 
         private fun updateHoverSelection(sample: ProvinceSample) {
             val nextSelection = when (outlineMode) {
-                MapPreviewMode.PROVINCE -> sample.province?.let { HoverSelection(outlineMode, it.id) }
-                MapPreviewMode.STATE -> sample.state?.let { HoverSelection(outlineMode, it.id) }
+                MapPreviewMode.PROVINCE, MapPreviewMode.TERRAIN -> sample.province?.let { HoverSelection(MapPreviewMode.PROVINCE, it.id) }
+                MapPreviewMode.STATE, MapPreviewMode.CONTROLLER -> sample.state?.let { HoverSelection(MapPreviewMode.STATE, it.id) }
                 MapPreviewMode.COUNTRY -> sample.country?.let { HoverSelection(outlineMode, it.mapKey) }
                 MapPreviewMode.STRATEGIC_REGION -> sample.strategicRegion?.let { HoverSelection(outlineMode, it.id) }
             }
@@ -1148,18 +1267,9 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             }
             val index = current.pixelIndex
             val built = when (mode) {
-                MapPreviewMode.PROVINCE -> index.provinceLabelAnchors.mapNotNull { (id, anchor) ->
-                    val bounds = index.provinceBounds[id] ?: return@mapNotNull null
-                    val province = current.provinceById[id] ?: return@mapNotNull null
-                    MapLabelDraw(displayProvinceName(province), null, anchor.x, anchor.y, MapPixels.labelInkIsWhite(anchor.renderRgb), bounds)
-                }
+                MapPreviewMode.PROVINCE, MapPreviewMode.TERRAIN -> provinceLabels(current)
 
-                MapPreviewMode.STATE -> index.stateLabelAnchors.mapNotNull { (id, anchor) ->
-                    val bounds = index.stateBounds[id] ?: return@mapNotNull null
-                    val state = current.stateById[id] ?: return@mapNotNull null
-                    val name = state.localizedName ?: state.name ?: id.toString()
-                    MapLabelDraw(name, id.toString().takeUnless { it == name }, anchor.x, anchor.y, MapPixels.labelInkIsWhite(anchor.renderRgb), bounds)
-                }
+                MapPreviewMode.STATE, MapPreviewMode.CONTROLLER -> stateLabels(current)
 
                 MapPreviewMode.COUNTRY -> current.countryByTag.values.mapNotNull { country ->
                     val anchor = index.countryLabelAnchors[country.mapKey] ?: return@mapNotNull null
@@ -1179,6 +1289,25 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             labelCacheMode = mode
             labelCache = built
             return built
+        }
+
+        private fun provinceLabels(current: LoadedMapData): List<MapLabelDraw> {
+            val index = current.pixelIndex
+            return index.provinceLabelAnchors.mapNotNull { (id, anchor) ->
+                val bounds = index.provinceBounds[id] ?: return@mapNotNull null
+                val province = current.provinceById[id] ?: return@mapNotNull null
+                MapLabelDraw(displayProvinceName(province), null, anchor.x, anchor.y, MapPixels.labelInkIsWhite(anchor.renderRgb), bounds)
+            }
+        }
+
+        private fun stateLabels(current: LoadedMapData): List<MapLabelDraw> {
+            val index = current.pixelIndex
+            return index.stateLabelAnchors.mapNotNull { (id, anchor) ->
+                val bounds = index.stateBounds[id] ?: return@mapNotNull null
+                val state = current.stateById[id] ?: return@mapNotNull null
+                val name = state.localizedName ?: state.name ?: id.toString()
+                MapLabelDraw(name, id.toString().takeUnless { it == name }, anchor.x, anchor.y, MapPixels.labelInkIsWhite(anchor.renderRgb), bounds)
+            }
         }
 
         private fun createHoverOverlay(selection: HoverSelection): HoverOverlay? {
@@ -1211,8 +1340,8 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
 
         private fun boundsForSelection(index: MapPixelIndex, selection: HoverSelection): PixelBounds? {
             return when (selection.mode) {
-                MapPreviewMode.PROVINCE -> index.provinceBounds[selection.key]
-                MapPreviewMode.STATE -> index.stateBounds[selection.key]
+                MapPreviewMode.PROVINCE, MapPreviewMode.TERRAIN -> index.provinceBounds[selection.key]
+                MapPreviewMode.STATE, MapPreviewMode.CONTROLLER -> index.stateBounds[selection.key]
                 MapPreviewMode.COUNTRY -> index.countryBounds[selection.key]
                 MapPreviewMode.STRATEGIC_REGION -> index.strategicRegionBounds[selection.key]
             }
@@ -1220,8 +1349,8 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
 
         private fun keysForSelection(index: MapPixelIndex, selection: HoverSelection): IntArray {
             return when (selection.mode) {
-                MapPreviewMode.PROVINCE -> index.provinceKeys
-                MapPreviewMode.STATE -> index.stateKeys
+                MapPreviewMode.PROVINCE, MapPreviewMode.TERRAIN -> index.provinceKeys
+                MapPreviewMode.STATE, MapPreviewMode.CONTROLLER -> index.stateKeys
                 MapPreviewMode.COUNTRY -> index.countryKeys
                 MapPreviewMode.STRATEGIC_REGION -> index.strategicRegionKeys
             }
@@ -1230,8 +1359,8 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         private fun buildDetailText(sample: ProvinceSample): String {
             val html = PreviewHintHtml()
             when (outlineMode) {
-                MapPreviewMode.PROVINCE -> appendProvinceDetail(html, sample)
-                MapPreviewMode.STATE -> appendStateDetail(html, sample)
+                MapPreviewMode.PROVINCE, MapPreviewMode.TERRAIN -> appendProvinceDetail(html, sample)
+                MapPreviewMode.STATE, MapPreviewMode.CONTROLLER -> appendStateDetail(html, sample)
                 MapPreviewMode.COUNTRY -> appendCountryDetail(html, sample)
                 MapPreviewMode.STRATEGIC_REGION -> appendStrategicRegionDetail(html, sample)
             }
@@ -1268,7 +1397,10 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
                 .escapedRow(msg("detail.state"), state?.name?.takeIf { it != title })
                 .escapedRow(msg("detail.province"), sample.province?.id?.toString() ?: msg("detail.unknown"))
                 .escapedRow(msg("detail.owner"), state?.owner?.let(::displayCountryTag))
+                .escapedRow(msg("detail.controller"), state?.controller?.takeIf { it.isNotBlank() }?.let(::displayCountryTag))
                 .escapedRow(msg("detail.category"), state?.category?.let(::displayGameKey))
+                .row(msg("detail.impassable"), state?.impassable?.takeIf { it }?.let { msg("detail.yes") })
+                .row(msg("detail.demilitarized.zone"), state?.demilitarizedZone?.takeIf { it }?.let { msg("detail.yes") })
                 .escapedRow(msg("detail.manpower"), state?.manpower?.toString())
                 .escapedRow(msg("detail.cores"), state?.cores?.takeIf { it.isNotEmpty() }?.joinToString(", ", transform = ::displayCountryTag))
                 .escapedRow(msg("detail.resources"), state?.resources?.takeIf { it.isNotEmpty() }?.let(::formatMap))
@@ -1310,8 +1442,8 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         private fun navigateToSource(sample: ProvinceSample) {
             val current = data ?: return
             val target = when (outlineMode) {
-                MapPreviewMode.PROVINCE -> SourceTarget(current.definitionPath, sample.province?.sourceLine ?: 0)
-                MapPreviewMode.STATE -> SourceTarget(sample.state?.path, 0)
+                MapPreviewMode.PROVINCE, MapPreviewMode.TERRAIN -> SourceTarget(current.definitionPath, sample.province?.sourceLine ?: 0)
+                MapPreviewMode.STATE, MapPreviewMode.CONTROLLER -> SourceTarget(sample.state?.path, 0)
                 MapPreviewMode.COUNTRY -> SourceTarget(sample.country?.historyPath ?: sample.country?.definitionPath, 0)
                 MapPreviewMode.STRATEGIC_REGION -> SourceTarget(sample.strategicRegion?.path, 0)
             }
@@ -1454,6 +1586,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         val zoom: Double,
         val smooth: Boolean,
         val pixelSegments: List<MapBorderSegment>,
+        val impassableSegments: List<MapBorderSegment>,
         val smoothSegments: List<MapLineSegment>,
         val tileRect: ImageRect
     )

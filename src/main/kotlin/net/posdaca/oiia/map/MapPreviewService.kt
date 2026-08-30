@@ -12,6 +12,7 @@ import net.posdaca.oiia.core.PreviewImageLoader
 import net.posdaca.oiia.core.files.LocalisationFiles
 import net.posdaca.oiia.core.files.ResourceFiles
 import net.posdaca.oiia.core.ParadoxLocalisationPreference
+import net.posdaca.oiia.core.parseParadoxBoolean
 import java.awt.Color
 import java.awt.image.BufferedImage
 import java.nio.file.Path
@@ -85,7 +86,9 @@ class MapPreviewService(private val project: Project) {
                         countryPaths,
                         strategicRegionPaths,
                         localisationPaths
-                    )
+                    ),
+                    impassableBorderChunks = renderData.impassableBorderChunks,
+                    demilitarizedZoneMask = renderData.demilitarizedZoneMask
                 )
             )
         } catch (e: Exception) {
@@ -189,6 +192,9 @@ class MapPreviewService(private val project: Project) {
                 stateBuildings = buildingsBlock.scalarIntProperties(),
                 provinceBuildings = buildingsBlock.provinceBuildings(),
                 victoryPoints = historyProps?.victoryPoints().orEmpty(),
+                impassable = stateProps.firstValueNamed("impassable").parseParadoxBoolean() ?: false,
+                controller = historyProps?.firstValueNamed("controller"),
+                demilitarizedZone = historyProps?.firstValueNamed("set_demilitarized_zone").parseParadoxBoolean() ?: false,
                 path = path.toAbsolutePath().normalize()
             )
         }
@@ -408,7 +414,9 @@ class MapPreviewService(private val project: Project) {
         val pixelIndex: MapPixelIndex,
         val renderChunks: List<MapRenderChunk>,
         val borderChunks: Map<MapPreviewMode, List<MapBorderChunk>>,
-        val smoothBorderSegments: Map<MapPreviewMode, List<MapLineSegment>>
+        val smoothBorderSegments: Map<MapPreviewMode, List<MapLineSegment>>,
+        val impassableBorderChunks: List<MapBorderChunk>,
+        val demilitarizedZoneMask: ByteArray?
     )
 
     private fun buildRenderData(
@@ -426,6 +434,8 @@ class MapPreviewService(private val project: Project) {
         val countryKeys = IntArray(size) { MapPixels.UNKNOWN_KEY }
         val strategicRegionKeys = IntArray(size) { MapPixels.UNKNOWN_KEY }
         val rgbKeys = IntArray(size)
+        val impassableKeys = IntArray(size)
+        val demilitarizedZoneMask = ByteArray(size)
         val provinceBounds = mutableMapOf<Int, MutablePixelBounds>()
         val stateBounds = mutableMapOf<Int, MutablePixelBounds>()
         val countryBounds = mutableMapOf<Int, MutablePixelBounds>()
@@ -437,6 +447,12 @@ class MapPreviewService(private val project: Project) {
         val stateColorById = states.associate { it.id to colorForId(it.id) }
         val countryColorByStateId = states.associate { state ->
             val countryColor = countryDefinitions[state.owner?.uppercase()]?.color ?: colorForKey(state.owner)
+            state.id to renderCountryMapColor(countryColor)
+        }
+        // Game start: controller defaults to the owner, unless the state history names another tag.
+        val controllerColorByStateId = states.associate { state ->
+            val controllerTag = state.controller ?: state.owner
+            val countryColor = countryDefinitions[controllerTag?.uppercase()]?.color ?: colorForKey(controllerTag)
             state.id to renderCountryMapColor(countryColor)
         }
         val strategicRegionColorById = strategicRegionByProvinceId.values
@@ -464,6 +480,8 @@ class MapPreviewService(private val project: Project) {
                 stateKeys[index] = stateKey
                 countryKeys[index] = countryKey
                 strategicRegionKeys[index] = strategicRegionKey
+                impassableKeys[index] = if (state?.impassable == true) 1 else 0
+                if (state?.demilitarizedZone == true) demilitarizedZoneMask[index] = 1
                 provinceBounds.getOrPut(provinceKey) { MutablePixelBounds() }.include(x, y)
                 provinceMassAcc.getOrPut(provinceKey) { LongArray(3) }.let { acc ->
                     acc[0]++
@@ -530,13 +548,17 @@ class MapPreviewService(private val project: Project) {
             strategicRegionByProvinceId,
             stateColorById,
             countryColorByStateId,
-            strategicRegionColorById
+            strategicRegionColorById,
+            controllerColorByStateId
         )
+        val impassableBorderChunks = buildPixelBorderChunks(width, height, impassableKeys)
         return MapRenderData(
             pixelIndex = pixelIndex,
             renderChunks = buildRenderChunks(renderAreas, width, height),
             borderChunks = buildPixelBorderChunks(pixelIndex, width, height),
-            smoothBorderSegments = smoothBorderSegments
+            smoothBorderSegments = smoothBorderSegments,
+            impassableBorderChunks = impassableBorderChunks,
+            demilitarizedZoneMask = if (demilitarizedZoneMask.any { it == 1.toByte() }) demilitarizedZoneMask else null
         )
     }
 
@@ -594,7 +616,8 @@ class MapPreviewService(private val project: Project) {
         strategicRegionByProvinceId: Map<Int, StrategicRegionInfo>,
         stateColorById: Map<Int, Int>,
         countryColorByStateId: Map<Int, Int>,
-        strategicRegionColorById: Map<Int, Int>
+        strategicRegionColorById: Map<Int, Int>,
+        controllerColorByStateId: Map<Int, Int>
     ): List<MapRenderArea> {
         val areas = linkedMapOf<Int, MapRenderAreaBuilder>()
         val pending = java.util.ArrayDeque<MapRenderZone>()
@@ -622,7 +645,8 @@ class MapPreviewService(private val project: Project) {
                         strategicRegionByProvinceId,
                         stateColorById,
                         countryColorByStateId,
-                        strategicRegionColorById
+                        strategicRegionColorById,
+                        controllerColorByStateId
                     )
                 }.add(zone)
             } else {
@@ -671,7 +695,8 @@ class MapPreviewService(private val project: Project) {
         strategicRegionByProvinceId: Map<Int, StrategicRegionInfo>,
         stateColorById: Map<Int, Int>,
         countryColorByStateId: Map<Int, Int>,
-        strategicRegionColorById: Map<Int, Int>
+        strategicRegionColorById: Map<Int, Int>,
+        controllerColorByStateId: Map<Int, Int>
     ): MapRenderAreaBuilder {
         val province = provinceByColor[rgb]
         val state = province?.let { stateByProvinceId[it.id] }
@@ -688,7 +713,9 @@ class MapPreviewService(private val project: Project) {
             provinceColor = rgb,
             stateColor = state?.let { stateColorById[it.id] } ?: rgb,
             countryColor = state?.let { countryColorByStateId[it.id] } ?: rgb,
-            strategicRegionColor = strategicRegion?.let { strategicRegionColorById[it.id] } ?: rgb
+            strategicRegionColor = strategicRegion?.let { strategicRegionColorById[it.id] } ?: rgb,
+            terrainColor = MapTerrainColors.colorFor(province?.terrain),
+            controllerColor = state?.let { controllerColorByStateId[it.id] } ?: rgb
         )
     }
 
@@ -701,7 +728,9 @@ class MapPreviewService(private val project: Project) {
         private val provinceColor: Int,
         private val stateColor: Int,
         private val countryColor: Int,
-        private val strategicRegionColor: Int
+        private val strategicRegionColor: Int,
+        private val terrainColor: Int,
+        private val controllerColor: Int
     ) {
         private val zones = mutableListOf<MapRenderZone>()
         private val bounds = MutablePixelBounds()
@@ -723,6 +752,8 @@ class MapPreviewService(private val project: Project) {
                 stateColor = stateColor,
                 countryColor = countryColor,
                 strategicRegionColor = strategicRegionColor,
+                terrainColor = terrainColor,
+                controllerColor = controllerColor,
                 zones = zones,
                 bounds = bounds.toBounds()
             )
@@ -747,7 +778,9 @@ class MapPreviewService(private val project: Project) {
                         provinceColor = area.provinceColor,
                         stateColor = area.stateColor,
                         countryColor = area.countryColor,
-                        strategicRegionColor = area.strategicRegionColor
+                        strategicRegionColor = area.strategicRegionColor,
+                        terrainColor = area.terrainColor,
+                        controllerColor = area.controllerColor
                     )
                 )
             }

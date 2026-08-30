@@ -37,6 +37,10 @@
                     icon="/icons/mapPreview.svg"
                     anchor="right"
                     secondary="true"/>
+        <toolWindow id="GfxPreview" factoryClass="net.posdaca.oiia.gfx.GfxPreviewToolWindowFactory"
+                    icon="/icons/gfxPreview.svg"
+                    anchor="right"
+                    secondary="true"/>
     </extensions>
 
     <extensions defaultExtensionNs="icu.windea.pls">

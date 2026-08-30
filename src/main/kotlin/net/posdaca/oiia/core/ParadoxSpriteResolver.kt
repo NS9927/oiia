@@ -57,10 +57,10 @@ class ParadoxSpriteResolver(private val project: Project) {
         val height: Int
     )
 
-    private data class SpriteDefinition(
+    internal data class SpriteDefinition(
         val name: String,
         val textureFile: String?,
-        val root: Path,
+        val root: Path?,
         val subtype: String? = null,
         val borderSize: SpriteInsets? = null,
         val size: SpriteSize? = null,
@@ -301,7 +301,7 @@ class ParadoxSpriteResolver(private val project: Project) {
         }
     }
 
-    private fun spriteDefinition(prop: ParadoxScriptProperty, root: Path): SpriteDefinition? {
+    internal fun spriteDefinition(prop: ParadoxScriptProperty, root: Path?): SpriteDefinition? {
         val block = prop.block ?: return null
         val name = block.propertyValue("name")?.let { ParadoxGfxParser.cleanToken(it) }?.takeIf { it.isNotBlank() }
             ?: return null
