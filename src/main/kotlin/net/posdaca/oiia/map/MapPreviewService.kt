@@ -63,7 +63,7 @@ class MapPreviewService(private val project: Project) {
                     provincesImage = image,
                     renderChunks = renderData.renderChunks,
                     borderChunks = renderData.borderChunks,
-                    smoothBorderSegments = renderData.smoothBorderSegments,
+                    smoothBorderProvider = renderData.smoothBorderProvider,
                     pixelIndex = renderData.pixelIndex,
                     provinceByColor = provinces,
                     provinceById = provinceById,
@@ -414,7 +414,7 @@ class MapPreviewService(private val project: Project) {
         val pixelIndex: MapPixelIndex,
         val renderChunks: List<MapRenderChunk>,
         val borderChunks: Map<MapPreviewMode, List<MapBorderChunk>>,
-        val smoothBorderSegments: Map<MapPreviewMode, List<MapLineSegment>>,
+        val smoothBorderProvider: (MapPreviewMode) -> List<MapLineSegment>,
         val impassableBorderChunks: List<MapBorderChunk>,
         val demilitarizedZoneMask: ByteArray?
     )
@@ -434,7 +434,6 @@ class MapPreviewService(private val project: Project) {
         val countryKeys = IntArray(size) { MapPixels.UNKNOWN_KEY }
         val strategicRegionKeys = IntArray(size) { MapPixels.UNKNOWN_KEY }
         val rgbKeys = IntArray(size)
-        val impassableKeys = IntArray(size)
         val demilitarizedZoneMask = ByteArray(size)
         val provinceBounds = mutableMapOf<Int, MutablePixelBounds>()
         val stateBounds = mutableMapOf<Int, MutablePixelBounds>()
@@ -480,7 +479,6 @@ class MapPreviewService(private val project: Project) {
                 stateKeys[index] = stateKey
                 countryKeys[index] = countryKey
                 strategicRegionKeys[index] = strategicRegionKey
-                impassableKeys[index] = if (state?.impassable == true) 1 else 0
                 if (state?.demilitarizedZone == true) demilitarizedZoneMask[index] = 1
                 provinceBounds.getOrPut(provinceKey) { MutablePixelBounds() }.include(x, y)
                 provinceMassAcc.getOrPut(provinceKey) { LongArray(3) }.let { acc ->
@@ -551,12 +549,12 @@ class MapPreviewService(private val project: Project) {
             strategicRegionColorById,
             controllerColorByStateId
         )
-        val impassableBorderChunks = buildPixelBorderChunks(width, height, impassableKeys)
+        val impassableBorderChunks = buildImpassableBorderChunks(pixelIndex, stateById, width, height)
         return MapRenderData(
             pixelIndex = pixelIndex,
             renderChunks = buildRenderChunks(renderAreas, width, height),
             borderChunks = buildPixelBorderChunks(pixelIndex, width, height),
-            smoothBorderSegments = smoothBorderSegments,
+            smoothBorderProvider = smoothBorderSegments,
             impassableBorderChunks = impassableBorderChunks,
             demilitarizedZoneMask = if (demilitarizedZoneMask.any { it == 1.toByte() }) demilitarizedZoneMask else null
         )
@@ -801,6 +799,67 @@ class MapPreviewService(private val project: Project) {
         }
     }
 
+    /**
+     * Boundary segments between provinces whose states differ in passability, collected straight
+     * from [MapPixelIndex.stateKeys] so no extra full-map key array is needed.
+     */
+    private fun buildImpassableBorderChunks(
+        pixelIndex: MapPixelIndex,
+        stateById: Map<Int, StateInfo>,
+        width: Int,
+        height: Int
+    ): List<MapBorderChunk> {
+        val stateKeys = pixelIndex.stateKeys
+        val maxStateId = stateKeys.maxOrNull()?.takeIf { it >= 0 } ?: return emptyList()
+        val impassableByState = ByteArray(maxStateId + 1)
+        for (state in stateById.values) {
+            if (state.impassable && state.id in 0..maxStateId) impassableByState[state.id] = 1
+        }
+        fun impassableAt(index: Int): Boolean {
+            val stateId = stateKeys[index]
+            return stateId >= 0 && stateId <= maxStateId && impassableByState[stateId].toInt() == 1
+        }
+
+        val chunkColumns = (width + RENDER_ZONE_BLOCK_SIZE - 1) / RENDER_ZONE_BLOCK_SIZE
+        val segmentsByChunk = linkedMapOf<Int, MutableList<MapBorderSegment>>()
+        for (y in 0 until height) {
+            val rowOffset = y * width
+            for (x in 0 until width) {
+                val index = rowOffset + x
+                val current = impassableAt(index)
+                // Vertical edge to the right pixel (wrapping, matching the cylindrical map).
+                val right = rowOffset + if (x + 1 == width) 0 else x + 1
+                if (current != impassableAt(right)) {
+                    val chunkKey = (y / RENDER_ZONE_BLOCK_SIZE) * chunkColumns + (x / RENDER_ZONE_BLOCK_SIZE)
+                    segmentsByChunk.getOrPut(chunkKey) { mutableListOf() }
+                        .add(MapBorderSegment(x + 1, y, x + 1, y + 1))
+                }
+                // Horizontal edge to the pixel below (map top/bottom edges are not passability borders).
+                if (y + 1 < height) {
+                    val below = (y + 1) * width + x
+                    if (current != impassableAt(below)) {
+                        val chunkKey = ((y + 1) / RENDER_ZONE_BLOCK_SIZE) * chunkColumns + (x / RENDER_ZONE_BLOCK_SIZE)
+                        segmentsByChunk.getOrPut(chunkKey) { mutableListOf() }
+                            .add(MapBorderSegment(x, y + 1, x + 1, y + 1))
+                    }
+                }
+            }
+        }
+        return segmentsByChunk.map { (chunkKey, segments) ->
+            val chunkX = chunkKey % chunkColumns
+            val chunkY = chunkKey / chunkColumns
+            val x = chunkX * RENDER_ZONE_BLOCK_SIZE
+            val y = chunkY * RENDER_ZONE_BLOCK_SIZE
+            MapBorderChunk(
+                x = x,
+                y = y,
+                width = minOf(RENDER_ZONE_BLOCK_SIZE, width - x),
+                height = minOf(RENDER_ZONE_BLOCK_SIZE, height - y),
+                segments = segments
+            )
+        }
+    }
+
     private fun buildPixelBorderChunks(
         pixelIndex: MapPixelIndex,
         width: Int,
@@ -920,17 +979,21 @@ class MapPreviewService(private val project: Project) {
     }
 
 
+    /** Provider instead of eagerly-built lists: smooth segments are huge (one edge per boundary pixel). */
     private fun buildSmoothBorderSegments(
         pixelIndex: MapPixelIndex,
         width: Int,
         height: Int
-    ): Map<MapPreviewMode, List<MapLineSegment>> {
-        return mapOf(
-            MapPreviewMode.PROVINCE to buildSmoothBorderSegments(width, height, pixelIndex.provinceKeys),
-            MapPreviewMode.STATE to buildSmoothBorderSegments(width, height, pixelIndex.stateKeys),
-            MapPreviewMode.COUNTRY to buildSmoothBorderSegments(width, height, pixelIndex.countryKeys),
-            MapPreviewMode.STRATEGIC_REGION to buildSmoothBorderSegments(width, height, pixelIndex.strategicRegionKeys)
-        )
+    ): (MapPreviewMode) -> List<MapLineSegment> {
+        return { mode ->
+            val keys = when (mode) {
+                MapPreviewMode.PROVINCE, MapPreviewMode.TERRAIN -> pixelIndex.provinceKeys
+                MapPreviewMode.STATE, MapPreviewMode.CONTROLLER -> pixelIndex.stateKeys
+                MapPreviewMode.COUNTRY -> pixelIndex.countryKeys
+                MapPreviewMode.STRATEGIC_REGION -> pixelIndex.strategicRegionKeys
+            }
+            buildSmoothBorderSegments(width, height, keys)
+        }
     }
 
     private fun buildSmoothBorderSegments(width: Int, height: Int, keys: IntArray): List<MapLineSegment> {

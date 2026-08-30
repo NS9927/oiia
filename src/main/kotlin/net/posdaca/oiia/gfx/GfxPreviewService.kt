@@ -83,9 +83,20 @@ class GfxPreviewService(private val project: Project) {
                 val candidates = snapshot.sprites.associate { it.name to listOf(it.name) }
                 val paths = spriteResolver.resolveForCandidates(candidates)
                 val images = mutableMapOf<String, java.awt.image.BufferedImage>()
+                val pathCache = mutableMapOf<String, java.awt.image.BufferedImage>()
+                var decodedBytes = 0L
                 for (entry in snapshot.sprites) {
                     val path = paths[entry.name] ?: continue
-                    PreviewImageLoader.load(path, images)?.let { images[entry.name] = it }
+                    val image = PreviewImageLoader.load(path, pathCache) ?: continue
+                    // A .gfx file can reference hundreds of large textures; stop decoding before
+                    // the decoded images alone can exhaust the IDE heap.
+                    val bytes = image.width.toLong() * image.height * 4L
+                    if (decodedBytes + bytes > MAX_DECODED_BYTES) {
+                        LOG.info("GFX preview stopped decoding at image budget: name=${entry.name} decoded=$decodedBytes")
+                        break
+                    }
+                    decodedBytes += bytes
+                    images[entry.name] = image
                 }
                 next = snapshot.copy(imagePaths = paths, images = images)
             } catch (e: Exception) {
@@ -98,5 +109,6 @@ class GfxPreviewService(private val project: Project) {
 
     companion object {
         private val LOG = Logger.getInstance(GfxPreviewService::class.java)
+        private const val MAX_DECODED_BYTES = 192L * 1024 * 1024
     }
 }

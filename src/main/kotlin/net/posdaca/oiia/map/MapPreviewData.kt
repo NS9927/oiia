@@ -227,7 +227,8 @@ data class LoadedMapData(
     val provincesImage: BufferedImage,
     val renderChunks: List<MapRenderChunk>,
     val borderChunks: Map<MapPreviewMode, List<MapBorderChunk>>,
-    val smoothBorderSegments: Map<MapPreviewMode, List<MapLineSegment>>,
+    /** Builds smooth segments for a mode on first request; segments are large, so keep them lazy. */
+    val smoothBorderProvider: (MapPreviewMode) -> List<MapLineSegment>,
     val pixelIndex: MapPixelIndex,
     val provinceByColor: Map<Int, ProvinceInfo>,
     val provinceById: Map<Int, ProvinceInfo>,
@@ -254,7 +255,10 @@ data class LoadedMapData(
 
     fun borderChunksFor(mode: MapPreviewMode): List<MapBorderChunk> = borderChunks[mode].orEmpty()
 
-    fun smoothBorderSegmentsFor(mode: MapPreviewMode): List<MapLineSegment> = smoothBorderSegments[mode].orEmpty()
+    private val smoothBorderCache = java.util.concurrent.ConcurrentHashMap<MapPreviewMode, List<MapLineSegment>>()
+
+    fun smoothBorderSegmentsFor(mode: MapPreviewMode): List<MapLineSegment> =
+        smoothBorderCache.computeIfAbsent(mode, smoothBorderProvider)
 
     /** Only non-null when at least one state is a demilitarized zone. */
     val hasDemilitarizedZones: Boolean
