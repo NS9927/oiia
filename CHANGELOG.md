@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Technology previews now mirror the game's tree structure: technologies in a folder are split into connected trees by `leads_to_tech` (matching the per-tree gridboxes in `countrytechtreeview.gui`), and each tree's grid spacing, axis (`format = up/down/left/right`) and slot size are read from the matching gridbox in `countrytechtreeview.gui` / `countrydoctrinetreeview.gui` when present.
+
 ### Fixed
 
 - Fixes a crash when dragging nodes ("Read access is allowed from inside read-action only"): the focus / GUI drag write-back now wraps its PSI lookup in a read action, as EDT no longer has implicit read access on current IntelliJ Platform builds.
@@ -9,6 +13,8 @@
 - Sprite and localisation caches now detect edits to `.gfx` / `.yml` files (short TTL fingerprinting) instead of staying stale until resource roots or preferences change.
 - Focus and technology previews parse on a background thread (no longer blocking the UI thread) and refresh automatically while the file is being edited.
 - The focus-tree text fallback parser now honours Paradox booleans (`default = yes` previously evaluated to false) and is built on the shared token parser.
+- Technology `force_use_small_tech_layout = yes` was evaluated as false; Paradox booleans are now honoured.
+- Technology icons resolve through the game's icon chain (`GFX_<techid>_medium`, falling back to the generic `GFX_technology_medium`) instead of ad-hoc name guesses.
 - GUI preview no longer duplicates the shared PLS localisation resolution; every module resolves localisation through `core/ParadoxLocalisationResolver`.
 
 ### Changed
