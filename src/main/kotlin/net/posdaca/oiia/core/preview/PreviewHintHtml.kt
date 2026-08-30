@@ -23,9 +23,11 @@ internal class PreviewHintHtml(private val width: Int = DEFAULT_WIDTH) {
 
     fun row(label: String, value: String?): PreviewHintHtml {
         if (value.isNullOrBlank()) return this
-        rows.append("<tr><td><font color='#808080'>")
+        // Fixed width + nowrap keeps the label column from being squeezed into wrapping
+        // by long values; valign aligns the label with the first value line.
+        rows.append("<tr><td width='96' valign='top' nowrap><font color='#808080'>")
             .append(escape(label))
-            .append(":</font></td><td>")
+            .append(":</font></td><td valign='top'>")
             .append(value)
             .append("</td></tr>")
         return this

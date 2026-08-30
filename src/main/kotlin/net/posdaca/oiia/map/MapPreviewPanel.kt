@@ -1338,7 +1338,9 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
                 "state_category_$normalized",
                 "state_category_${normalized.uppercase()}",
                 "terrain_$normalized",
-                "terrain_${normalized.uppercase()}"
+                "terrain_${normalized.uppercase()}",
+                "resources_$normalized",
+                "resources_${normalized.uppercase()}"
             )
             val localized = candidates.firstNotNullOfOrNull { localisations[it] }
             return if (localized.isNullOrBlank() || localized == normalized) {
