@@ -8,6 +8,9 @@
 
 ### Fixed
 
+- Technology trees now grow along the game's main axis: gridbox `format = "LEFT"` (quoted, as written in vanilla `countrytechtreeview.gui`) was not recognised, so horizontal trees rendered vertically. Gridboxes are also found in nested containers, trees match their gridbox by any member id when the start-tech name differs, and trees are ordered by their gridbox origin within the folder page.
+- Fixes a crash when resolving technology icons on a background thread ("Read access is allowed from inside read-action only"): the sprite resolver's `.gfx` PSI scan now runs fully inside a per-file read action.
+
 - Fixes a crash when dragging nodes ("Read access is allowed from inside read-action only"): the focus / GUI drag write-back now wraps its PSI lookup in a read action, as EDT no longer has implicit read access on current IntelliJ Platform builds.
 - Fixes a race in the sprite resolver where rebuilding the icon cache could corrupt concurrently memoised sprite lookups; caches are now swapped atomically.
 - Sprite and localisation caches now detect edits to `.gfx` / `.yml` files (short TTL fingerprinting) instead of staying stale until resource roots or preferences change.

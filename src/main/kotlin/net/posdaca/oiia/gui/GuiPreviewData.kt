@@ -71,6 +71,14 @@ data class GuiElement(
     val preferredSize: GuiSize
         get() = size ?: defaultSize(type)
 
+    /** Depth-first descendants whose [GuiElement.type] matches, case-insensitively. */
+    fun descendants(type: String): Sequence<GuiElement> = sequence {
+        for (child in children) {
+            if (child.type.equals(type, ignoreCase = true)) yield(child)
+            yieldAll(child.descendants(type))
+        }
+    }
+
     val primarySprite: String?
         get() = resolvedSpriteCandidates().firstOrNull()
 

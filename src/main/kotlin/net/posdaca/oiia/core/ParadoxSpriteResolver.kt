@@ -269,14 +269,16 @@ class ParadoxSpriteResolver(private val project: Project) {
     private fun cacheSpriteDefinitions(root: Path, spriteDefinitions: MutableList<SpriteDefinition>) {
         val gfxFiles = ResourceFiles.listFiles(listOf(root), listOf("gfx", "interface"), setOf(".gfx"), maxDepth = 6)
         for (path in gfxFiles) {
-            // `.gfx` is a Paradox-script extension, so the file parses to ParadoxScriptFile PSI;
-            // per-file read actions keep write actions interleavable during the bulk scan.
-            val vf = ResourceFiles.toVirtualFile(path) ?: continue
-            val psiFile = ApplicationManager.getApplication().runReadAction<PsiFile?> {
-                PsiManager.getInstance(project).findFile(vf)
-            } as? ParadoxScriptFile ?: continue
-            val rootBlock = psiFile.block ?: continue
-            collectSpriteDefinitions(rootBlock.propertyList, root, spriteDefinitions)
+            // `.gfx` is a Paradox-script extension, so the file parses to ParadoxScriptFile PSI.
+            // The whole PSI pass runs in one per-file read action so callers on pooled threads are
+            // safe and write actions stay interleavable during the bulk scan.
+            ApplicationManager.getApplication().runReadAction {
+                val vf = ResourceFiles.toVirtualFile(path) ?: return@runReadAction
+                val psiFile = PsiManager.getInstance(project).findFile(vf) as? ParadoxScriptFile
+                    ?: return@runReadAction
+                val rootBlock = psiFile.block ?: return@runReadAction
+                collectSpriteDefinitions(rootBlock.propertyList, root, spriteDefinitions)
+            }
         }
     }
 

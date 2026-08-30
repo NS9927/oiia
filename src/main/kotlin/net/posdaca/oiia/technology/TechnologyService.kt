@@ -233,8 +233,31 @@ class TechnologyService(private val project: Project) {
         }
         if (layouts.isEmpty()) return trees
         return trees.map { tree ->
-            tree.startTechnology?.let { layouts[it] }?.let { tree.copy(layout = it) } ?: tree
+            // The game names gridboxes after a tree's start tech; fall back to any member id
+            // when our computed root differs from the game's choice.
+            val layout = tree.startTechnology?.let { layouts[it] }
+                ?: tree.technologies.firstNotNullOfOrNull { layouts[it.id] }
+            layout?.let { tree.copy(layout = it) } ?: tree
+        }.let(::sortTreesByLayout)
+    }
+
+    /** Keeps trees of one folder in the game's page order (gridbox origin, top-to-bottom). */
+    private fun sortTreesByLayout(trees: List<TechnologyTreeData>): List<TechnologyTreeData> {
+        if (trees.none { it.layout != null }) return trees
+        val result = trees.toMutableList()
+        var start = 0
+        while (start < result.size) {
+            var end = start + 1
+            while (end < result.size && result[end].folderName == result[start].folderName) end++
+            val withOrigins = result.subList(start, end).all { it.layout != null }
+            if (withOrigins) {
+                result.subList(start, end).sortWith(
+                    compareBy({ it.layout!!.originY }, { it.layout!!.originX }, { it.startTechnology ?: "" })
+                )
+            }
+            start = end
         }
+        return result
     }
 
     private fun loadTreeLayouts(): Map<String, TechTreeGridLayout> {
@@ -250,15 +273,17 @@ class TechnologyService(private val project: Project) {
             for (view in treeViews) {
                 for (folderView in view.children) {
                     if (!folderView.type.equals(FOLDER_VIEW_TYPE, ignoreCase = true)) continue
-                    for (gridbox in folderView.children) {
-                        if (!gridbox.type.equals(GRIDBOX_TYPE, ignoreCase = true)) continue
+                    // Gridboxes can sit in intermediate containers (e.g. techtree_stripes), so walk descendants.
+                    for (gridbox in folderView.descendants(GRIDBOX_TYPE)) {
                         val name = gridbox.name ?: continue
                         val treeName = name.removeSuffix(TREE_GRIDBOX_SUFFIX)
                         if (treeName == name) continue
                         layouts[treeName] = TechTreeGridLayout(
-                            format = gridbox.format,
+                            format = gridbox.format?.trim()?.trim('"')?.lowercase(),
                             slotWidth = gridbox.slotSize?.width ?: 0,
-                            slotHeight = gridbox.slotSize?.height ?: 0
+                            slotHeight = gridbox.slotSize?.height ?: 0,
+                            originX = gridbox.position.x,
+                            originY = gridbox.position.y
                         )
                     }
                 }

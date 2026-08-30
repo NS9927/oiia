@@ -15,7 +15,10 @@ data class TechTreeGridLayout(
     /** Gridbox `format`: up / down / left / right — the tree's main axis. */
     val format: String? = null,
     val slotWidth: Int = 0,
-    val slotHeight: Int = 0
+    val slotHeight: Int = 0,
+    /** Gridbox position inside the folder view, used to keep trees in the game's page order. */
+    val originX: Int = 0,
+    val originY: Int = 0
 ) {
     val isHorizontal: Boolean get() = format.equals("left", true) || format.equals("right", true)
 }
