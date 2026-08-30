@@ -388,7 +388,10 @@ class NationalFocusService(private val project: Project) {
         val path = focus.sourceFilePath ?: return false
         if (focus.id.isBlank()) return false
         val vf = ResourceFiles.toVirtualFile(path) ?: return false
-        val psiFile = PsiManager.getInstance(project).findFile(vf) as? ParadoxScriptFile ?: return false
+        // Drag write-back runs on EDT from a mouse event, which has no implicit read access.
+        val psiFile = ApplicationManager.getApplication().runReadAction<PsiFile?> {
+            PsiManager.getInstance(project).findFile(vf)
+        } as? ParadoxScriptFile ?: return false
         return WriteCommandAction.writeCommandAction(project, psiFile).withName("Update focus position").compute<Boolean, RuntimeException> {
             val documentManager = PsiDocumentManager.getInstance(project)
             val document = documentManager.getDocument(psiFile) ?: return@compute false

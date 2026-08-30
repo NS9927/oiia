@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixes a crash when dragging nodes ("Read access is allowed from inside read-action only"): the focus / GUI drag write-back now wraps its PSI lookup in a read action, as EDT no longer has implicit read access on current IntelliJ Platform builds.
 - Fixes a race in the sprite resolver where rebuilding the icon cache could corrupt concurrently memoised sprite lookups; caches are now swapped atomically.
 - Sprite and localisation caches now detect edits to `.gfx` / `.yml` files (short TTL fingerprinting) instead of staying stale until resource roots or preferences change.
 - Focus and technology previews parse on a background thread (no longer blocking the UI thread) and refresh automatically while the file is being edited.
