@@ -13,6 +13,7 @@
 
 ### Changed
 
+- All Paradox-script structure parsing now goes through PLS (Chronicle) PSI: the hand-written text fallback parsers for focus / technology / GUI / map state / strategic region / country files and the regex `.gfx` sprite scan were removed. `map/definition.csv` (CSV) and localisation yml merging remain custom by design.
 - Consolidates fallback language order and localisation scoring weights into `ParadoxLocalisationPreference` (previously four drifting copies across preview modules).
 - Moves the shared text fallback parser into `core/ParadoxTextParser` (used by the technology preview) and extracts the pure `.gfx` text parsing into `ParadoxGfxParser`.
 - Removes unused resource-file APIs and the unused game GUI template loader.

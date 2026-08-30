@@ -1,14 +1,19 @@
 package net.posdaca.oiia.map
 
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
+import com.intellij.psi.PsiFile
+import com.intellij.psi.PsiManager
+import icu.windea.pls.script.psi.ParadoxScriptBlock
+import icu.windea.pls.script.psi.ParadoxScriptFile
+import icu.windea.pls.script.psi.ParadoxScriptProperty
 import net.posdaca.oiia.core.PreviewImageLoader
 import net.posdaca.oiia.core.files.LocalisationFiles
 import net.posdaca.oiia.core.files.ResourceFiles
 import net.posdaca.oiia.core.ParadoxLocalisationPreference
 import java.awt.Color
 import java.awt.image.BufferedImage
-import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.exists
 import kotlin.io.path.fileSize
@@ -165,31 +170,27 @@ class MapPreviewService(private val project: Project) {
 
 
     private fun parseStateFile(path: Path, localisations: Map<String, String>): StateInfo? {
-        return try {
-            val text = stripComments(ResourceFiles.readText(path).orEmpty())
-            val stateBlock = findNamedBlock(text, "state") ?: text
-            val id = findInt(stateBlock, "id") ?: return null
-            val history = findBlock(stateBlock, "history")
-            val buildings = history?.let { findBlock(it, "buildings") }
-            val stateName = findValue(stateBlock, "name")
+        return withScriptProperties(path) { root ->
+            val stateProps = root.blockNamed("state")?.propertyList ?: root
+            val id = stateProps.firstValueNamed("id")?.toIntOrNull() ?: return@withScriptProperties null
+            val historyProps = stateProps.blockNamed("history")?.propertyList
+            val buildingsBlock = stateProps.blockNamed("history")?.propertyList?.blockNamed("buildings")
+            val stateName = stateProps.firstValueNamed("name")
             StateInfo(
                 id = id,
                 name = stateName,
                 localizedName = resolveLocalisation(localisations, stateName, "STATE_$id"),
-                owner = history?.let { findValue(it, "owner") },
-                category = findValue(stateBlock, "state_category"),
-                manpower = findInt(stateBlock, "manpower"),
-                provinces = parseIntList(findBlock(stateBlock, "provinces")),
-                cores = history?.let { findValues(it, "add_core_of") } ?: emptyList(),
-                resources = parseResourceBlock(findBlock(stateBlock, "resources")),
-                stateBuildings = parseStateBuildings(buildings),
-                provinceBuildings = parseProvinceBuildings(buildings),
-                victoryPoints = history?.let { parseVictoryPoints(it) } ?: emptyMap(),
+                owner = historyProps?.firstValueNamed("owner"),
+                category = stateProps.firstValueNamed("state_category"),
+                manpower = stateProps.firstValueNamed("manpower")?.toIntOrNull(),
+                provinces = stateProps.blockNamed("provinces").intTokens(),
+                cores = historyProps?.valuesNamed("add_core_of").orEmpty(),
+                resources = stateProps.blockNamed("resources").intProperties(),
+                stateBuildings = buildingsBlock.scalarIntProperties(),
+                provinceBuildings = buildingsBlock.provinceBuildings(),
+                victoryPoints = historyProps?.victoryPoints().orEmpty(),
                 path = path.toAbsolutePath().normalize()
             )
-        } catch (e: Exception) {
-            LOG.warn("State file parse failed: $path", e)
-            null
         }
     }
 
@@ -219,22 +220,21 @@ class MapPreviewService(private val project: Project) {
 
 
     private fun parseStrategicRegionFile(path: Path, localisations: Map<String, String>): StrategicRegionInfo? {
-        return try {
-            val text = stripComments(ResourceFiles.readText(path).orEmpty())
-            val id = findInt(text, "id") ?: path.fileName.toString().substringBefore('.').toIntOrNull() ?: return null
-            val name = findValue(text, "name")
+        return withScriptProperties(path) { root ->
+            val regionProps = root.blockNamed("strategic_region")?.propertyList ?: root
+            val id = regionProps.firstValueNamed("id")?.toIntOrNull()
+                ?: path.fileName.toString().substringBefore('.').toIntOrNull()
+                ?: return@withScriptProperties null
+            val name = regionProps.firstValueNamed("name")
             StrategicRegionInfo(
                 id = id,
                 name = name,
                 localizedName = resolveLocalisation(localisations, name, "STRATEGICREGION_$id"),
-                provinces = parseIntList(findBlock(text, "provinces")),
-                navalTerrain = findValue(text, "naval_terrain"),
-                weather = parseWeatherBlock(findBlock(text, "weather")),
+                provinces = regionProps.blockNamed("provinces").intTokens(),
+                navalTerrain = regionProps.firstValueNamed("naval_terrain"),
+                weather = regionProps.blockNamed("weather").intProperties(),
                 path = path.toAbsolutePath().normalize()
             )
-        } catch (e: Exception) {
-            LOG.warn("Strategic region file parse failed: $path", e)
-            null
         }
     }
 
@@ -335,18 +335,16 @@ class MapPreviewService(private val project: Project) {
 
 
     private fun parseCountryTagFile(path: Path): Map<String, String> {
-        return try {
-            val text = stripComments(ResourceFiles.readText(path).orEmpty())
-            Regex("""(?im)([A-Z0-9_]{3})\s*=\s*(?:"([^"]+)"|([^\s#]+))""")
-                .findAll(text)
-                .associate {
-                    val value = it.groupValues[2].ifEmpty { it.groupValues[3] }
-                    it.groupValues[1].uppercase() to normalizeCountryPath(value)
-                }
-        } catch (e: Exception) {
-            LOG.warn("Country tag file parse failed: $path", e)
-            emptyMap()
-        }
+        return withScriptProperties(path) { root ->
+            val result = linkedMapOf<String, String>()
+            for (prop in root) {
+                val tag = prop.propertyKey.text
+                if (tag.length != 3 || tag.any { it !in 'A'..'Z' && it !in '0'..'9' && it != '_' }) continue
+                val value = prop.value?.trim()?.trim('"')?.takeIf { it.isNotEmpty() } ?: continue
+                result.putIfAbsent(tag.uppercase(), normalizeCountryPath(value))
+            }
+            result
+        } ?: emptyMap()
     }
 
     private fun normalizeCountryPath(path: String): String {
@@ -359,13 +357,7 @@ class MapPreviewService(private val project: Project) {
     }
 
     private fun parseCountryColor(path: Path): Int? {
-        return try {
-            val text = stripComments(ResourceFiles.readText(path).orEmpty())
-            parseColorValue(text)
-        } catch (e: Exception) {
-            LOG.warn("Country color parse failed: $path", e)
-            null
-        }
+        return withScriptProperties(path) { root -> root.firstColorInt() }
     }
 
     private data class CountryColorOverride(val path: Path, val color: Int)
@@ -381,39 +373,16 @@ class MapPreviewService(private val project: Project) {
     }
 
     private fun parseCountryColorOverrideFile(path: Path): Map<String, Int> {
-        return try {
-            val text = stripComments(ResourceFiles.readText(path).orEmpty())
+        return withScriptProperties(path) { root ->
             val result = linkedMapOf<String, Int>()
-            COUNTRY_COLOR_ASSIGNMENT_REGEX.findAll(text).forEach { match ->
-                val tag = match.groupValues[1].uppercase()
-                val block = extractColorBlockAfterEquals(text, match.range.last + 1) ?: return@forEach
-                val color = parseColorValue(block) ?: parseColorBlock(block) ?: return@forEach
+            for (prop in root) {
+                val tag = prop.propertyKey.text.uppercase()
+                if (tag.length != 3) continue
+                val color = prop.block?.propertyList?.firstColorInt() ?: continue
                 result[tag] = color
             }
             result
-        } catch (e: Exception) {
-            LOG.warn("Country color override parse failed: $path", e)
-            emptyMap()
-        }
-    }
-
-    private fun parseColorValue(text: String): Int? {
-        val match = Regex("""(?i)(?:^|\s)color\s*=\s*(?:rgb\s*)?\{([^{}]*)}""").find(text) ?: return null
-        return parseColorBlock(match.groupValues[1])
-    }
-
-    private fun parseColorBlock(block: String?): Int? {
-        if (block.isNullOrBlank()) return null
-        val values = Regex("""-?\d+""")
-            .findAll(block)
-            .mapNotNull { it.value.toIntOrNull() }
-            .take(3)
-            .toList()
-        if (values.size < 3) return null
-        val red = values[0].coerceIn(0, 255)
-        val green = values[1].coerceIn(0, 255)
-        val blue = values[2].coerceIn(0, 255)
-        return (red shl 16) or (green shl 8) or blue
+        } ?: emptyMap()
     }
 
     private fun findCountryFiles(
@@ -1054,202 +1023,134 @@ class MapPreviewService(private val project: Project) {
         return (red shl 16) or (green shl 8) or blue
     }
 
-    private fun stripComments(text: String): String {
-        val result = StringBuilder(text.length)
-        var inQuote = false
-        var escaped = false
-        var index = 0
-        while (index < text.length) {
-            val char = text[index]
-            when {
-                escaped -> {
-                    result.append(char)
-                    escaped = false
-                }
+    // ---- Paradox-script PSI helpers (structure parsing delegated to the PLS grammar) ----
 
-                char == '\\' -> {
-                    result.append(char)
-                    escaped = true
-                }
-
-                char == '"' -> {
-                    result.append(char)
-                    inQuote = !inQuote
-                }
-
-                char == '#' && !inQuote -> {
-                    while (index < text.length && text[index] != '\n') index++
-                    if (index < text.length) result.append('\n')
-                }
-
-                else -> result.append(char)
+    /** Runs [action] with the top-level properties of the script file at [path] inside a read action. */
+    private fun <T> withScriptProperties(path: Path, action: (List<ParadoxScriptProperty>) -> T?): T? {
+        return try {
+            ApplicationManager.getApplication().runReadAction<T?> {
+                val vf = ResourceFiles.toVirtualFile(path) ?: return@runReadAction null
+                val psiFile = PsiManager.getInstance(project).findFile(vf) as? ParadoxScriptFile
+                    ?: return@runReadAction null
+                val block = psiFile.block ?: return@runReadAction null
+                action(block.propertyList)
             }
-            index++
+        } catch (e: Exception) {
+            LOG.warn("Script file parse failed: $path", e)
+            null
         }
-        return result.toString()
     }
 
-    private fun findNamedBlock(text: String, key: String): String? {
-        val match = Regex("""(?i)(?:^|\s)${Regex.escape(key)}\s*=""").find(text) ?: return null
-        return extractBlockAfterEquals(text, match.range.last + 1)
-    }
-
-    private fun findBlock(text: String, key: String): String? = findNamedBlock(text, key)
-
-    private fun findValue(text: String, key: String): String? {
-        return findValues(text, key).firstOrNull()
-    }
-
-    private fun findValues(text: String, key: String): List<String> {
-        return Regex("""(?i)(?:^|\s)${Regex.escape(key)}\s*=\s*("[^"]*"|[^\s{}#]+|\{[^{}]*})""")
-            .findAll(text)
-            .flatMap { match ->
-                val value = match.groupValues[1].trim()
-                if (value.startsWith("{") && value.endsWith("}")) {
-                    parseStringList(value.substring(1, value.length - 1)).asSequence()
-                } else {
-                    sequenceOf(value.trim('"'))
-                }
-            }
-            .filter { it.isNotEmpty() }
-            .toList()
-    }
-
-    private fun findInt(text: String, key: String): Int? = findValue(text, key)?.toIntOrNull()
-
-    private fun extractBlockAfterEquals(text: String, startIndex: Int): String? {
-        var index = startIndex
-        while (index < text.length && text[index].isWhitespace()) index++
-        if (index >= text.length || text[index] != '{') return null
-        return extractBlockAt(text, index)
-    }
-
-    private fun extractColorBlockAfterEquals(text: String, startIndex: Int): String? {
-        var index = startIndex
-        while (index < text.length && text[index].isWhitespace()) index++
-        if (index + 3 <= text.length && text.regionMatches(index, "rgb", 0, 3, ignoreCase = true)) {
-            val nextIndex = index + 3
-            if (nextIndex >= text.length || !text[nextIndex].isLetterOrDigit() && text[nextIndex] != '_') {
-                index = nextIndex
-                while (index < text.length && text[index].isWhitespace()) index++
-            }
+    /** Depth-first pre-order traversal, matching the document order of the old text scanner. */
+    private fun List<ParadoxScriptProperty>.preOrder(): Sequence<ParadoxScriptProperty> = sequence {
+        for (prop in this@preOrder) {
+            yield(prop)
+            prop.block?.let { yieldAll(it.propertyList.preOrder()) }
         }
-        if (index >= text.length || text[index] != '{') return null
-        return extractBlockAt(text, index)
     }
 
-    private fun extractBlockAt(text: String, openingBraceIndex: Int): String? {
-        var index = openingBraceIndex
-        var depth = 0
-        var inQuote = false
-        var escaped = false
-        val contentStart = index + 1
-        while (index < text.length) {
-            val char = text[index]
-            when {
-                escaped -> escaped = false
-                char == '\\' -> escaped = true
-                char == '"' -> inQuote = !inQuote
-                !inQuote && char == '{' -> depth++
-                !inQuote && char == '}' -> {
-                    depth--
-                    if (depth == 0) return text.substring(contentStart, index)
-                }
+    private fun List<ParadoxScriptProperty>.blockNamed(key: String): ParadoxScriptBlock? =
+        preOrder().firstOrNull { it.propertyKey.text.equals(key, ignoreCase = true) }?.block
+
+    private fun List<ParadoxScriptProperty>.firstValueNamed(key: String): String? {
+        for (prop in preOrder()) {
+            if (!prop.propertyKey.text.equals(key, ignoreCase = true)) continue
+            prop.value?.let { v ->
+                val cleaned = v.trim().trim('"')
+                if (cleaned.isNotEmpty()) return cleaned
             }
-            index++
+            prop.block?.valueList?.forEach { v ->
+                val cleaned = v.text.trim().trim('"')
+                if (cleaned.isNotEmpty()) return cleaned
+            }
         }
         return null
     }
 
-    private fun parseIntList(block: String?): List<Int> {
-        if (block.isNullOrBlank()) return emptyList()
-        return TOKEN_REGEX.findAll(block)
-            .mapNotNull { it.value.trim('"').toIntOrNull() }
-            .toList()
+    private fun List<ParadoxScriptProperty>.valuesNamed(key: String): List<String> {
+        val result = mutableListOf<String>()
+        for (prop in preOrder()) {
+            if (!prop.propertyKey.text.equals(key, ignoreCase = true)) continue
+            prop.value?.let { result.add(it.trim().trim('"')) }
+            prop.block?.let { result.addAll(it.bareTokens()) }
+        }
+        return result.filter { it.isNotEmpty() }
     }
 
-    private fun parseStringList(block: String?): List<String> {
-        if (block.isNullOrBlank()) return emptyList()
-        return TOKEN_REGEX.findAll(block)
-            .map { it.value.trim('"') }
-            .filter { it.isNotBlank() && it != "=" }
-            .toList()
+    private fun List<ParadoxScriptProperty>.victoryPoints(): Map<Int, Int> {
+        val result = linkedMapOf<Int, Int>()
+        for (prop in preOrder()) {
+            if (!prop.propertyKey.text.equals("victory_points", ignoreCase = true)) continue
+            val values = prop.block?.valueList
+                ?.mapNotNull { it.text.trim().trim('"').toIntOrNull() }
+                ?.take(2)
+                ?: continue
+            if (values.size == 2) result.putIfAbsent(values[0], values[1])
+        }
+        return result
     }
 
-    private fun parseResourceBlock(block: String?): Map<String, Int> {
-        if (block.isNullOrBlank()) return emptyMap()
-        return Regex("""(?i)([A-Za-z_][\w.-]*)\s*=\s*(-?\d+)""")
-            .findAll(block)
-            .associate { it.groupValues[1] to it.groupValues[2].toInt() }
+    private fun List<ParadoxScriptProperty>.firstColorInt(): Int? {
+        for (prop in preOrder()) {
+            if (!prop.propertyKey.text.equals("color", ignoreCase = true)) continue
+            val block = prop.block ?: continue
+            val ints = NUMBER_TOKEN_REGEX.findAll(block.text)
+                .mapNotNull { it.value.toIntOrNull() }
+                .take(3)
+                .toList()
+            if (ints.size == 3) {
+                return (ints[0].coerceIn(0, 255) shl 16) or (ints[1].coerceIn(0, 255) shl 8) or ints[2].coerceIn(0, 255)
+            }
+        }
+        return null
     }
 
-    private fun parseStateBuildings(block: String?): Map<String, Int> {
-        if (block.isNullOrBlank()) return emptyMap()
-        return Regex("""(?i)([A-Za-z_][\w.-]*)\s*=\s*(-?\d+)""")
-            .findAll(removeNestedBlocks(block))
-            .associate { it.groupValues[1] to it.groupValues[2].toInt() }
+    /** Bare value tokens of a block: value texts plus keys of value-less assignments. */
+    private fun ParadoxScriptBlock.bareTokens(): List<String> = buildList {
+        for (v in valueList) add(v.text.trim().trim('"'))
+        for (p in propertyList) {
+            p.value?.let { add(it.trim().trim('"')) } ?: add(p.propertyKey.text.trim('"'))
+        }
     }
 
-    private fun parseProvinceBuildings(block: String?): Map<Int, Map<String, Int>> {
-        if (block.isNullOrBlank()) return emptyMap()
+    private fun ParadoxScriptBlock?.intTokens(): List<Int> {
+        if (this == null) return emptyList()
+        return valueList.mapNotNull { it.text.trim().trim('"').toIntOrNull() }
+    }
+
+    private fun ParadoxScriptBlock?.intProperties(): Map<String, Int> {
+        if (this == null) return emptyMap()
+        return buildMap {
+            for (p in propertyList) {
+                val v = p.value?.trim()?.trim('"')?.toIntOrNull() ?: continue
+                put(p.propertyKey.text, v)
+            }
+        }
+    }
+
+    /** Scalar `key = int` assignments, skipping nested (province) sub-blocks. */
+    private fun ParadoxScriptBlock?.scalarIntProperties(): Map<String, Int> {
+        if (this == null) return emptyMap()
+        return buildMap {
+            for (p in propertyList) {
+                if (p.block != null) continue
+                val v = p.value?.trim()?.trim('"')?.toIntOrNull() ?: continue
+                put(p.propertyKey.text, v)
+            }
+        }
+    }
+
+    private fun ParadoxScriptBlock?.provinceBuildings(): Map<Int, Map<String, Int>> {
+        if (this == null) return emptyMap()
         val result = linkedMapOf<Int, Map<String, Int>>()
-        Regex("""(?m)(\d+)\s*=""").findAll(block).forEach { match ->
-            val provinceId = match.groupValues[1].toIntOrNull() ?: return@forEach
-            val provinceBlock = extractBlockAfterEquals(block, match.range.last + 1) ?: return@forEach
-            val buildings = Regex("""(?i)([A-Za-z_][\w.-]*)\s*=\s*(-?\d+)""")
-                .findAll(provinceBlock)
-                .associate { it.groupValues[1] to it.groupValues[2].toInt() }
+        for (p in propertyList) {
+            val provinceId = p.propertyKey.text.toIntOrNull() ?: continue
+            val buildings = p.block?.scalarIntProperties().orEmpty()
             if (buildings.isNotEmpty()) result[provinceId] = buildings
         }
         return result
     }
 
-    private fun parseVictoryPoints(historyBlock: String): Map<Int, Int> {
-        val result = linkedMapOf<Int, Int>()
-        Regex("""(?i)(?:^|\s)victory_points\s*=""").findAll(historyBlock).forEach { match ->
-            val block = extractBlockAfterEquals(historyBlock, match.range.last + 1) ?: return@forEach
-            val values = Regex("""-?\d+""").findAll(block).mapNotNull { it.value.toIntOrNull() }.take(2).toList()
-            if (values.size == 2) result[values[0]] = values[1]
-        }
-        return result
-    }
-
-    private fun removeNestedBlocks(block: String): String {
-        val result = StringBuilder(block.length)
-        var depth = 0
-        var inQuote = false
-        var escaped = false
-        for (char in block) {
-            when {
-                escaped -> {
-                    if (depth == 0) result.append(char)
-                    escaped = false
-                }
-
-                char == '\\' -> {
-                    if (depth == 0) result.append(char)
-                    escaped = true
-                }
-
-                char == '"' -> {
-                    if (depth == 0) result.append(char)
-                    inQuote = !inQuote
-                }
-
-                !inQuote && char == '{' -> depth++
-                !inQuote && char == '}' -> if (depth > 0) depth--
-                depth == 0 -> result.append(char)
-            }
-        }
-        return result.toString()
-    }
-
-    private fun parseWeatherBlock(block: String?): Map<String, Int> {
-        if (block.isNullOrBlank()) return emptyMap()
-        return Regex("""(?i)([A-Za-z_][\w.-]*)\s*=\s*(-?\d+)""")
-            .findAll(block)
-            .associate { it.groupValues[1] to it.groupValues[2].toInt() }
-    }
 
     private fun findLocFilePaths(roots: List<Path>): List<Path> {
         return LocalisationFiles.findFiles(roots)
@@ -1318,12 +1219,11 @@ class MapPreviewService(private val project: Project) {
         private const val UNKNOWN_KEY = -1
         private const val RENDER_ZONE_BLOCK_SIZE = 256
         private const val SMOOTH_EDGE_SIMPLIFY_TOLERANCE = 0.85
+        private val NUMBER_TOKEN_REGEX = Regex("""-?\d+""")
         private val COUNTRY_COLOR_OVERRIDE_PATHS = listOf(
             "common/countries/color.txt",
             "common/countries/colors.txt"
         )
-        private val COUNTRY_COLOR_ASSIGNMENT_REGEX = Regex("""(?im)(?:^|[\s{}])([A-Z0-9_]{3})\s*=""")
-        private val TOKEN_REGEX = Regex(""""[^"]*"|[^\s{}=]+""")
     }
 }
 
