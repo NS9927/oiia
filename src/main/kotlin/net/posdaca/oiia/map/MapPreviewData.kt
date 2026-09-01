@@ -64,14 +64,14 @@ data class MapRenderArea(
     val zones: List<MapRenderZone>,
     val bounds: PixelBounds
 ) {
-    fun colorFor(mode: MapPreviewMode): Int {
-        return when (mode) {
-            MapPreviewMode.PROVINCE -> provinceColor
-            MapPreviewMode.STATE -> stateColor
-            MapPreviewMode.COUNTRY -> countryColor
-            MapPreviewMode.STRATEGIC_REGION -> strategicRegionColor
-            MapPreviewMode.TERRAIN -> terrainColor
-            MapPreviewMode.CONTROLLER -> controllerColor
+    fun colorFor(colorSet: MapColorSet): Int {
+        return when (colorSet) {
+            MapColorSet.PROVINCE -> provinceColor
+            MapColorSet.STATE -> stateColor
+            MapColorSet.COUNTRY -> countryColor
+            MapColorSet.STRATEGIC_REGION -> strategicRegionColor
+            MapColorSet.TERRAIN -> terrainColor
+            MapColorSet.CONTROLLER -> controllerColor
         }
     }
 }
@@ -89,14 +89,14 @@ data class MapRenderCell(
     val terrainColor: Int,
     val controllerColor: Int
 ) {
-    fun colorFor(mode: MapPreviewMode): Int {
-        return when (mode) {
-            MapPreviewMode.PROVINCE -> provinceColor
-            MapPreviewMode.STATE -> stateColor
-            MapPreviewMode.COUNTRY -> countryColor
-            MapPreviewMode.STRATEGIC_REGION -> strategicRegionColor
-            MapPreviewMode.TERRAIN -> terrainColor
-            MapPreviewMode.CONTROLLER -> controllerColor
+    fun colorFor(colorSet: MapColorSet): Int {
+        return when (colorSet) {
+            MapColorSet.PROVINCE -> provinceColor
+            MapColorSet.STATE -> stateColor
+            MapColorSet.COUNTRY -> countryColor
+            MapColorSet.STRATEGIC_REGION -> strategicRegionColor
+            MapColorSet.TERRAIN -> terrainColor
+            MapColorSet.CONTROLLER -> controllerColor
         }
     }
 }
@@ -124,7 +124,23 @@ data class MapBorderChunk(
     val segments: List<MapBorderSegment>
 )
 
-enum class MapPreviewMode(val messageKey: String) {
+/** Common option for the map toolbar selectors; labels come from the message bundle. */
+interface MapModeOption {
+    val messageKey: String
+}
+
+enum class MapPreviewMode(override val messageKey: String) : MapModeOption {
+    PROVINCE("toolwindow.MapPreview.mode.province"),
+    STATE("toolwindow.MapPreview.mode.state"),
+    COUNTRY("toolwindow.MapPreview.mode.country"),
+    STRATEGIC_REGION("toolwindow.MapPreview.mode.strategic.region")
+}
+
+/**
+ * Fill colouring, independent of the view mode: any color set can combine with any view mode
+ * (e.g. state outlines + terrain fill).
+ */
+enum class MapColorSet(override val messageKey: String) : MapModeOption {
     PROVINCE("toolwindow.MapPreview.mode.province"),
     STATE("toolwindow.MapPreview.mode.state"),
     COUNTRY("toolwindow.MapPreview.mode.country"),

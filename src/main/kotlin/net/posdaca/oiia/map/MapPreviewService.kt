@@ -987,8 +987,8 @@ class MapPreviewService(private val project: Project) {
     ): (MapPreviewMode) -> List<MapLineSegment> {
         return { mode ->
             val keys = when (mode) {
-                MapPreviewMode.PROVINCE, MapPreviewMode.TERRAIN -> pixelIndex.provinceKeys
-                MapPreviewMode.STATE, MapPreviewMode.CONTROLLER -> pixelIndex.stateKeys
+                MapPreviewMode.PROVINCE -> pixelIndex.provinceKeys
+                MapPreviewMode.STATE -> pixelIndex.stateKeys
                 MapPreviewMode.COUNTRY -> pixelIndex.countryKeys
                 MapPreviewMode.STRATEGIC_REGION -> pixelIndex.strategicRegionKeys
             }
