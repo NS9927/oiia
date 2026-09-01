@@ -1,6 +1,8 @@
 # Oiia Changelog
 
-## [Unreleased]
+## [1.1.2] - 2026-08-31
+
+New GFX tool window, a round of map-preview fidelity and UX work modelled on the hoi4modutilities reference, and a memory-overhaul that fixes an IDE freeze when previewing large maps.
 
 ### Added
 
@@ -8,16 +10,22 @@
 - Map preview color sets `Terrain` and `Controller` (game-start controller falls back to the owner), alongside the existing region fills.
 - Map preview now marks impassable states with red boundaries (visible when borders are shown) and overlays demilitarized-zone provinces with a diagonal hatch; state details include controller, impassable and demilitarized-zone rows.
 - Map preview toolbar gained a locate field: jump to a state / province / country / region by id or (localized) name, highlighting it and centering the viewport.
-
+- Map preview gained an `Export` action that renders the whole map at native 1:1 scale (fill, borders and labels) into a PNG via a save dialog.
 - Map labels now anchor to each region's mass-weighted pixel centroid (with seam-aware wrap correction for regions crossing the map edge), draw a second dim line with the region id, use a screen-fixed font instead of scaling with zoom, pick black/white ink by the region's rendered colour, and hide labels of regions too small on screen at low zoom - matching the label model of the hoi4modutilities reference.
 - Unit-test anchors for the previously untested core logic: the GUI layout engine, the map preview's pure pixel math (province boundaries, render-zone uniformity, centroid merging, label ink), the sprite resolver's path/stamp seams, prefix icon lookup, and HOI4 resource-root planning (priority-mod matching and dependency traversal).
 
 ### Changed
 
+- The map toolbar's color and view modes are decoupled: the color selector picks the fill (province / state / country / strategic region / terrain / controller) while the view-mode selector drives borders, labels, hover selection and details, so any combination works (e.g. state outlines with terrain fill).
 - The GUI preview's layout engine (element sizing, bounds, anchors, issue detection) moved from the panel into `GuiPreviewService.layoutRoot`, a pure function over the parsed element tree and resolved resources; panels now only consume the laid-out nodes.
 - Map preview boundary detection and render-zone uniformity are extracted into the pure `MapPixels` object and shared by the service and panel.
 - The HOI4 resource-root implementation now lives under `core/files`, leaving `ResourceFiles` as the single resource-root facade.
 - Sprite and localisation facades now self-protect all PLS/PSI access with read actions, so background callers cannot trigger threading assertions.
+
+### Fixed
+
+- Fixes an IDE freeze (`OutOfMemoryError` storm, `gc overloaded`) when loading large maps: smooth border segments are now built lazily per view mode instead of eagerly for all four, the impassability boundary pass no longer allocates a full-map key array, and the GFX preview stops decoding textures after a 192 MB budget.
+- `enable_equipments = no` in technology files was evaluated as true.
 
 ## [1.1.1] - 2026-08-30
 
