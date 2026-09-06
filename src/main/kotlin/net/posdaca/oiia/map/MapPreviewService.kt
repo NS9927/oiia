@@ -302,8 +302,13 @@ class MapPreviewService(private val project: Project) {
         unknownProvinceColors: Set<Int>
     ): List<MapWarning> {
         val warnings = mutableListOf<MapWarning>()
-        for (color in unknownProvinceColors.sorted()) {
+        // Cap per-colour entries so a broken map cannot flood the issue panel.
+        val colours = unknownProvinceColors.sorted()
+        for (color in colours.take(50)) {
             warnings += MapWarning("provinces.bmp colour #%06X has no definition.csv row".format(color))
+        }
+        if (colours.size > 50) {
+            warnings += MapWarning("…and ${colours.size - 50} more provinces.bmp colours without definition.csv rows")
         }
         val assignedProvinceIds = mutableSetOf<Int>()
         val duplicatedOwners = mutableSetOf<Int>()

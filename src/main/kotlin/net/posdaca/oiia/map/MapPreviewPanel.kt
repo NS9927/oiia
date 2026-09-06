@@ -531,6 +531,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         private var timelineOwnerColors: Map<Int, Int> = emptyMap()
         private var timelineSmoothSegments: Map<MapPreviewMode, List<MapLineSegment>> = emptyMap()
         private var timelineCountryKeys: IntArray? = null
+        private var timelineApplied = false
         private val tileCache = object : LinkedHashMap<MapTileKey, BufferedImage>(64, 0.75f, true) {
             override fun removeEldestEntry(eldest: MutableMap.MutableEntry<MapTileKey, BufferedImage>?): Boolean {
                 return size > MAX_TILE_CACHE_SIZE
@@ -667,6 +668,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             timelineOwnerColors = emptyMap()
             timelineSmoothSegments = emptyMap()
             timelineCountryKeys = null
+            timelineApplied = false
             bordersVisible = this@MapPreviewPanel.showBorders
             smoothBorders = this@MapPreviewPanel.smoothBorders
             renderChunkIndex = nextData?.renderChunks
@@ -1425,30 +1427,17 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
          */
         fun setTimeline(date: Triple<Int, Int, Int>?, enabledDlcs: Set<String>) {
             val current = data ?: return
+            timelineApplied = date != null
             LOG.info("setTimeline: date=$date enabled=$enabledDlcs ch1039=${current.stateById[1039]?.stateChanges} ch1037=${current.stateById[1037]?.stateChanges}")
             if (date == null) {
                 timelineControllerColors = emptyMap()
                 timelineOwnerColors = emptyMap()
                 restoreCountryBorders(current)
             } else {
-                val (year, month, day) = date
-                fun resolvedTag(base: String?, changes: List<MapStateChange>, pick: (MapStateChange) -> String?): String? {
-                    var tag = base
-                    val sorted = changes.sortedWith(
-                        compareBy({ it.year ?: Int.MIN_VALUE }, { it.month ?: Int.MIN_VALUE }, { it.day ?: Int.MIN_VALUE })
-                    )
-                    for (change in sorted) {
-                        if (!change.isOnOrBefore(year, month, day)) continue
-                        val dlcOk = change.requiredDlc == null ||
-                                (if (change.unlessDlc) change.requiredDlc !in enabledDlcs else change.requiredDlc in enabledDlcs)
-                        if (!dlcOk) continue
-                        pick(change)?.let { tag = it }
-                    }
-                    return tag
-                }
                 fun colorsFor(pick: (MapStateChange) -> String?): Map<Int, Int> {
                     return current.stateById.values.mapNotNull { state ->
-                        val tag = resolvedTag(state.owner, state.stateChanges, pick)?.uppercase() ?: return@mapNotNull null
+                        val tag = resolveTag(state.owner, state.stateChanges, pick)?.uppercase()
+                            ?: return@mapNotNull null
                         val color = current.countryColorByTag[tag] ?: return@mapNotNull null
                         state.id to color
                     }.toMap()
@@ -1457,7 +1446,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
                 timelineOwnerColors = colorsFor { it.owner }
                 // Country borders must follow the resolved owners, not the base ones.
                 val ownerTagByState = current.stateById.values.mapNotNull { state ->
-                    resolvedTag(state.owner, state.stateChanges) { it.owner }?.uppercase()
+                    resolveTag(state.owner, state.stateChanges) { it.owner }?.uppercase()
                         ?.let { state.id to it }
                 }.toMap()
                 applyCountryBorderOverride(current, ownerTagByState)
@@ -1564,10 +1553,41 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             val x = floorMod(rawX, image.width)
             val rgb = image.getRGB(x, y) and 0xFFFFFF
             val province = current.provinceByColor[rgb]
-            val state = province?.let { current.stateByProvinceId[it.id] }
+            var state = province?.let { current.stateByProvinceId[it.id] }
+            // Timeline active: the hovered state's owner/controller follow the resolved values.
+            if (timelineApplied && state != null) {
+                val owner = resolveTag(state.owner, state.stateChanges) { it.owner }?.uppercase()
+                val controller = resolveTag(state.controller, state.stateChanges) { it.controller }?.uppercase()
+                if (owner != null || controller != null) {
+                    state = state.copy(
+                        owner = owner ?: state.owner,
+                        controller = controller ?: state.controller
+                    )
+                }
+            }
             val country = state?.owner?.uppercase()?.let { current.countryByTag[it] }
             val strategicRegion = province?.let { current.strategicRegionByProvinceId[it.id] }
             return ProvinceSample(x, y, rgb, province, state, country, strategicRegion)
+        }
+
+        private fun resolveTag(
+            base: String?,
+            changes: List<MapStateChange>,
+            pick: (MapStateChange) -> String?
+        ): String? {
+            var tag = base
+            val date = timelineDate ?: return tag
+            val sorted = changes.sortedWith(
+                compareBy({ it.year ?: Int.MIN_VALUE }, { it.month ?: Int.MIN_VALUE }, { it.day ?: Int.MIN_VALUE })
+            )
+            for (change in sorted) {
+                if (!change.isOnOrBefore(date.first, date.second, date.third)) continue
+                val dlcOk = change.requiredDlc == null ||
+                        (if (change.unlessDlc) change.requiredDlc !in enabledDlcs else change.requiredDlc in enabledDlcs)
+                if (!dlcOk) continue
+                pick(change)?.let { tag = it }
+            }
+            return tag
         }
 
         private fun updateHoverSelection(sample: ProvinceSample) {
