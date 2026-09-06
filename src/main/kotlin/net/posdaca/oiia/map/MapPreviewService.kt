@@ -277,7 +277,8 @@ class MapPreviewService(private val project: Project) {
         val bookmarks = mutableListOf<MapBookmark>()
         for (path in files.distinctBy { ResourceFiles.normalizedKey(it) }) {
             withScriptProperties(path) { root ->
-                for (prop in root) {
+                val wrapper = root.blockNamed("bookmarks")?.propertyList ?: root
+                for (prop in wrapper) {
                     if (!prop.propertyKey.text.equals("bookmark", ignoreCase = true)) continue
                     val block = prop.block ?: continue
                     val nameKey = block.propertyList.firstValueNamed("name")?.trim()?.trim('"') ?: continue
