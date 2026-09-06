@@ -98,7 +98,9 @@ class MapPreviewService(private val project: Project) {
                     unknownProvinceColors = renderData.unknownProvinceColors,
                     warnings = warnings,
                     referencedDlcNames = referencedDlcNames(states.flatMap { it.stateChanges }),
-                    installedDlcNames = loadInstalledDlcNames(roots)
+                    installedDlcNames = loadInstalledDlcNames(roots).also { installed ->
+                        LOG.info("DLC debug: installed=$installed referenced=${referencedDlcNames(states.flatMap { s -> s.stateChanges })} changesFor1039=${states.firstOrNull { s -> s.id == 1039 }?.stateChanges}")
+                    }
                 )
             )
         } catch (e: Exception) {

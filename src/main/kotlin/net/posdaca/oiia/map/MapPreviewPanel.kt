@@ -423,8 +423,8 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         val selected = options.getOrNull(1) ?: options.firstOrNull()
         timelineSelector.selectedItem = selected
         timelineSelectorUpdating = false
-        // Preserve the picked date if it still exists among the options.
-        if (options.none { it.date == timelineDate }) timelineDate = selected?.date
+        // The combo selection is the source of truth after a reload.
+        timelineDate = selected?.date
     }
 
     private fun applyTimeline() {
@@ -1421,6 +1421,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
          */
         fun setTimeline(date: Triple<Int, Int, Int>?, enabledDlcs: Set<String>) {
             val current = data ?: return
+            LOG.info("setTimeline: date=$date enabled=$enabledDlcs ch1039=${current.stateById[1039]?.stateChanges} ch1037=${current.stateById[1037]?.stateChanges}")
             if (date == null) {
                 timelineControllerColors = emptyMap()
                 timelineOwnerColors = emptyMap()
@@ -1449,6 +1450,10 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
                 }
                 timelineControllerColors = colorsFor { it.controller }
                 timelineOwnerColors = colorsFor { it.owner }
+                LOG.info(
+                    "setTimeline result: owner=${timelineOwnerColors.size} ctrl=${timelineControllerColors.size} " +
+                        "1039->${timelineOwnerColors[1039]} HBC=${current.countryColorByTag["HBC"]} SIC=${current.countryColorByTag["SIC"]}"
+                )
             }
             clearTileCache()
             repaint()
