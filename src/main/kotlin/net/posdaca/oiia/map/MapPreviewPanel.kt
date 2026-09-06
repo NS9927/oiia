@@ -419,10 +419,12 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         }
         timelineSelector.removeAllItems()
         for (option in options) timelineSelector.addItem(option)
-        timelineSelector.selectedItem = options.firstOrNull()
+        // Default to the earliest bookmark so timeline/DLC changes are visible immediately.
+        val selected = options.getOrNull(1) ?: options.firstOrNull()
+        timelineSelector.selectedItem = selected
         timelineSelectorUpdating = false
         // Preserve the picked date if it still exists among the options.
-        if (options.none { it.date == timelineDate }) timelineDate = null
+        if (options.none { it.date == timelineDate }) timelineDate = selected?.date
     }
 
     private fun applyTimeline() {
@@ -451,7 +453,12 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         for (name in names) {
             val item = JCheckBoxMenuItem(name, name in effective)
             item.addActionListener {
-                dlcSelectionTouched = true
+                // First touch seeds the selection with the defaults so untouched DLCs
+                // keep their state instead of silently flipping to disabled.
+                if (!dlcSelectionTouched) {
+                    enabledDlcs.addAll(effectiveEnabledDlcs())
+                    dlcSelectionTouched = true
+                }
                 if (item.isSelected) enabledDlcs.add(name) else enabledDlcs.remove(name)
                 applyTimeline()
             }

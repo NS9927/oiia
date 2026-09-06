@@ -93,7 +93,7 @@ class MapPreviewService(private val project: Project) {
                     ),
                     impassableBorderChunks = renderData.impassableBorderChunks,
                     demilitarizedZoneMask = renderData.demilitarizedZoneMask,
-                    countryColorByTag = buildRenderedCountryColorByTag(states, countryDefinitions),
+                    countryColorByTag = buildRenderedCountryColorByTag(countryDefinitions, states),
                     bookmarks = loadBookmarks(roots),
                     unknownProvinceColors = renderData.unknownProvinceColors,
                     warnings = warnings,
@@ -229,10 +229,15 @@ class MapPreviewService(private val project: Project) {
 
     /** Rendered colour per country tag, used by timeline recolouring of owner/controller fills. */
     private fun buildRenderedCountryColorByTag(
-        states: List<StateInfo>,
-        countryDefinitions: Map<String, CountryDefinition>
+        countryDefinitions: Map<String, CountryDefinition>,
+        states: List<StateInfo>
     ): Map<String, Int> {
-        val tags = states.flatMapTo(sortedSetOf()) { setOfNotNull(it.owner?.uppercase(), it.controller?.uppercase()) }
+        // Covers every defined country so tags that only appear behind DLC conditions
+        // (e.g. HBC/SIC from conditional transfer_state_to) still resolve to colours.
+        val tags = countryDefinitions.keys +
+                states.flatMapTo(mutableSetOf()) {
+                    setOfNotNull(it.owner?.uppercase(), it.controller?.uppercase())
+                }
         return tags.associateWith { tag ->
             renderCountryMapColor(countryDefinitions[tag]?.color ?: colorForKey(tag))
         }
