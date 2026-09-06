@@ -96,7 +96,9 @@ class MapPreviewService(private val project: Project) {
                     countryColorByTag = buildRenderedCountryColorByTag(states, countryDefinitions),
                     bookmarks = loadBookmarks(roots),
                     unknownProvinceColors = renderData.unknownProvinceColors,
-                    warnings = warnings
+                    warnings = warnings,
+                    referencedDlcNames = referencedDlcNames(states.flatMap { it.stateChanges }),
+                    installedDlcNames = loadInstalledDlcNames(roots)
                 )
             )
         } catch (e: Exception) {
@@ -209,7 +211,7 @@ class MapPreviewService(private val project: Project) {
                 impassable = stateProps.firstValueNamed("impassable").parseParadoxBoolean() ?: false,
                 controller = historyProps?.firstValueNamed("controller"),
                 demilitarizedZone = historyProps?.firstValueNamed("set_demilitarized_zone").parseParadoxBoolean() ?: false,
-                datedChanges = historyProps?.datedChanges().orEmpty(),
+                stateChanges = historyProps?.stateChanges().orEmpty(),
                 path = path.toAbsolutePath().normalize()
             )
         }
@@ -1446,21 +1448,90 @@ class MapPreviewService(private val project: Project) {
         return result
     }
 
-    /** Dated blocks inside a state history (`1939.1.1 = { owner = X controller = Y }`). */
-    private fun List<ParadoxScriptProperty>.datedChanges(): List<MapDatedChange> {
+    /**
+     * Owner/controller changes inside a state history: dated blocks, plus `IF`/`else` blocks
+     * gated by `has_dlc`, at the history top level or nested inside dated blocks.
+     */
+    private fun List<ParadoxScriptProperty>.stateChanges(): List<MapStateChange> {
         val dateRegex = Regex("""^(\d{1,4})\.(\d{1,2})\.(\d{1,2})(?:\.\d+)?$""")
-        val result = mutableListOf<MapDatedChange>()
+        val result = mutableListOf<MapStateChange>()
+
+        fun collectEffects(
+            block: ParadoxScriptBlock,
+            year: Int?,
+            month: Int?,
+            day: Int?,
+            requiredDlc: String?,
+            unlessDlc: Boolean
+        ) {
+            for (prop in block.propertyList) {
+                val key = prop.propertyKey.text.trim()
+                val inner = prop.block
+                when {
+                    key.equals("IF", ignoreCase = true) || key.equals("else_if", ignoreCase = true) -> {
+                        if (inner != null) {
+                            val limit = inner.propertyList
+                                .firstOrNull { it.propertyKey.text.equals("limit", ignoreCase = true) }?.block
+                            val dlc = limit?.propertyList
+                                ?.firstOrNull { it.propertyKey.text.equals("has_dlc", ignoreCase = true) }
+                                ?.value?.trim()?.trim('"')
+                            collectEffects(inner, year, month, day, dlc ?: requiredDlc, unlessDlc)
+                        }
+                    }
+                    key.equals("else", ignoreCase = true) -> {
+                        if (inner != null) {
+                            collectEffects(inner, year, month, day, requiredDlc, !unlessDlc)
+                        }
+                    }
+                    key.equals("owner", ignoreCase = true) || key.equals("transfer_state_to", ignoreCase = true) -> {
+                        result += MapStateChange(year, month, day, requiredDlc, unlessDlc, prop.value, null)
+                    }
+                    key.equals("controller", ignoreCase = true) ||
+                            key.equals("set_state_controller", ignoreCase = true) ||
+                            key.equals("set_state_controller_to", ignoreCase = true) -> {
+                        result += MapStateChange(year, month, day, requiredDlc, unlessDlc, null, prop.value)
+                    }
+                }
+            }
+        }
+
         for (prop in this) {
-            val match = dateRegex.matchEntire(prop.propertyKey.text.trim()) ?: continue
-            val (year, month, day) = match.destructured
+            val key = prop.propertyKey.text.trim()
             val block = prop.block ?: continue
-            val owner = block.propertyList.firstValueNamed("owner")
-            val controller = block.propertyList.firstValueNamed("controller")
-            if (owner != null || controller != null) {
-                result += MapDatedChange(year.toInt(), month.toInt(), day.toInt(), owner, controller)
+            val dateMatch = dateRegex.matchEntire(key)
+            when {
+                dateMatch != null -> {
+                    val (year, month, day) = dateMatch.destructured
+                    collectEffects(block, year.toInt(), month.toInt(), day.toInt(), null, false)
+                }
+                key.equals("IF", ignoreCase = true) || key.equals("else", ignoreCase = true) -> {
+                    val limit = block.propertyList
+                        .firstOrNull { it.propertyKey.text.equals("limit", ignoreCase = true) }?.block
+                    val dlc = limit?.propertyList
+                        ?.firstOrNull { it.propertyKey.text.equals("has_dlc", ignoreCase = true) }
+                        ?.value?.trim()?.trim('"')
+                    collectEffects(block, null, null, null, dlc, key.equals("else", ignoreCase = true))
+                }
             }
         }
         return result
+    }
+
+    /** `has_dlc` names referenced by the given state changes. */
+    private fun referencedDlcNames(changes: List<MapStateChange>): Set<String> {
+        return changes.mapNotNull { it.requiredDlc }.toSet()
+    }
+
+    /** DLC display names declared by dlc metadata files (launcher format, not Paradox script). */
+    private fun loadInstalledDlcNames(roots: List<Path>): Set<String> {
+        val files = ResourceFiles.listFiles(roots, listOf("dlc"), setOf(".dlc"), maxDepth = 4)
+        val names = mutableSetOf<String>()
+        val nameRegex = Regex("""name\s*=\s*"([^"]+)"\s*$""", RegexOption.MULTILINE)
+        for (path in files) {
+            val text = ResourceFiles.readText(path) ?: continue
+            nameRegex.findAll(text).forEach { names += it.groupValues[1] }
+        }
+        return names
     }
 
     private fun List<ParadoxScriptProperty>.firstColorInt(): Int? {

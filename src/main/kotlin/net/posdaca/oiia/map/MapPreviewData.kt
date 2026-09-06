@@ -281,23 +281,32 @@ data class StateInfo(
     val impassable: Boolean = false,
     val controller: String? = null,
     val demilitarizedZone: Boolean = false,
-    /** Dated `owner = X` / `controller = Y` changes from the state history, in file order. */
-    val datedChanges: List<MapDatedChange> = emptyList()
+    /** Owner/controller changes from the state history, including dated and `has_dlc`-gated ones. */
+    val stateChanges: List<MapStateChange> = emptyList()
 )
 
-/** A dated owner/controller change inside a state history block. */
-data class MapDatedChange(
-    val year: Int,
-    val month: Int,
-    val day: Int,
+/**
+ * One owner/controller change inside a state history. [year]/[month]/[day] are null for
+ * undated (game-start) changes; [requiredDlc] is the `has_dlc` name gating the change
+ * (null = unconditional; [unlessDlc] inverts it for `else` branches).
+ */
+data class MapStateChange(
+    val year: Int?,
+    val month: Int?,
+    val day: Int?,
+    val requiredDlc: String?,
+    val unlessDlc: Boolean,
     val owner: String?,
     val controller: String?
 ) {
     /** True when this change happens on or before the given timeline date. */
     fun isOnOrBefore(year: Int, month: Int, day: Int): Boolean {
-        if (this.year != year) return this.year < year
-        if (this.month != month) return this.month < month
-        return this.day <= day
+        val cy = this.year ?: return true
+        if (cy != year) return cy < year
+        val cm = this.month ?: return true
+        if (cm != month) return cm < month
+        val cd = this.day ?: return true
+        return cd <= day
     }
 }
 
@@ -373,7 +382,11 @@ data class LoadedMapData(
     val bookmarks: List<MapBookmark> = emptyList(),
     /** Provinces.bmp colours missing from definition.csv, for the issue tint. */
     val unknownProvinceColors: Set<Int> = emptySet(),
-    val warnings: List<MapWarning> = emptyList()
+    val warnings: List<MapWarning> = emptyList(),
+    /** `has_dlc` names referenced by the loaded state histories. */
+    val referencedDlcNames: Set<String> = emptySet(),
+    /** DLC display names declared by installed dlc metadata (.dlc) files. */
+    val installedDlcNames: Set<String> = emptySet()
 ) : PreviewSnapshot {
     override val isEmpty: Boolean
         get() = false

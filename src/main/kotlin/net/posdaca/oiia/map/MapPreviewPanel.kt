@@ -52,6 +52,9 @@ import javax.swing.JPanel
 import javax.swing.JTextField
 import javax.swing.JViewport
 import javax.swing.Scrollable
+import javax.swing.JCheckBoxMenuItem
+import javax.swing.JMenuItem
+import javax.swing.JPopupMenu
 import javax.swing.DefaultListModel
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
@@ -83,6 +86,10 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
     private val issuesList = JBList(issuesModel)
     private var issuesScrollPane: JBScrollPane? = null
     private val timelineSelector = ComboBox<TimelineOption>()
+    private var timelineSelectorUpdating = false
+    private var timelineDate: Triple<Int, Int, Int>? = null
+    private var dlcSelectionTouched = false
+    private val enabledDlcs = mutableSetOf<String>()
     private val reloadTimer = Timer(1200) {
         if (isShowing) reloadIfChanged()
     }.apply { isRepeats = true }
@@ -220,12 +227,17 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             }
         }
         timelineSelector.addActionListener {
-            val option = timelineSelector.selectedItem as? TimelineOption ?: return@addActionListener
-            canvas.setTimeline(option.date)
+            if (timelineSelectorUpdating) return@addActionListener
+            timelineDate = (timelineSelector.selectedItem as? TimelineOption)?.date
+            applyTimeline()
         }
+        val dlcButton = JButton(msg("dlc"))
+        dlcButton.toolTipText = msg("dlc.tooltip")
+        dlcButton.addActionListener { showDlcMenu(dlcButton) }
         actions.add(searchField)
         actions.add(JBLabel(msg("timeline")))
         actions.add(timelineSelector)
+        actions.add(dlcButton)
         actions.add(JBLabel(msg("color.mode")))
         actions.add(colorSelector)
         actions.add(JBLabel(msg("border.mode")))
@@ -358,6 +370,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
                 canvas.setData(result.data)
                 refreshTimelineOptions(result.data)
                 refreshIssues(result.data)
+                applyTimeline()
                 val image = result.data.provincesImage
                 val definitions = result.data.provinceByColor.size
                 val states = result.data.stateById.size
@@ -396,6 +409,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
     private data class TimelineOption(val label: String, val date: Triple<Int, Int, Int>?)
 
     private fun refreshTimelineOptions(data: LoadedMapData?) {
+        timelineSelectorUpdating = true
         val options = mutableListOf(TimelineOption(msg("timeline.base"), null))
         val localisations = data?.localisations.orEmpty()
         for (bookmark in data?.bookmarks.orEmpty()) {
@@ -406,6 +420,44 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         timelineSelector.removeAllItems()
         for (option in options) timelineSelector.addItem(option)
         timelineSelector.selectedItem = options.firstOrNull()
+        timelineSelectorUpdating = false
+        // Preserve the picked date if it still exists among the options.
+        if (options.none { it.date == timelineDate }) timelineDate = null
+    }
+
+    private fun applyTimeline() {
+        canvas.setTimeline(timelineDate, effectiveEnabledDlcs())
+    }
+
+    /** Untouched selection defaults to DLCs that are installed and referenced by the map. */
+    private fun effectiveEnabledDlcs(): Set<String> {
+        val data = snapshot ?: return emptySet()
+        if (!dlcSelectionTouched) {
+            return data.referencedDlcNames.filterTo(mutableSetOf()) { it in data.installedDlcNames }
+        }
+        return enabledDlcs.toSet()
+    }
+
+    private fun showDlcMenu(anchor: java.awt.Component) {
+        val data = snapshot ?: return
+        val menu = JPopupMenu()
+        val names = data.referencedDlcNames.sorted()
+        if (names.isEmpty()) {
+            val empty = JMenuItem(msg("dlc.none"))
+            empty.isEnabled = false
+            menu.add(empty)
+        }
+        val effective = effectiveEnabledDlcs()
+        for (name in names) {
+            val item = JCheckBoxMenuItem(name, name in effective)
+            item.addActionListener {
+                dlcSelectionTouched = true
+                if (item.isSelected) enabledDlcs.add(name) else enabledDlcs.remove(name)
+                applyTimeline()
+            }
+            menu.add(item)
+        }
+        menu.show(anchor, 0, anchor.preferredSize.height)
     }
 
     private fun refreshIssues(data: LoadedMapData?) {
@@ -1357,25 +1409,33 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
 
         /**
          * Recolours owner/controller fills as of [date] (null = base values from the top of the
-         * state history). Colours are resolved per state so the tile cache can just be cleared.
+         * state history), applying `has_dlc`-gated changes whose DLC is in [enabledDlcs].
+         * Colours are resolved per state so the tile cache can just be cleared.
          */
-        fun setTimeline(date: Triple<Int, Int, Int>?) {
+        fun setTimeline(date: Triple<Int, Int, Int>?, enabledDlcs: Set<String>) {
             val current = data ?: return
             if (date == null) {
                 timelineControllerColors = emptyMap()
                 timelineOwnerColors = emptyMap()
             } else {
                 val (year, month, day) = date
-                fun resolvedTag(base: String?, changes: List<MapDatedChange>, pick: (MapDatedChange) -> String?): String? {
+                fun resolvedTag(base: String?, changes: List<MapStateChange>, pick: (MapStateChange) -> String?): String? {
                     var tag = base
-                    for (change in changes.sortedWith(compareBy({ it.year }, { it.month }, { it.day }))) {
-                        if (change.isOnOrBefore(year, month, day)) pick(change)?.let { tag = it }
+                    val sorted = changes.sortedWith(
+                        compareBy({ it.year ?: Int.MIN_VALUE }, { it.month ?: Int.MIN_VALUE }, { it.day ?: Int.MIN_VALUE })
+                    )
+                    for (change in sorted) {
+                        if (!change.isOnOrBefore(year, month, day)) continue
+                        val dlcOk = change.requiredDlc == null ||
+                                (if (change.unlessDlc) change.requiredDlc !in enabledDlcs else change.requiredDlc in enabledDlcs)
+                        if (!dlcOk) continue
+                        pick(change)?.let { tag = it }
                     }
                     return tag
                 }
-                fun colorsFor(pick: (MapDatedChange) -> String?): Map<Int, Int> {
+                fun colorsFor(pick: (MapStateChange) -> String?): Map<Int, Int> {
                     return current.stateById.values.mapNotNull { state ->
-                        val tag = resolvedTag(state.owner, state.datedChanges, pick)?.uppercase() ?: return@mapNotNull null
+                        val tag = resolvedTag(state.owner, state.stateChanges, pick)?.uppercase() ?: return@mapNotNull null
                         val color = current.countryColorByTag[tag] ?: return@mapNotNull null
                         state.id to color
                     }.toMap()
