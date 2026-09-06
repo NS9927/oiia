@@ -150,6 +150,13 @@ data class MapBorderChunk(
     val segments: List<MapBorderSegment>
 )
 
+/** Timeline-resolved country border rendering inputs: pixel keys drive highlights too. */
+data class MapCountryBorderOverride(
+    val chunks: List<MapBorderChunk>,
+    val smoothSegments: List<MapLineSegment>,
+    val countryKeys: IntArray
+)
+
 /** Common option for the map toolbar selectors; labels come from the message bundle. */
 interface MapModeOption {
     val messageKey: String

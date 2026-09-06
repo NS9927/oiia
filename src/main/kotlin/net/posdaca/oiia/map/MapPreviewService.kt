@@ -1101,19 +1101,19 @@ class MapPreviewService(private val project: Project) {
     }
 
     /**
-     * Country border chunks (pixel + smooth segments) rebuilt for a timeline ownership
-     * override, so country borders follow the resolved owners instead of the base ones.
+     * Country border chunks, smooth segments and the resolved per-pixel country keys for a
+     * timeline ownership override, so borders and highlights follow the resolved owners.
      */
     fun buildCountryBordersForOwnerOverride(
         data: LoadedMapData,
         ownerTagByState: Map<Int, String>,
-    ): Pair<List<MapBorderChunk>, List<MapLineSegment>> {
+    ): MapCountryBorderOverride {
         val width = data.provincesImage.width
         val height = data.provincesImage.height
         val stateKeys = data.pixelIndex.stateKeys
         val countryKeys = data.pixelIndex.countryKeys
         val maxStateId = stateKeys.maxOrNull()?.takeIf { it >= 0 }
-            ?: return emptyList<MapBorderChunk>() to emptyList<MapLineSegment>()
+            ?: return MapCountryBorderOverride(emptyList(), emptyList(), countryKeys)
         val ownerKeyByStateId = IntArray(maxStateId + 1) { Int.MIN_VALUE }
         for ((stateId, tag) in ownerTagByState) {
             if (stateId in 0..maxStateId) ownerKeyByStateId[stateId] = mapCountryKey(tag.uppercase())
@@ -1129,7 +1129,7 @@ class MapPreviewService(private val project: Project) {
         }
         val chunks = buildPixelBorderChunks(width, height, keys)
         val smooth = buildSmoothBorderSegments(width, height, keys)
-        return chunks to smooth
+        return MapCountryBorderOverride(chunks, smooth, keys)
     }
 
     private fun buildPixelBorderChunks(width: Int, height: Int, keys: IntArray): List<MapBorderChunk> {
