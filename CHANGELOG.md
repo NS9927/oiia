@@ -1,5 +1,13 @@
 # Oiia Changelog
 
+## [1.1.3] - 2026-08-31
+
+The map timeline now understands `has_dlc`-gated ownership, matching how vanilla ships DLC-dependent start setups (e.g. the East Asia rework in No Compromise, No Surrender).
+
+### Added
+
+- Map preview: a DLC selector next to the timeline lists the `has_dlc` conditions referenced by the loaded state histories, pre-checked for installed DLCs. Owner/controller fills are re-evaluated for the selected timeline point + DLC combination, matching the game's conditional state-history script (`IF = { limit = { has_dlc = ... } transfer_state_to = ... }`).
+
 ## [1.1.2] - 2026-08-31
 
 New GFX tool window, a round of map-preview fidelity and UX work modelled on the hoi4modutilities reference, and a memory-overhaul that fixes an IDE freeze when previewing large maps.
