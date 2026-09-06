@@ -213,7 +213,7 @@ class MapPreviewService(private val project: Project) {
                 impassable = stateProps.firstValueNamed("impassable").parseParadoxBoolean() ?: false,
                 controller = historyProps?.firstValueNamed("controller"),
                 demilitarizedZone = historyProps?.firstValueNamed("set_demilitarized_zone").parseParadoxBoolean() ?: false,
-                stateChanges = historyProps?.stateChanges().orEmpty(),
+                stateChanges = historyProps?.stateChanges(id).orEmpty(),
                 path = path.toAbsolutePath().normalize()
             )
         }
@@ -1100,6 +1100,38 @@ class MapPreviewService(private val project: Project) {
         )
     }
 
+    /**
+     * Country border chunks (pixel + smooth segments) rebuilt for a timeline ownership
+     * override, so country borders follow the resolved owners instead of the base ones.
+     */
+    fun buildCountryBordersForOwnerOverride(
+        data: LoadedMapData,
+        ownerTagByState: Map<Int, String>,
+    ): Pair<List<MapBorderChunk>, List<MapLineSegment>> {
+        val width = data.provincesImage.width
+        val height = data.provincesImage.height
+        val stateKeys = data.pixelIndex.stateKeys
+        val countryKeys = data.pixelIndex.countryKeys
+        val maxStateId = stateKeys.maxOrNull()?.takeIf { it >= 0 }
+            ?: return emptyList<MapBorderChunk>() to emptyList<MapLineSegment>()
+        val ownerKeyByStateId = IntArray(maxStateId + 1) { Int.MIN_VALUE }
+        for ((stateId, tag) in ownerTagByState) {
+            if (stateId in 0..maxStateId) ownerKeyByStateId[stateId] = mapCountryKey(tag.uppercase())
+        }
+        val keys = IntArray(stateKeys.size)
+        for (i in stateKeys.indices) {
+            val sk = stateKeys[i]
+            keys[i] = if (sk in 0..maxStateId && ownerKeyByStateId[sk] != Int.MIN_VALUE) {
+                ownerKeyByStateId[sk]
+            } else {
+                countryKeys[i]
+            }
+        }
+        val chunks = buildPixelBorderChunks(width, height, keys)
+        val smooth = buildSmoothBorderSegments(width, height, keys)
+        return chunks to smooth
+    }
+
     private fun buildPixelBorderChunks(width: Int, height: Int, keys: IntArray): List<MapBorderChunk> {
         val chunkColumns = (width + RENDER_ZONE_BLOCK_SIZE - 1) / RENDER_ZONE_BLOCK_SIZE
         val segmentsByChunk = linkedMapOf<Int, MutableList<MapBorderSegment>>()
@@ -1460,12 +1492,13 @@ class MapPreviewService(private val project: Project) {
      * Owner/controller changes inside a state history: dated blocks, plus `IF`/`else` blocks
      * gated by `has_dlc`, at the history top level or nested inside dated blocks.
      */
-    private fun List<ParadoxScriptProperty>.stateChanges(): List<MapStateChange> {
+    private fun List<ParadoxScriptProperty>.stateChanges(stateId: Int): List<MapStateChange> {
         val dateRegex = Regex("""^(\d{1,4})\.(\d{1,2})\.(\d{1,2})(?:\.\d+)?$""")
         val result = mutableListOf<MapStateChange>()
 
         fun collectEffects(
             block: ParadoxScriptBlock,
+            stateId: Int,
             year: Int?,
             month: Int?,
             day: Int?,
@@ -1483,12 +1516,12 @@ class MapPreviewService(private val project: Project) {
                             val dlc = limit?.propertyList
                                 ?.firstOrNull { it.propertyKey.text.equals("has_dlc", ignoreCase = true) }
                                 ?.value?.trim()?.trim('"')
-                            collectEffects(inner, year, month, day, dlc ?: requiredDlc, unlessDlc)
+                            collectEffects(inner, stateId, year, month, day, dlc ?: requiredDlc, unlessDlc)
                         }
                     }
                     key.equals("else", ignoreCase = true) -> {
                         if (inner != null) {
-                            collectEffects(inner, year, month, day, requiredDlc, !unlessDlc)
+                            collectEffects(inner, stateId, year, month, day, requiredDlc, !unlessDlc)
                         }
                     }
                     key.equals("owner", ignoreCase = true) || key.equals("transfer_state_to", ignoreCase = true) -> {
@@ -1498,6 +1531,20 @@ class MapPreviewService(private val project: Project) {
                             key.equals("set_state_controller", ignoreCase = true) ||
                             key.equals("set_state_controller_to", ignoreCase = true) -> {
                         result += MapStateChange(year, month, day, requiredDlc, unlessDlc, null, prop.value)
+                    }
+                    // TAG = { transfer_state = PREV } — PDX scope shorthand for the tag taking this state.
+                    else -> {
+                        val tagKey = key.uppercase()
+                        if (inner != null && tagKey.length == 3 && tagKey.all { it in 'A'..'Z' }) {
+                            val transferValue = inner.propertyList
+                                .firstOrNull { it.propertyKey.text.equals("transfer_state", ignoreCase = true) }
+                                ?.value?.trim()?.trim('"')?.uppercase()
+                            val takesState = transferValue == "PREV" || transferValue == "ROOT" ||
+                                    (transferValue?.toIntOrNull() == stateId)
+                            if (takesState) {
+                                result += MapStateChange(year, month, day, requiredDlc, unlessDlc, tagKey, null)
+                            }
+                        }
                     }
                 }
             }
@@ -1510,7 +1557,7 @@ class MapPreviewService(private val project: Project) {
             when {
                 dateMatch != null -> {
                     val (year, month, day) = dateMatch.destructured
-                    collectEffects(block, year.toInt(), month.toInt(), day.toInt(), null, false)
+                    collectEffects(block, stateId, year.toInt(), month.toInt(), day.toInt(), null, false)
                 }
                 key.equals("IF", ignoreCase = true) || key.equals("else", ignoreCase = true) -> {
                     val limit = block.propertyList
@@ -1518,7 +1565,7 @@ class MapPreviewService(private val project: Project) {
                     val dlc = limit?.propertyList
                         ?.firstOrNull { it.propertyKey.text.equals("has_dlc", ignoreCase = true) }
                         ?.value?.trim()?.trim('"')
-                    collectEffects(block, null, null, null, dlc, key.equals("else", ignoreCase = true))
+                    collectEffects(block, stateId, null, null, null, dlc, key.equals("else", ignoreCase = true))
                 }
             }
         }

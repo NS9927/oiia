@@ -529,6 +529,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         private var issueTintColors: Set<Int> = emptySet()
         private var timelineControllerColors: Map<Int, Int> = emptyMap()
         private var timelineOwnerColors: Map<Int, Int> = emptyMap()
+        private var timelineSmoothSegments: Map<MapPreviewMode, List<MapLineSegment>> = emptyMap()
         private val tileCache = object : LinkedHashMap<MapTileKey, BufferedImage>(64, 0.75f, true) {
             override fun removeEldestEntry(eldest: MutableMap.MutableEntry<MapTileKey, BufferedImage>?): Boolean {
                 return size > MAX_TILE_CACHE_SIZE
@@ -663,6 +664,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             data = nextData
             timelineControllerColors = emptyMap()
             timelineOwnerColors = emptyMap()
+            timelineSmoothSegments = emptyMap()
             bordersVisible = this@MapPreviewPanel.showBorders
             smoothBorders = this@MapPreviewPanel.smoothBorders
             renderChunkIndex = nextData?.renderChunks
@@ -1043,7 +1045,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
                 smooth = smooth,
                 pixelSegments = if (smooth) emptyList() else borderChunkIndex[mode]?.get(key)?.segments.orEmpty(),
                 impassableSegments = impassableChunkIndex[key]?.segments.orEmpty(),
-                smoothSegments = if (smooth) current.smoothBorderSegmentsFor(mode) else emptyList(),
+                smoothSegments = if (smooth) (timelineSmoothSegments[mode] ?: current.smoothBorderSegmentsFor(mode)) else emptyList(),
                 tileRect = tileImageRect(current, key, padding = 1.0 / scale)
             )
         }
@@ -1425,6 +1427,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             if (date == null) {
                 timelineControllerColors = emptyMap()
                 timelineOwnerColors = emptyMap()
+                restoreCountryBorders(current)
             } else {
                 val (year, month, day) = date
                 fun resolvedTag(base: String?, changes: List<MapStateChange>, pick: (MapStateChange) -> String?): String? {
@@ -1450,13 +1453,37 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
                 }
                 timelineControllerColors = colorsFor { it.controller }
                 timelineOwnerColors = colorsFor { it.owner }
+                // Country borders must follow the resolved owners, not the base ones.
+                val ownerTagByState = current.stateById.values.mapNotNull { state ->
+                    resolvedTag(state.owner, state.stateChanges) { it.owner }?.uppercase()
+                        ?.let { state.id to it }
+                }.toMap()
+                applyCountryBorderOverride(current, ownerTagByState)
                 LOG.info(
                     "setTimeline result: owner=${timelineOwnerColors.size} ctrl=${timelineControllerColors.size} " +
                         "1039->${timelineOwnerColors[1039]} HBC=${current.countryColorByTag["HBC"]} SIC=${current.countryColorByTag["SIC"]}"
                 )
             }
             clearTileCache()
+            invalidateBorderRendering(clearCache = true)
             repaint()
+        }
+
+        /** Swaps the COUNTRY border chunks/smooth segments for timeline-resolved ones. */
+        private fun applyCountryBorderOverride(current: LoadedMapData, ownerTagByState: Map<Int, String>) {
+            val (chunks, smooth) = this@MapPreviewPanel.service
+                .buildCountryBordersForOwnerOverride(current, ownerTagByState)
+            borderChunkIndex = borderChunkIndex +
+                    (MapPreviewMode.COUNTRY to chunks.associateBy { MapTileKey(it.x / MAP_TILE_SIZE, it.y / MAP_TILE_SIZE) })
+            timelineSmoothSegments = mapOf(MapPreviewMode.COUNTRY to smooth)
+        }
+
+        /** Restores the base COUNTRY border chunks and drops the smooth-segment override. */
+        private fun restoreCountryBorders(current: LoadedMapData) {
+            borderChunkIndex = borderChunkIndex +
+                    (MapPreviewMode.COUNTRY to current.borderChunks.getValue(MapPreviewMode.COUNTRY)
+                        .associateBy { MapTileKey(it.x / MAP_TILE_SIZE, it.y / MAP_TILE_SIZE) })
+            timelineSmoothSegments = emptyMap()
         }
 
         /** Enables/disables the red tint over provinces.bmp colours missing from definition.csv. */
