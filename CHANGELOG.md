@@ -7,7 +7,9 @@ New GFX tool window, a round of map-preview fidelity and UX work modelled on the
 ### Added
 
 - New GFX tool window: opening a `.gfx` file now shows a grid of every sprite it declares, rendered from the resolved textures, with name/texture/frame tooltips and double-click source navigation.
-- Map preview color sets `Terrain` and `Controller` (game-start controller falls back to the owner), alongside the existing region fills.
+- Map preview color sets `Terrain` and `Controller` (game-start controller falls back to the owner), alongside the existing region fills, plus six more color sets: `Manpower`, `Victory Points` and `Resources` (green→yellow→red heat ramps with power scaling) and `State Category` (colours from `common/state_category`), `Province Type` and `Continent`.
+- Map preview timeline selector: game bookmarks from `common/bookmarks` become timeline points, and dated owner/controller changes inside state histories are applied, recolouring the owner/controller fills as of the selected date.
+- Map preview issue panel: data-integrity warnings (provinces.bmp colours missing from definition.csv, duplicate definition rows, states referencing missing provinces, provinces assigned to multiple or no states, strategic regions referencing missing provinces) are listed, tinted red on the map and can be clicked to locate the region.
 - Map preview now marks impassable states with red boundaries (visible when borders are shown) and overlays demilitarized-zone provinces with a diagonal hatch; state details include controller, impassable and demilitarized-zone rows.
 - Map preview toolbar gained a locate field: jump to a state / province / country / region by id or (localized) name, highlighting it and centering the viewport.
 - Map preview gained an `Export` action that renders the whole map at native 1:1 scale (fill, borders and labels) into a PNG via a save dialog.

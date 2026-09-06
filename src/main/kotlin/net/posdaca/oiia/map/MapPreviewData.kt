@@ -1,5 +1,7 @@
 package net.posdaca.oiia.map
 
+import kotlin.math.pow
+
 import net.posdaca.oiia.core.preview.PreviewSnapshot
 import java.awt.image.BufferedImage
 import java.nio.file.Path
@@ -61,6 +63,12 @@ data class MapRenderArea(
     val strategicRegionColor: Int,
     val terrainColor: Int,
     val controllerColor: Int,
+    val manpowerColor: Int,
+    val victoryPointColor: Int,
+    val resourcesColor: Int,
+    val stateCategoryColor: Int,
+    val provinceTypeColor: Int,
+    val continentColor: Int,
     val zones: List<MapRenderZone>,
     val bounds: PixelBounds
 ) {
@@ -72,6 +80,12 @@ data class MapRenderArea(
             MapColorSet.STRATEGIC_REGION -> strategicRegionColor
             MapColorSet.TERRAIN -> terrainColor
             MapColorSet.CONTROLLER -> controllerColor
+            MapColorSet.MANPOWER -> manpowerColor
+            MapColorSet.VICTORY_POINTS -> victoryPointColor
+            MapColorSet.RESOURCES -> resourcesColor
+            MapColorSet.STATE_CATEGORY -> stateCategoryColor
+            MapColorSet.PROVINCE_TYPE -> provinceTypeColor
+            MapColorSet.CONTINENT -> continentColor
         }
     }
 }
@@ -87,7 +101,13 @@ data class MapRenderCell(
     val countryColor: Int,
     val strategicRegionColor: Int,
     val terrainColor: Int,
-    val controllerColor: Int
+    val controllerColor: Int,
+    val manpowerColor: Int,
+    val victoryPointColor: Int,
+    val resourcesColor: Int,
+    val stateCategoryColor: Int,
+    val provinceTypeColor: Int,
+    val continentColor: Int
 ) {
     fun colorFor(colorSet: MapColorSet): Int {
         return when (colorSet) {
@@ -97,6 +117,12 @@ data class MapRenderCell(
             MapColorSet.STRATEGIC_REGION -> strategicRegionColor
             MapColorSet.TERRAIN -> terrainColor
             MapColorSet.CONTROLLER -> controllerColor
+            MapColorSet.MANPOWER -> manpowerColor
+            MapColorSet.VICTORY_POINTS -> victoryPointColor
+            MapColorSet.RESOURCES -> resourcesColor
+            MapColorSet.STATE_CATEGORY -> stateCategoryColor
+            MapColorSet.PROVINCE_TYPE -> provinceTypeColor
+            MapColorSet.CONTINENT -> continentColor
         }
     }
 }
@@ -146,7 +172,51 @@ enum class MapColorSet(override val messageKey: String) : MapModeOption {
     COUNTRY("toolwindow.MapPreview.mode.country"),
     STRATEGIC_REGION("toolwindow.MapPreview.mode.strategic.region"),
     TERRAIN("toolwindow.MapPreview.mode.terrain"),
-    CONTROLLER("toolwindow.MapPreview.mode.controller")
+    CONTROLLER("toolwindow.MapPreview.mode.controller"),
+    MANPOWER("toolwindow.MapPreview.colorset.manpower"),
+    VICTORY_POINTS("toolwindow.MapPreview.colorset.victory.points"),
+    RESOURCES("toolwindow.MapPreview.colorset.resources"),
+    STATE_CATEGORY("toolwindow.MapPreview.colorset.state.category"),
+    PROVINCE_TYPE("toolwindow.MapPreview.colorset.province.type"),
+    CONTINENT("toolwindow.MapPreview.colorset.continent")
+}
+
+/**
+ * Colour math for value-based map color sets, ported from the hoi4modutilities reference:
+ * green→yellow→red heat ramps with power scaling so small values stay distinguishable.
+ */
+object MapHeatColors {
+
+    /** [value] in 0..1; 0 = green, 0.5 = yellow, 1 = red. */
+    fun valueToGyr(value: Double): Int {
+        val clamped = value.coerceIn(0.0, 1.0)
+        return if (clamped < 0.5) {
+            0xFF00 or ((255.0 * 2.0 * clamped).toInt() shl 16)
+        } else {
+            0xFF0000 or ((255.0 * 2.0 * (1.0 - clamped)).toInt() shl 8)
+        }
+    }
+
+    /** Pseudo colour from a value within [0, max]; mimics the reference's id-like spread. */
+    fun valueAndMaxToColor(value: Int, max: Int): Int {
+        if (max <= 0) return 0
+        return (value * (0xFFFFFF / max))
+    }
+
+    fun manpowerScale(manpower: Int): Double = pow(manpower, 0.2)
+
+    fun victoryPointScale(victoryPoints: Int): Double = pow(victoryPoints, 0.5)
+
+    fun provinceTypeColor(type: String?, coastal: Boolean?): Int {
+        val base = when (type?.trim()?.trim('"')?.lowercase()) {
+            "land" -> 0x007F00
+            "lake" -> 0x00FFFF
+            else -> 0x00007F
+        }
+        return if (coastal == true) base or 0x7F0000 else base
+    }
+
+    private fun pow(value: Int, exponent: Double): Double = value.coerceAtLeast(0).toDouble().pow(exponent)
 }
 
 /** Fill palette for terrain-mode colouring; unknown or missing terrain falls back to grey. */
@@ -210,7 +280,40 @@ data class StateInfo(
     val path: Path,
     val impassable: Boolean = false,
     val controller: String? = null,
-    val demilitarizedZone: Boolean = false
+    val demilitarizedZone: Boolean = false,
+    /** Dated `owner = X` / `controller = Y` changes from the state history, in file order. */
+    val datedChanges: List<MapDatedChange> = emptyList()
+)
+
+/** A dated owner/controller change inside a state history block. */
+data class MapDatedChange(
+    val year: Int,
+    val month: Int,
+    val day: Int,
+    val owner: String?,
+    val controller: String?
+) {
+    /** True when this change happens on or before the given timeline date. */
+    fun isOnOrBefore(year: Int, month: Int, day: Int): Boolean {
+        if (this.year != year) return this.year < year
+        if (this.month != month) return this.month < month
+        return this.day <= day
+    }
+}
+
+data class MapBookmark(
+    val nameKey: String,
+    /** `y.m.d` (hour, when present in the file, is dropped). */
+    val year: Int,
+    val month: Int,
+    val day: Int
+)
+
+data class MapWarning(
+    val message: String,
+    /** View mode + key for locate-on-click, when the warning maps onto the map. */
+    val mode: MapPreviewMode? = null,
+    val key: Int? = null
 )
 
 data class CountryInfo(
@@ -264,7 +367,13 @@ data class LoadedMapData(
     /** Border segments around regions whose passability differs; always drawn in red. */
     val impassableBorderChunks: List<MapBorderChunk> = emptyList(),
     /** Per-pixel 0/1 mask of demilitarized-zone provinces, drawn as a hatch overlay. */
-    val demilitarizedZoneMask: ByteArray? = null
+    val demilitarizedZoneMask: ByteArray? = null,
+    /** Rendered country colour per tag, for timeline recolouring of owner/controller fills. */
+    val countryColorByTag: Map<String, Int> = emptyMap(),
+    val bookmarks: List<MapBookmark> = emptyList(),
+    /** Provinces.bmp colours missing from definition.csv, for the issue tint. */
+    val unknownProvinceColors: Set<Int> = emptySet(),
+    val warnings: List<MapWarning> = emptyList()
 ) : PreviewSnapshot {
     override val isEmpty: Boolean
         get() = false

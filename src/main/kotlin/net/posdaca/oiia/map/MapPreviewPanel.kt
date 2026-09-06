@@ -11,6 +11,7 @@ import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapi.vfs.newvfs.BulkFileListener
 import com.intellij.openapi.vfs.newvfs.events.VFileEvent
 import com.intellij.ui.JBColor
+import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPanel
 import com.intellij.ui.components.JBScrollPane
@@ -51,6 +52,7 @@ import javax.swing.JPanel
 import javax.swing.JTextField
 import javax.swing.JViewport
 import javax.swing.Scrollable
+import javax.swing.DefaultListModel
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 import javax.swing.Timer
@@ -76,6 +78,11 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
     private var showBorders = true
     private var smoothBorders = false
     private var showLabels = false
+    private var issuesVisible = false
+    private val issuesModel = DefaultListModel<MapWarning>()
+    private val issuesList = JBList(issuesModel)
+    private var issuesScrollPane: JBScrollPane? = null
+    private val timelineSelector = ComboBox<TimelineOption>()
     private val reloadTimer = Timer(1200) {
         if (isShowing) reloadIfChanged()
     }.apply { isRepeats = true }
@@ -99,6 +106,28 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             }
         })
         add(scrollPane, BorderLayout.CENTER)
+        issuesList.cellRenderer = object : DefaultListCellRenderer() {
+            override fun getListCellRendererComponent(
+                list: JList<*>?,
+                value: Any?,
+                index: Int,
+                isSelected: Boolean,
+                cellHasFocus: Boolean
+            ): java.awt.Component {
+                val component = super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
+                if (value is MapWarning) text = value.message
+                return component
+            }
+        }
+        issuesList.addMouseListener(object : java.awt.event.MouseAdapter() {
+            override fun mouseClicked(e: java.awt.event.MouseEvent) {
+                val warning = issuesList.selectedValue ?: return
+                val mode = warning.mode ?: return
+                val key = warning.key ?: return
+                canvas.locate(mode, key)
+            }
+        })
+        issuesList.visibleRowCount = 6
 
         connectVfsListener()
         reloadTimer.start()
@@ -168,6 +197,8 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         reloadButton.addActionListener { reload() }
         val exportButton = JButton(msg("export"))
         exportButton.addActionListener { exportMap() }
+        val issuesButton = JButton(msg("issues"))
+        issuesButton.addActionListener { setIssuesVisible(!issuesVisible) }
         val searchField = JTextField(14)
         searchField.toolTipText = msg("search")
         searchField.addActionListener {
@@ -175,7 +206,26 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
                 statusLabel.text = msg("search.notfound", searchField.text)
             }
         }
+        timelineSelector.renderer = object : DefaultListCellRenderer() {
+            override fun getListCellRendererComponent(
+                list: JList<*>?,
+                value: Any?,
+                index: Int,
+                isSelected: Boolean,
+                cellHasFocus: Boolean
+            ): java.awt.Component {
+                val component = super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
+                if (value is TimelineOption) text = value.label
+                return component
+            }
+        }
+        timelineSelector.addActionListener {
+            val option = timelineSelector.selectedItem as? TimelineOption ?: return@addActionListener
+            canvas.setTimeline(option.date)
+        }
         actions.add(searchField)
+        actions.add(JBLabel(msg("timeline")))
+        actions.add(timelineSelector)
         actions.add(JBLabel(msg("color.mode")))
         actions.add(colorSelector)
         actions.add(JBLabel(msg("border.mode")))
@@ -184,6 +234,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         actions.add(smoothBorderToggle)
         actions.add(labelToggle)
         actions.add(exportButton)
+        actions.add(issuesButton)
         actions.add(reloadButton)
         panel.add(actions, BorderLayout.EAST)
         return panel
@@ -305,6 +356,8 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             is MapLoadResult.Loaded -> {
                 snapshot = result.data
                 canvas.setData(result.data)
+                refreshTimelineOptions(result.data)
+                refreshIssues(result.data)
                 val image = result.data.provincesImage
                 val definitions = result.data.provinceByColor.size
                 val states = result.data.stateById.size
@@ -325,15 +378,61 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             is MapLoadResult.Missing -> {
                 snapshot = null
                 canvas.setData(null)
+                refreshTimelineOptions(null)
+                refreshIssues(null)
                 statusLabel.text = msg("missing")
             }
 
             is MapLoadResult.Failed -> {
                 snapshot = null
                 canvas.setData(null)
+                refreshTimelineOptions(null)
+                refreshIssues(null)
                 statusLabel.text = result.message
             }
         }
+    }
+
+    private data class TimelineOption(val label: String, val date: Triple<Int, Int, Int>?)
+
+    private fun refreshTimelineOptions(data: LoadedMapData?) {
+        val options = mutableListOf(TimelineOption(msg("timeline.base"), null))
+        val localisations = data?.localisations.orEmpty()
+        for (bookmark in data?.bookmarks.orEmpty()) {
+            val key = bookmark.nameKey
+            val name = localisations[key]?.takeIf { it.isNotBlank() && it != key } ?: key
+            options += TimelineOption("$name (${bookmark.year}.${bookmark.month}.${bookmark.day})", Triple(bookmark.year, bookmark.month, bookmark.day))
+        }
+        timelineSelector.removeAllItems()
+        for (option in options) timelineSelector.addItem(option)
+        timelineSelector.selectedItem = options.firstOrNull()
+    }
+
+    private fun refreshIssues(data: LoadedMapData?) {
+        issuesModel.clear()
+        for (warning in data?.warnings.orEmpty()) issuesModel.addElement(warning)
+        if (issuesVisible) {
+            canvas.setIssueTint(data?.unknownProvinceColors.orEmpty())
+        }
+    }
+
+    private fun setIssuesVisible(visible: Boolean) {
+        issuesVisible = visible
+        val data = snapshot
+        if (visible) {
+            refreshIssues(data)
+            if (issuesModel.isEmpty) statusLabel.text = msg("issues.none")
+            val scroll = JBScrollPane(issuesList)
+            scroll.preferredSize = Dimension(Int.MAX_VALUE, JBUIScale.scale(140))
+            issuesScrollPane = scroll
+            add(scroll, BorderLayout.SOUTH)
+        } else {
+            canvas.setIssueTint(emptySet())
+            issuesScrollPane?.let { remove(it) }
+            issuesScrollPane = null
+        }
+        revalidate()
+        repaint()
     }
 
     override fun addNotify() {
@@ -368,6 +467,9 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         private var renderChunkIndex: Map<MapTileKey, MapRenderChunk> = emptyMap()
         private var borderChunkIndex: Map<MapPreviewMode, Map<MapTileKey, MapBorderChunk>> = emptyMap()
         private var impassableChunkIndex: Map<MapTileKey, MapBorderChunk> = emptyMap()
+        private var issueTintColors: Set<Int> = emptySet()
+        private var timelineControllerColors: Map<Int, Int> = emptyMap()
+        private var timelineOwnerColors: Map<Int, Int> = emptyMap()
         private val tileCache = object : LinkedHashMap<MapTileKey, BufferedImage>(64, 0.75f, true) {
             override fun removeEldestEntry(eldest: MutableMap.MutableEntry<MapTileKey, BufferedImage>?): Boolean {
                 return size > MAX_TILE_CACHE_SIZE
@@ -500,6 +602,8 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             clickHint.cancel()
             clickHint.hide()
             data = nextData
+            timelineControllerColors = emptyMap()
+            timelineOwnerColors = emptyMap()
             bordersVisible = this@MapPreviewPanel.showBorders
             smoothBorders = this@MapPreviewPanel.smoothBorders
             renderChunkIndex = nextData?.renderChunks
@@ -715,7 +819,38 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
                 g2.dispose()
             }
             blendDemilitarizedZoneHatch(current, tile, tileLeft, tileTop)
+            blendIssueTint(current, tile, tileLeft, tileTop)
             return tile
+        }
+
+        /** Tints provinces whose colour is missing from definition.csv toward red. */
+        private fun blendIssueTint(current: LoadedMapData, tile: BufferedImage, tileLeft: Int, tileTop: Int) {
+            val badColors = issueTintColors
+            if (badColors.isEmpty()) return
+            val source = current.provincesImage
+            val sourceWidth = source.width
+            val sourceHeight = source.height
+            for (ty in 0 until tile.height) {
+                val mapY = tileTop + ty
+                if (mapY < 0 || mapY >= sourceHeight) continue
+                for (tx in 0 until tile.width) {
+                    val mapX = tileLeft + tx
+                    if (mapX < 0 || mapX >= sourceWidth) continue
+                    val rgb = source.getRGB(mapX, mapY) and 0xFFFFFF
+                    if (rgb !in badColors) continue
+                    val base = tile.getRGB(tx, ty)
+                    tile.setRGB(tx, ty, blendToward(base, 0xB02020, 0.55))
+                }
+            }
+        }
+
+        private fun blendToward(base: Int, target: Int, factor: Double): Int {
+            fun channel(shift: Int): Int {
+                val b = (base shr shift) and 0xFF
+                val t = (target shr shift) and 0xFF
+                return (b + ((t - b) * factor).roundToInt()).coerceIn(0, 255)
+            }
+            return (channel(16) shl 16) or (channel(8) shl 8) or channel(0)
         }
 
         /** Demilitarized-zone provinces get a diagonal hatch baked into the cached tile. */
@@ -753,7 +888,12 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             val chunk = renderChunkIndex[key] ?: return
             var currentColor = Int.MIN_VALUE
             for (cell in chunk.cells) {
-                val color = cell.colorFor(fillMode)
+                // Timeline recolouring overrides the baked owner/controller colours per state.
+                val color = when (fillMode) {
+                    MapColorSet.CONTROLLER -> timelineControllerColors[cell.stateKey] ?: cell.colorFor(fillMode)
+                    MapColorSet.COUNTRY -> timelineOwnerColors[cell.stateKey] ?: cell.colorFor(fillMode)
+                    else -> cell.colorFor(fillMode)
+                }
                 if (color != currentColor) {
                     g2.color = paintColor(color)
                     currentColor = color
@@ -1194,6 +1334,16 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         fun search(query: String): Boolean {
             val current = data ?: return false
             val selection = findSelectionForQuery(current, query.trim()) ?: return false
+            return locateSelection(selection)
+        }
+
+        /** Highlights and centers the given region. Returns false when it has no pixels. */
+        fun locate(mode: MapPreviewMode, key: Int): Boolean {
+            return locateSelection(HoverSelection(mode, key))
+        }
+
+        private fun locateSelection(selection: HoverSelection): Boolean {
+            val current = data ?: return false
             val bounds = boundsForSelection(current.pixelIndex, selection) ?: return false
             hoverSelection = selection
             hoverOverlay = createHoverOverlay(selection)
@@ -1203,6 +1353,45 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             )
             repaint()
             return true
+        }
+
+        /**
+         * Recolours owner/controller fills as of [date] (null = base values from the top of the
+         * state history). Colours are resolved per state so the tile cache can just be cleared.
+         */
+        fun setTimeline(date: Triple<Int, Int, Int>?) {
+            val current = data ?: return
+            if (date == null) {
+                timelineControllerColors = emptyMap()
+                timelineOwnerColors = emptyMap()
+            } else {
+                val (year, month, day) = date
+                fun resolvedTag(base: String?, changes: List<MapDatedChange>, pick: (MapDatedChange) -> String?): String? {
+                    var tag = base
+                    for (change in changes.sortedWith(compareBy({ it.year }, { it.month }, { it.day }))) {
+                        if (change.isOnOrBefore(year, month, day)) pick(change)?.let { tag = it }
+                    }
+                    return tag
+                }
+                fun colorsFor(pick: (MapDatedChange) -> String?): Map<Int, Int> {
+                    return current.stateById.values.mapNotNull { state ->
+                        val tag = resolvedTag(state.owner, state.datedChanges, pick)?.uppercase() ?: return@mapNotNull null
+                        val color = current.countryColorByTag[tag] ?: return@mapNotNull null
+                        state.id to color
+                    }.toMap()
+                }
+                timelineControllerColors = colorsFor { it.controller }
+                timelineOwnerColors = colorsFor { it.owner }
+            }
+            clearTileCache()
+            repaint()
+        }
+
+        /** Enables/disables the red tint over provinces.bmp colours missing from definition.csv. */
+        fun setIssueTint(colors: Set<Int>) {
+            issueTintColors = colors
+            clearTileCache()
+            repaint()
         }
 
         private fun centerViewportOn(viewX: Int, viewY: Int) {
