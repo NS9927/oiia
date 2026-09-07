@@ -40,7 +40,11 @@ data class FocusData(
     val x: Double = 0.0,
     val y: Double = 0.0,
     val cost: Double = 10.0,
-    val prerequisites: List<String> = emptyList(),
+    /**
+     * Each inner list is one `prerequisite = { ... }` block: members of a block are OR,
+     * and separate blocks are AND. Flattened ids are exposed as [prerequisites].
+     */
+    val prerequisiteGroups: List<List<String>> = emptyList(),
     val mutuallyExclusive: List<String> = emptyList(),
     val relativePositionId: String? = null,
     val localizedName: String? = null,
@@ -51,12 +55,13 @@ data class FocusData(
     val aiWillDo: Double? = null,
     val isSharedFocus: Boolean = false,
     val completeTooltip: String? = null,
-    val prerequisitesText: String? = null,
     val sourceFilePath: String? = null,
     val sourceOffset: Int = -1,
     val sourceLine: Int = 0
 ) {
     val displayName: String get() = localizedName ?: id
+    val prerequisites: List<String> get() = prerequisiteGroups.flatten()
+    val prerequisitesText: String? get() = FocusPrerequisites.format(prerequisiteGroups)
 }
 
 internal fun FocusData.withResolvedPresentation(resolved: FocusData?): FocusData {

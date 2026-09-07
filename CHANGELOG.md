@@ -1,5 +1,12 @@
 # Oiia Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- National focus preview now keeps `prerequisite` block grouping: focuses inside one block are OR (dashed joint), separate blocks are AND (solid arrows), hover text shows the same grouping, and a focus is hidden when any prerequisite block has no member in the current tree.
+- Dragging a national focus no longer concatenates coordinates (`x = 5` becoming `x = 55`) when Chronicle leaves the integer outside the property value range.
+
 ## [1.1.3] - 2026-08-31
 
 The map timeline now understands `has_dlc`-gated ownership, matching how vanilla ships DLC-dependent start setups (e.g. the East Asia rework in No Compromise, No Surrender).

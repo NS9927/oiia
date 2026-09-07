@@ -13,6 +13,7 @@ import java.awt.BorderLayout
 import java.awt.Dimension
 import java.awt.Graphics2D
 import java.awt.Point
+import java.awt.Polygon
 import kotlin.math.roundToInt
 
 class NationalFocusPreviewPanel(
@@ -84,7 +85,7 @@ class NationalFocusPreviewPanel(
                 .description(hit.localizedDescription ?: hit.text)
                 .row("Cost", hit.cost.toInt().toString())
                 .row("Pos", position)
-                .escapedRow("Req", hit.prerequisites.takeIf { it.isNotEmpty() }?.joinToString(", "))
+                .escapedRow("Req", hit.prerequisitesText)
                 .escapedRow("MutExc", hit.mutuallyExclusive.takeIf { it.isNotEmpty() }?.joinToString(", "))
                 .row("AI", hit.aiWillDo?.let { "%.0f%%".format(it * 100) })
                 .row("Type", if (hit.isSharedFocus) "Shared focus" else null)
@@ -198,7 +199,11 @@ class NationalFocusPreviewPanel(
         private fun layoutTree(tree: NationalFocusTreeData): Pair<List<FocusData>, Map<String, Point>>? {
             val focuses = tree.focuses + tree.sharedFocuses
             if (focuses.isEmpty()) return null
-            return focuses to computeRawPositions(focuses)
+            val visibleIds = FocusPrerequisites.visibleIds(focuses)
+            if (visibleIds.isEmpty()) return null
+            val visibleFocuses = focuses.filter { it.id in visibleIds }
+            val positions = computeRawPositions(focuses).filterKeys { it in visibleIds }
+            return visibleFocuses to positions
         }
 
         private fun computeRawPositions(focuses: List<FocusData>): Map<String, Point> {
@@ -233,23 +238,53 @@ class NationalFocusPreviewPanel(
 
         private fun drawPrerequisiteConnections(g2d: Graphics2D, focuses: List<FocusData>) {
             for (focus in focuses) {
-                val endPt = logicalPositions[focus.id] ?: continue
-                val endCx = endPt.x + nodeWidth / 2
-                val endTop = endPt.y
-                for (prereqId in focus.prerequisites) {
-                    val startPt = logicalPositions[prereqId] ?: continue
-                    val sx = startPt.x + nodeWidth / 2
-                    val sy = startPt.y + nodeHeight
-                    drawOrthogonalLink(
-                        g2d,
-                        sx,
-                        sy,
-                        endCx,
-                        endTop,
-                        isHighlighted(prereqId, focus.id)
-                    )
+                val plans = FocusPrerequisites.planLinks(
+                    groups = focus.prerequisiteGroups,
+                    targetId = focus.id,
+                    positions = logicalPositions,
+                    nodeWidth = nodeWidth,
+                    nodeHeight = nodeHeight,
+                    minJointGap = JBUIScale.scale(8)
+                )
+                for (plan in plans) {
+                    val active = isHighlighted(focus.id, *plan.fromIds.toTypedArray())
+                    drawPrerequisitePlan(g2d, plan, active)
                 }
             }
+        }
+
+        private fun drawPrerequisitePlan(
+            g2d: Graphics2D,
+            plan: FocusPrerequisiteLinkPlan,
+            active: Boolean
+        ) {
+            g2d.color = if (active) PreviewNodeStyle.linkActive else PreviewNodeStyle.link
+            val width = if (active) JBUIScale.scale(2.5f) else JBUIScale.scale(1.5f)
+            g2d.stroke = if (plan.dashed) {
+                BasicStroke(
+                    width,
+                    BasicStroke.CAP_BUTT,
+                    BasicStroke.JOIN_MITER,
+                    10f,
+                    floatArrayOf(JBUIScale.scale(7f), JBUIScale.scale(5f)),
+                    0f
+                )
+            } else {
+                BasicStroke(width)
+            }
+            for (segment in plan.segments) {
+                g2d.drawLine(segment.x1, segment.y1, segment.x2, segment.y2)
+            }
+            if (plan.orJoint) {
+                val radius = JBUIScale.scale(4)
+                g2d.fillOval(plan.jointX - radius, plan.jointY - radius, radius * 2, radius * 2)
+            }
+            val arrowSize = JBUIScale.scale(8)
+            val arrow = Polygon()
+            arrow.addPoint(plan.arrowX, plan.arrowY)
+            arrow.addPoint(plan.arrowX - arrowSize / 2, plan.arrowY + arrowSize)
+            arrow.addPoint(plan.arrowX + arrowSize / 2, plan.arrowY + arrowSize)
+            g2d.fill(arrow)
         }
 
         private fun drawMutuallyExclusive(g2d: Graphics2D, focuses: List<FocusData>) {

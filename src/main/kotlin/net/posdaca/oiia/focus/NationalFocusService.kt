@@ -3,6 +3,7 @@ package net.posdaca.oiia.focus
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.editor.Document
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiFile
@@ -163,7 +164,7 @@ class NationalFocusService(private val project: Project) {
         var x = 0.0
         var y = 0.0
         var cost = 10.0
-        val prerequisites = mutableListOf<String>()
+        val prerequisiteGroups = mutableListOf<List<String>>()
         val mutuallyExclusive = mutableListOf<String>()
         var relativePositionId: String? = null
         var aiWillDo: Double? = null
@@ -178,10 +179,12 @@ class NationalFocusService(private val project: Project) {
                 "y" -> y = field.value?.toDoubleOrNull() ?: 0.0
                 "cost" -> cost = field.value?.toDoubleOrNull() ?: 10.0
                 "relative_position_id" -> relativePositionId = field.value
-                "prerequisite" -> field.block?.propertyList?.forEach {
-                    if (it.propertyKey.text == "focus") it.value?.let { v ->
-                        prerequisites.add(v)
+                "prerequisite" -> {
+                    val ids = field.block?.propertyList.orEmpty().mapNotNull { entry ->
+                        if (entry.propertyKey.text != "focus") return@mapNotNull null
+                        entry.value?.trim()?.trim('"')?.takeIf { it.isNotBlank() }
                     }
+                    if (ids.isNotEmpty()) prerequisiteGroups.add(ids)
                 }
 
                 "mutually_exclusive" -> field.block?.propertyList?.forEach {
@@ -211,12 +214,11 @@ class NationalFocusService(private val project: Project) {
             x = x,
             y = y,
             cost = cost,
-            prerequisites = prerequisites,
+            prerequisiteGroups = FocusPrerequisites.normalizeGroups(prerequisiteGroups),
             mutuallyExclusive = mutuallyExclusive,
             relativePositionId = relativePositionId,
             aiWillDo = aiWillDo,
             completeTooltip = completeTooltip,
-            prerequisitesText = if (prerequisites.isNotEmpty()) prerequisites.joinToString(", ") else null,
             sourceFilePath = vf?.path,
             sourceOffset = prop.textOffset,
             sourceLine = line,
@@ -375,8 +377,7 @@ class NationalFocusService(private val project: Project) {
             documentManager.commitDocument(document)
             val target = findFocusProperty(psiFile, focus) ?: return@compute false
             val block = target.block ?: return@compute false
-            upsertAxisProperty(block, "x", x)
-            upsertAxisProperty(block, "y", y)
+            writeAxisProperties(document, block, x, y)
             val updatedDocument = documentManager.getDocument(psiFile) ?: return@compute false
             documentManager.commitDocument(updatedDocument)
             true
@@ -407,31 +408,45 @@ class NationalFocusService(private val project: Project) {
         return candidates.firstOrNull()
     }
 
-    private fun upsertAxisProperty(block: ParadoxScriptBlock, key: String, value: Int) {
-        val document = PsiDocumentManager.getInstance(project).getDocument(block.containingFile) ?: return
-        val existing = block.propertyList.firstOrNull { it.propertyKey.text == key }
-        if (existing != null) {
-            val propertyValue = existing.propertyValue
-            if (propertyValue != null) {
-                val range = propertyValue.textRange
-                document.replaceString(range.startOffset, range.endOffset, value.toString())
-            } else {
-                val range = existing.textRange
-                document.replaceString(range.startOffset, range.endOffset, "$key = $value")
+    private fun writeAxisProperties(document: Document, block: ParadoxScriptBlock, x: Int, y: Int) {
+        val replacements = mutableListOf<FocusPositionWriteback.Replacement>()
+        val missing = mutableListOf<Pair<String, Int>>()
+        for ((key, value) in listOf("x" to x, "y" to y)) {
+            val existing = block.propertyList.firstOrNull { it.propertyKey.text == key }
+            if (existing == null) {
+                missing += key to value
+                continue
             }
-            return
+            val lineNumber = document.getLineNumber(existing.textOffset)
+            val lineStart = document.getLineStartOffset(lineNumber)
+            val lineEnd = document.getLineEndOffset(lineNumber)
+            val line = document.charsSequence.subSequence(lineStart, lineEnd).toString()
+            val replacement = FocusPositionWriteback.axisNumberReplacement(
+                line = line,
+                lineStartOffset = lineStart,
+                keyStartInLine = existing.textOffset - lineStart,
+                key = key,
+                value = value
+            ) ?: FocusPositionWriteback.Replacement(
+                existing.textRange.startOffset,
+                existing.textRange.endOffset,
+                "$key = $value"
+            )
+            val current = document.charsSequence.subSequence(replacement.start, replacement.end).toString()
+            if (current != replacement.text) replacements += replacement
         }
+        for (replacement in replacements.sortedByDescending { it.start }) {
+            document.replaceString(replacement.start, replacement.end, replacement.text)
+        }
+        if (missing.isEmpty()) return
         val leftBound = block.leftBound ?: return
-        val insertOffset = leftBound.textRange.endOffset
+        var insertOffset = leftBound.textRange.endOffset
         val indent = detectInnerIndent(block)
-        val insertion = buildString {
-            append('\n')
-            append(indent)
-            append(key)
-            append(" = ")
-            append(value)
+        for ((key, value) in missing) {
+            val insertion = "\n$indent$key = $value"
+            document.insertString(insertOffset, insertion)
+            insertOffset += insertion.length
         }
-        document.insertString(insertOffset, insertion)
     }
 
     private fun detectInnerIndent(block: ParadoxScriptBlock): String = ScriptBlocks.innerIndent(project, block)
