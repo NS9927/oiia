@@ -1,10 +1,12 @@
 # Oiia Changelog
 
-## [Unreleased]
+## [1.1.4] - 2026-09-07
+
+National focus preview now follows the game's `prerequisite` grouping and joint style, and dragging a focus no longer corrupts its script coordinates.
 
 ### Fixed
 
-- National focus preview now keeps `prerequisite` block grouping: focuses inside one block are OR (dashed joint), separate blocks are AND (solid arrows), hover text shows the same grouping, and a focus is hidden when any prerequisite block has no member in the current tree.
+- National focus preview keeps `prerequisite` block grouping: several `focus` entries in one block are OR (dashed joint), separate blocks are AND (solid joint). Hover text shows the same grouping, and a focus is hidden when any prerequisite block has no member in the current tree (children of hidden focuses are dropped so they do not float).
 - Dragging a national focus no longer concatenates coordinates (`x = 5` becoming `x = 55`) when Chronicle leaves the integer outside the property value range.
 
 ## [1.1.3] - 2026-08-31

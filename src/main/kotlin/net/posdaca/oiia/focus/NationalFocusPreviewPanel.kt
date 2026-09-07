@@ -275,7 +275,7 @@ class NationalFocusPreviewPanel(
             for (segment in plan.segments) {
                 g2d.drawLine(segment.x1, segment.y1, segment.x2, segment.y2)
             }
-            if (plan.orJoint) {
+            if (plan.joint) {
                 val radius = JBUIScale.scale(4)
                 g2d.fillOval(plan.jointX - radius, plan.jointY - radius, radius * 2, radius * 2)
             }

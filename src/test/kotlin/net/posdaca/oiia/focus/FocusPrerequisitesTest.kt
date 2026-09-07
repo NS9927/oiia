@@ -59,7 +59,7 @@ class FocusPrerequisitesTest {
     }
 
     @Test
-    fun planLinksKeepAndArrivalsSeparateAndJoinOrParents() {
+    fun planLinksJoinAndParentsWithASolidBar() {
         val positions = mapOf(
             "left" to Point(0, 0),
             "right" to Point(100, 0),
@@ -73,10 +73,14 @@ class FocusPrerequisitesTest {
             nodeWidth = 40,
             nodeHeight = 20
         )
-        assertEquals(2, andPlans.size)
-        assertTrue(andPlans.none { it.orJoint })
-        assertTrue(andPlans.none { it.dashed })
-        assertTrue(andPlans[0].arrowX != andPlans[1].arrowX)
+        assertEquals(1, andPlans.size)
+        val andPlan = andPlans.single()
+        assertTrue(andPlan.joint)
+        assertFalse(andPlan.dashed)
+        assertEquals(listOf("left", "right"), andPlan.fromIds)
+        assertTrue(andPlan.segments.any { it.y1 == andPlan.jointY && it.y2 == andPlan.jointY })
+        assertEquals(andPlan.arrowX, andPlan.jointX)
+        assertEquals(80, andPlan.arrowY)
 
         val orPlans = FocusPrerequisites.planLinks(
             groups = listOf(listOf("left", "right")),
@@ -88,7 +92,7 @@ class FocusPrerequisitesTest {
         )
         assertEquals(1, orPlans.size)
         val orPlan = orPlans.single()
-        assertTrue(orPlan.orJoint)
+        assertTrue(orPlan.joint)
         assertTrue(orPlan.dashed)
         assertEquals(listOf("left", "right"), orPlan.fromIds)
         assertTrue(orPlan.segments.any { it.y1 == orPlan.jointY && it.y2 == orPlan.jointY })
@@ -111,7 +115,7 @@ class FocusPrerequisitesTest {
         )
         assertEquals(1, plans.size)
         assertEquals(listOf("local"), plans.single().fromIds)
-        assertFalse(plans.single().orJoint)
+        assertFalse(plans.single().joint)
         assertFalse(plans.single().dashed)
     }
 
@@ -131,10 +135,11 @@ class FocusPrerequisitesTest {
             nodeHeight = 20
         )
         assertEquals(2, plans.size)
-        val orPlan = plans.single { it.orJoint }
-        val andPlan = plans.single { !it.orJoint }
+        val orPlan = plans.single { it.joint }
+        val andPlan = plans.single { !it.joint }
         assertTrue(orPlan.dashed)
         assertFalse(andPlan.dashed)
+        assertEquals(listOf("left", "right"), orPlan.fromIds)
         assertEquals(listOf("extra"), andPlan.fromIds)
     }
 

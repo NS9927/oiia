@@ -63,14 +63,30 @@ internal object FocusPrerequisites {
             .filter { it.isNotEmpty() }
         if (inTreeGroups.isEmpty()) return emptyList()
 
+        val allSingles = inTreeGroups.all { it.size == 1 }
+        if (inTreeGroups.size > 1 && allSingles) {
+            // The game draws AND (separate prerequisite blocks) as one solid joint bar.
+            return listOf(
+                jointLink(
+                    fromIds = inTreeGroups.map { it.first() },
+                    positions = positions,
+                    nodeWidth = nodeWidth,
+                    nodeHeight = nodeHeight,
+                    endX = targetCenterX,
+                    endY = targetTop,
+                    minJointGap = minJointGap,
+                    dashed = false
+                )
+            )
+        }
+
         return inTreeGroups.mapIndexed { index, group ->
             val endX = andArrivalX(targetCenterX, nodeWidth, index, inTreeGroups.size)
             if (group.size == 1) {
                 simpleLink(group.first(), positions, nodeWidth, nodeHeight, endX, targetTop)
             } else {
                 // The game uses dotted tiles for OR (several focuses in one prerequisite block).
-                orJointLink(group, positions, nodeWidth, nodeHeight, endX, targetTop, minJointGap)
-                    .copy(dashed = true)
+                jointLink(group, positions, nodeWidth, nodeHeight, endX, targetTop, minJointGap, dashed = true)
             }
         }
     }
@@ -107,18 +123,19 @@ internal object FocusPrerequisites {
             segments = orthogonalSegments(startX, startY, endX, endY, midY),
             arrowX = endX,
             arrowY = endY,
-            orJoint = false
+            joint = false
         )
     }
 
-    private fun orJointLink(
+    private fun jointLink(
         fromIds: List<String>,
         positions: Map<String, Point>,
         nodeWidth: Int,
         nodeHeight: Int,
         endX: Int,
         endY: Int,
-        minJointGap: Int
+        minJointGap: Int,
+        dashed: Boolean
     ): FocusPrerequisiteLinkPlan {
         val parents = fromIds.map { id ->
             val point = positions.getValue(id)
@@ -135,7 +152,8 @@ internal object FocusPrerequisites {
                 segments = segments,
                 arrowX = endX,
                 arrowY = endY,
-                orJoint = false
+                joint = false,
+                dashed = dashed
             )
         }
         val jointY = (maxBottom + endY) / 2
@@ -152,7 +170,8 @@ internal object FocusPrerequisites {
             },
             arrowX = endX,
             arrowY = endY,
-            orJoint = true,
+            joint = true,
+            dashed = dashed,
             jointX = endX,
             jointY = jointY
         )
@@ -192,7 +211,7 @@ internal data class FocusPrerequisiteLinkPlan(
     val segments: List<FocusPrerequisiteSegment>,
     val arrowX: Int,
     val arrowY: Int,
-    val orJoint: Boolean,
+    val joint: Boolean,
     val dashed: Boolean = false,
     val jointX: Int = arrowX,
     val jointY: Int = arrowY
