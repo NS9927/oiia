@@ -10,10 +10,7 @@ data class GfxSpriteEntry(
     val noOfFrames: Int?,
     val defaultFrame: Int?,
     val sourceLine: Int
-) {
-    val textureFiles: List<String>
-        get() = listOfNotNull(textureFile, textureFile1, textureFile2)
-}
+)
 
 data class GfxPreviewSnapshot(
     val filePath: String?,

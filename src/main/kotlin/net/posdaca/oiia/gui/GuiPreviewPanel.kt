@@ -1046,20 +1046,8 @@ class GuiPreviewPanel(
             return null
         }
 
-        private fun isSpriteKnownMissing(element: GuiElement): Boolean {
-            val candidates = spriteCandidates(element)
-            return candidates.isNotEmpty() && candidates.all { sprite ->
-                spriteInfoCache.containsKey(sprite) && spriteInfoCache[sprite]?.primaryImagePath == null
-            }
-        }
-
         private fun cachedLocalizedText(key: String?): String? {
             return normalisedLocalisationKey(key)?.let { localisationCache[it] }
-        }
-
-        private fun isLocalisationKnownMissing(key: String): Boolean {
-            val normalised = normalisedLocalisationKey(key) ?: return false
-            return localisationCache.containsKey(normalised) && localisationCache[normalised] == null
         }
 
         private fun refreshLocalisationPreference() {

@@ -71,24 +71,7 @@ data class MapRenderArea(
     val continentColor: Int,
     val zones: List<MapRenderZone>,
     val bounds: PixelBounds
-) {
-    fun colorFor(colorSet: MapColorSet): Int {
-        return when (colorSet) {
-            MapColorSet.PROVINCE -> provinceColor
-            MapColorSet.STATE -> stateColor
-            MapColorSet.COUNTRY -> countryColor
-            MapColorSet.STRATEGIC_REGION -> strategicRegionColor
-            MapColorSet.TERRAIN -> terrainColor
-            MapColorSet.CONTROLLER -> controllerColor
-            MapColorSet.MANPOWER -> manpowerColor
-            MapColorSet.VICTORY_POINTS -> victoryPointColor
-            MapColorSet.RESOURCES -> resourcesColor
-            MapColorSet.STATE_CATEGORY -> stateCategoryColor
-            MapColorSet.PROVINCE_TYPE -> provinceTypeColor
-            MapColorSet.CONTINENT -> continentColor
-        }
-    }
-}
+)
 
 data class MapRenderCell(
     val zone: MapRenderZone,
@@ -397,8 +380,6 @@ data class LoadedMapData(
 ) : PreviewSnapshot {
     override val isEmpty: Boolean
         get() = false
-
-    fun borderChunksFor(mode: MapPreviewMode): List<MapBorderChunk> = borderChunks[mode].orEmpty()
 
     private val smoothBorderCache = java.util.concurrent.ConcurrentHashMap<MapPreviewMode, List<MapLineSegment>>()
 

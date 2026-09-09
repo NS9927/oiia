@@ -14,17 +14,16 @@ import icu.windea.pls.script.psi.ParadoxScriptProperty
 import icu.windea.pls.script.psi.ParadoxScriptValue
 import net.posdaca.oiia.core.ParadoxLocalisationPreference
 import net.posdaca.oiia.core.ParadoxLocalisationResolver
-import net.posdaca.oiia.core.files.LocalisationFiles
-import net.posdaca.oiia.core.files.ResourceFiles
-import net.posdaca.oiia.core.script.ScriptBlocks
 import net.posdaca.oiia.core.ParadoxSpriteResolver
 import net.posdaca.oiia.core.ParadoxSpriteResolver.SpriteInfo
 import net.posdaca.oiia.core.PreviewImageLoader
+import net.posdaca.oiia.core.files.LocalisationFiles
+import net.posdaca.oiia.core.files.ResourceFiles
+import net.posdaca.oiia.core.script.ScriptBlocks
 import java.awt.Dimension
 import java.awt.Point
 import java.awt.Rectangle
 import java.awt.image.BufferedImage
-import java.nio.file.Path
 import kotlin.math.max
 import kotlin.math.roundToInt
 

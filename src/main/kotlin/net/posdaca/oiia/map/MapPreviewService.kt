@@ -3,21 +3,18 @@ package net.posdaca.oiia.map
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
-import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
 import icu.windea.pls.script.psi.ParadoxScriptBlock
 import icu.windea.pls.script.psi.ParadoxScriptFile
 import icu.windea.pls.script.psi.ParadoxScriptProperty
+import net.posdaca.oiia.core.ParadoxLocalisationPreference
 import net.posdaca.oiia.core.PreviewImageLoader
 import net.posdaca.oiia.core.files.LocalisationFiles
 import net.posdaca.oiia.core.files.ResourceFiles
-import net.posdaca.oiia.core.ParadoxLocalisationPreference
 import net.posdaca.oiia.core.parseParadoxBoolean
 import java.awt.Color
 import java.awt.image.BufferedImage
 import java.nio.file.Path
-import kotlin.io.path.exists
-import kotlin.io.path.fileSize
 import kotlin.io.path.isRegularFile
 import kotlin.io.path.name
 
@@ -57,8 +54,9 @@ class MapPreviewService(private val project: Project) {
             onProgress(MapLoadStep.INDEX)
             onProgress(MapLoadStep.IMAGES)
             val stateCategoryColors = loadStateCategoryColors(roots)
-            val renderData = buildRenderData(image, provinces, stateByProvinceId, strategicRegionByProvinceId, countryDefinitions, states, stateCategoryColors)
-            val warnings = definitionWarnings + buildWarnings(provinces, provinceById, states, strategicRegions, renderData.unknownProvinceColors)
+            val renderData = buildRenderData(image, provinces, stateByProvinceId, strategicRegionByProvinceId, countryDefinitions,
+                stateCategoryColors)
+            val warnings = definitionWarnings + buildWarnings(provinceById, states, strategicRegions, renderData.unknownProvinceColors)
             val statePaths = states.map { it.path }.distinct()
             val countryPaths = findCountryFiles(roots, countryDefinitions)
             val strategicRegionPaths = strategicRegions.map { it.path }.distinct()
@@ -98,9 +96,7 @@ class MapPreviewService(private val project: Project) {
                     unknownProvinceColors = renderData.unknownProvinceColors,
                     warnings = warnings,
                     referencedDlcNames = referencedDlcNames(states.flatMap { it.stateChanges }),
-                    installedDlcNames = loadInstalledDlcNames(roots).also { installed ->
-                        LOG.info("DLC debug: installed=$installed referenced=${referencedDlcNames(states.flatMap { s -> s.stateChanges })} changesFor1039=${states.firstOrNull { s -> s.id == 1039 }?.stateChanges}")
-                    }
+                    installedDlcNames = loadInstalledDlcNames(roots)
                 )
             )
         } catch (e: Exception) {
@@ -295,7 +291,6 @@ class MapPreviewService(private val project: Project) {
 
     /** Data-level integrity checks shown in the issue panel and tinted on the map. */
     private fun buildWarnings(
-        provinces: Map<Int, ProvinceInfo>,
         provinceById: Map<Int, ProvinceInfo>,
         states: List<StateInfo>,
         strategicRegions: List<StrategicRegionInfo>,
@@ -312,13 +307,13 @@ class MapPreviewService(private val project: Project) {
         }
         val assignedProvinceIds = mutableSetOf<Int>()
         val duplicatedOwners = mutableSetOf<Int>()
-        for (state in states) {
-            for (provinceId in state.provinces) {
+        for ((id, _, _, _, _, _, provinces) in states) {
+            for (provinceId in provinces) {
                 if (provinceById[provinceId] == null) {
                     warnings += MapWarning(
-                        "State ${state.id} references province $provinceId which is missing from definition.csv",
+                        "State $id references province $provinceId which is missing from definition.csv",
                         MapPreviewMode.STATE,
-                        state.id
+                        id
                     )
                 }
                 if (!assignedProvinceIds.add(provinceId)) {
@@ -345,13 +340,13 @@ class MapPreviewService(private val project: Project) {
                 unassigned.first()
             )
         }
-        for (region in strategicRegions) {
-            for (provinceId in region.provinces) {
+        for ((id, _, _, provinces) in strategicRegions) {
+            for (provinceId in provinces) {
                 if (provinceById[provinceId] == null) {
                     warnings += MapWarning(
-                        "Strategic region ${region.id} references province $provinceId which is missing from definition.csv",
+                        "Strategic region $id references province $provinceId which is missing from definition.csv",
                         MapPreviewMode.STRATEGIC_REGION,
-                        region.id
+                        id
                     )
                     break
                 }
@@ -576,7 +571,6 @@ class MapPreviewService(private val project: Project) {
         stateByProvinceId: Map<Int, StateInfo>,
         strategicRegionByProvinceId: Map<Int, StrategicRegionInfo>,
         countryDefinitions: Map<String, CountryDefinition>,
-        states: List<StateInfo>,
         stateCategoryColors: Map<String, Int>
     ): MapRenderData {
         val width = provincesImage.width
@@ -987,30 +981,33 @@ class MapPreviewService(private val project: Project) {
     private fun buildRenderChunks(renderAreas: List<MapRenderArea>, width: Int, height: Int): List<MapRenderChunk> {
         val chunkColumns = (width + RENDER_ZONE_BLOCK_SIZE - 1) / RENDER_ZONE_BLOCK_SIZE
         val cellsByChunk = linkedMapOf<Int, MutableList<MapRenderCell>>()
-        for (area in renderAreas) {
-            for (zone in area.zones) {
+        for ((_, provinceId, stateKey, countryKey, strategicRegionKey, provinceColor,
+            stateColor, countryColor, strategicRegionColor, terrainColor, controllerColor,
+            manpowerColor, victoryPointColor, resourcesColor, stateCategoryColor,
+            provinceTypeColor, continentColor, zones) in renderAreas) {
+            for (zone in zones) {
                 val chunkX = zone.x / RENDER_ZONE_BLOCK_SIZE
                 val chunkY = zone.y / RENDER_ZONE_BLOCK_SIZE
                 val chunkKey = chunkY * chunkColumns + chunkX
                 cellsByChunk.getOrPut(chunkKey) { mutableListOf() }.add(
                     MapRenderCell(
                         zone = zone,
-                        provinceId = area.provinceId,
-                        stateKey = area.stateKey,
-                        countryKey = area.countryKey,
-                        strategicRegionKey = area.strategicRegionKey,
-                        provinceColor = area.provinceColor,
-                        stateColor = area.stateColor,
-                        countryColor = area.countryColor,
-                        strategicRegionColor = area.strategicRegionColor,
-                        terrainColor = area.terrainColor,
-                        controllerColor = area.controllerColor,
-                        manpowerColor = area.manpowerColor,
-                        victoryPointColor = area.victoryPointColor,
-                        resourcesColor = area.resourcesColor,
-                        stateCategoryColor = area.stateCategoryColor,
-                        provinceTypeColor = area.provinceTypeColor,
-                        continentColor = area.continentColor
+                        provinceId = provinceId,
+                        stateKey = stateKey,
+                        countryKey = countryKey,
+                        strategicRegionKey = strategicRegionKey,
+                        provinceColor = provinceColor,
+                        stateColor = stateColor,
+                        countryColor = countryColor,
+                        strategicRegionColor = strategicRegionColor,
+                        terrainColor = terrainColor,
+                        controllerColor = controllerColor,
+                        manpowerColor = manpowerColor,
+                        victoryPointColor = victoryPointColor,
+                        resourcesColor = resourcesColor,
+                        stateCategoryColor = stateCategoryColor,
+                        provinceTypeColor = provinceTypeColor,
+                        continentColor = continentColor
                     )
                 )
             }
@@ -1044,12 +1041,12 @@ class MapPreviewService(private val project: Project) {
         val stateKeys = pixelIndex.stateKeys
         val maxStateId = stateKeys.maxOrNull()?.takeIf { it >= 0 } ?: return emptyList()
         val impassableByState = ByteArray(maxStateId + 1)
-        for (state in stateById.values) {
-            if (state.impassable && state.id in 0..maxStateId) impassableByState[state.id] = 1
+        for ((id, _, _, _, _, _, _, _, _, _, _, _, _, impassable) in stateById.values) {
+            if (impassable && id in 0..maxStateId) impassableByState[id] = 1
         }
         fun impassableAt(index: Int): Boolean {
             val stateId = stateKeys[index]
-            return stateId >= 0 && stateId <= maxStateId && impassableByState[stateId].toInt() == 1
+            return stateId in 0..maxStateId && impassableByState[stateId].toInt() == 1
         }
 
         val chunkColumns = (width + RENDER_ZONE_BLOCK_SIZE - 1) / RENDER_ZONE_BLOCK_SIZE
@@ -1300,9 +1297,9 @@ class MapPreviewService(private val project: Project) {
 
     private fun buildBorderChains(edges: List<BorderEdge>): List<List<BorderPoint>> {
         val outgoing = linkedMapOf<BorderPoint, MutableList<BorderPoint>>()
-        for (edge in edges) {
-            outgoing.getOrPut(edge.start) { mutableListOf() }.add(edge.end)
-            outgoing.getOrPut(edge.end) { mutableListOf() }.add(edge.start)
+        for ((start, end) in edges) {
+            outgoing.getOrPut(start) { mutableListOf() }.add(end)
+            outgoing.getOrPut(end) { mutableListOf() }.add(start)
         }
         val visitedEdges = mutableSetOf<Pair<BorderPoint, BorderPoint>>()
         val chains = mutableListOf<List<BorderPoint>>()

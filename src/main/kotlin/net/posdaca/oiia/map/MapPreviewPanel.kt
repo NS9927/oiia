@@ -19,6 +19,8 @@ import com.intellij.ui.scale.JBUIScale
 import com.intellij.util.messages.MessageBusConnection
 import com.intellij.util.ui.JBFont
 import OiiaBundle
+import com.intellij.ide.setToolTipText
+import com.intellij.openapi.util.text.HtmlChunk
 import net.posdaca.oiia.core.preview.PreviewClickHint
 import net.posdaca.oiia.core.preview.PreviewHintHtml
 import net.posdaca.oiia.core.preview.PreviewNavigation
@@ -126,8 +128,8 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
                 return component
             }
         }
-        issuesList.addMouseListener(object : java.awt.event.MouseAdapter() {
-            override fun mouseClicked(e: java.awt.event.MouseEvent) {
+        issuesList.addMouseListener(object : MouseAdapter() {
+            override fun mouseClicked(e: MouseEvent) {
                 val warning = issuesList.selectedValue ?: return
                 val mode = warning.mode ?: return
                 val key = warning.key ?: return
@@ -207,7 +209,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         val issuesButton = JButton(msg("issues"))
         issuesButton.addActionListener { setIssuesVisible(!issuesVisible) }
         val searchField = JTextField(14)
-        searchField.toolTipText = msg("search")
+        searchField.setToolTipText(HtmlChunk.text(msg("search")))
         searchField.addActionListener {
             if (!canvas.search(searchField.text)) {
                 statusLabel.text = msg("search.notfound", searchField.text)
@@ -232,7 +234,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             applyTimeline()
         }
         val dlcButton = JButton(msg("dlc"))
-        dlcButton.toolTipText = msg("dlc.tooltip")
+        dlcButton.setToolTipText(HtmlChunk.text(msg("dlc.tooltip")))
         dlcButton.addActionListener { showDlcMenu(dlcButton) }
         actions.add(searchField)
         actions.add(JBLabel(msg("timeline")))
@@ -412,10 +414,9 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         timelineSelectorUpdating = true
         val options = mutableListOf(TimelineOption(msg("timeline.base"), null))
         val localisations = data?.localisations.orEmpty()
-        for (bookmark in data?.bookmarks.orEmpty()) {
-            val key = bookmark.nameKey
+        for ((key, year, month, day) in data?.bookmarks.orEmpty()) {
             val name = localisations[key]?.takeIf { it.isNotBlank() && it != key } ?: key
-            options += TimelineOption("$name (${bookmark.year}.${bookmark.month}.${bookmark.day})", Triple(bookmark.year, bookmark.month, bookmark.day))
+            options += TimelineOption("$name ($year.$month.$day)", Triple(year, month, day))
         }
         timelineSelector.removeAllItems()
         for (option in options) timelineSelector.addItem(option)
@@ -897,10 +898,10 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             val sourceHeight = source.height
             for (ty in 0 until tile.height) {
                 val mapY = tileTop + ty
-                if (mapY < 0 || mapY >= sourceHeight) continue
+                if (mapY !in 0..<sourceHeight) continue
                 for (tx in 0 until tile.width) {
                     val mapX = tileLeft + tx
-                    if (mapX < 0 || mapX >= sourceWidth) continue
+                    if (mapX !in 0..<sourceWidth) continue
                     val rgb = source.getRGB(mapX, mapY) and 0xFFFFFF
                     if (rgb !in badColors) continue
                     val base = tile.getRGB(tx, ty)
@@ -930,11 +931,11 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             val height = current.provincesImage.height
             for (ty in 0 until tile.height) {
                 val mapY = tileTop + ty
-                if (mapY < 0 || mapY >= height) continue
+                if (mapY !in 0..<height) continue
                 val rowOffset = mapY * width
                 for (tx in 0 until tile.width) {
                     val mapX = tileLeft + tx
-                    if (mapX < 0 || mapX >= width) continue
+                    if (mapX !in 0..<width) continue
                     if (mask[rowOffset + mapX].toInt() == 0) continue
                     // Diagonal stripes, blended over the fill colour.
                     if (((mapX + mapY) / 5) % 2 == 0) {
@@ -1150,7 +1151,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             if (zoomInteractionActive || borderRendererRunning || pendingBorderTiles.isEmpty()) return
             val generation = borderRenderGeneration
             val requests = pendingBorderTiles.values.take(BORDER_RENDER_BATCH_SIZE)
-            for (request in requests) pendingBorderTiles.remove(request.cacheKey)
+            for ((cacheKey) in requests) pendingBorderTiles.remove(cacheKey)
             borderRendererRunning = true
             ApplicationManager.getApplication().executeOnPooledThread {
                 val rendered = mutableListOf<Pair<BorderTileRequest, BufferedImage>>()
@@ -1205,8 +1206,8 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
                 BasicStroke.CAP_BUTT,
                 BasicStroke.JOIN_MITER
             )
-            for (segment in request.pixelSegments) {
-                g2.drawLine(segment.x1, segment.y1, segment.x2, segment.y2)
+            for ((x1, y1, x2, y2) in request.pixelSegments) {
+                g2.drawLine(x1, y1, x2, y2)
             }
             paintImpassableSegments(g2, request)
         }
@@ -1220,17 +1221,17 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
                 BasicStroke.CAP_BUTT,
                 BasicStroke.JOIN_MITER
             )
-            for (segment in request.impassableSegments) {
-                g2.drawLine(segment.x1, segment.y1, segment.x2, segment.y2)
+            for ((x1, y1, x2, y2) in request.impassableSegments) {
+                g2.drawLine(x1, y1, x2, y2)
             }
         }
 
         private fun paintSmoothBorderTile(g2: Graphics2D, request: BorderTileRequest) {
             val path = Path2D.Double()
-            for (segment in request.smoothSegments) {
-                if (!request.tileRect.intersectsSegment(segment.x1, segment.y1, segment.x2, segment.y2, 1.0)) continue
-                path.moveTo(segment.x1, segment.y1)
-                path.lineTo(segment.x2, segment.y2)
+            for ((x1, y1, x2, y2) in request.smoothSegments) {
+                if (!request.tileRect.intersectsSegment(x1, y1, x2, y2, 1.0)) continue
+                path.moveTo(x1, y1)
+                path.lineTo(x2, y2)
             }
             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
             g2.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY)
@@ -1428,7 +1429,6 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         fun setTimeline(date: Triple<Int, Int, Int>?, enabledDlcs: Set<String>) {
             val current = data ?: return
             timelineApplied = date != null
-            LOG.info("setTimeline: date=$date enabled=$enabledDlcs ch1039=${current.stateById[1039]?.stateChanges} ch1037=${current.stateById[1037]?.stateChanges}")
             if (date == null) {
                 timelineControllerColors = emptyMap()
                 timelineOwnerColors = emptyMap()
@@ -1450,10 +1450,6 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
                         ?.let { state.id to it }
                 }.toMap()
                 applyCountryBorderOverride(current, ownerTagByState)
-                LOG.info(
-                    "setTimeline result: owner=${timelineOwnerColors.size} ctrl=${timelineControllerColors.size} " +
-                        "1039->${timelineOwnerColors[1039]} HBC=${current.countryColorByTag["HBC"]} SIC=${current.countryColorByTag["SIC"]}"
-                )
             }
             clearTileCache()
             invalidateBorderRendering(clearCache = true)
@@ -1612,12 +1608,12 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             val scaledWidth = (imageWidth * zoom).toInt()
             for (copy in 0 until LOOP_COPIES) {
                 val copyOffset = copy * scaledWidth
-                for (span in overlay.spans) {
-                    val x = copyOffset + (span.x * zoom).toInt()
-                    val y = (span.y * zoom).toInt()
-                    val nextX = copyOffset + ((span.x + span.length) * zoom).toInt()
-                        .coerceAtLeast((span.x * zoom).toInt() + 1)
-                    val nextY = ((span.y + 1) * zoom).toInt().coerceAtLeast(y + 1)
+                for ((x1, y1, length) in overlay.spans) {
+                    val x = copyOffset + (x1 * zoom).toInt()
+                    val y = (y1 * zoom).toInt()
+                    val nextX = copyOffset + ((x1 + length) * zoom).toInt()
+                        .coerceAtLeast((x1 * zoom).toInt() + 1)
+                    val nextY = ((y1 + 1) * zoom).toInt().coerceAtLeast(y + 1)
                     if (nextX < clip.x || x > clip.x + clip.width || nextY < clip.y || y > clip.y + clip.height) continue
                     g2.fillRect(x, y, nextX - x, nextY - y)
                 }

@@ -1,6 +1,9 @@
 package net.posdaca.oiia.gfx
 
+import OiiaBundle
+import com.intellij.ide.setToolTipText
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.text.HtmlChunk
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBPanel
 import com.intellij.ui.components.JBScrollPane
@@ -11,12 +14,7 @@ import java.awt.BorderLayout
 import java.awt.Dimension
 import java.awt.Graphics
 import java.awt.GridLayout
-import java.awt.image.BufferedImage
-import javax.swing.BorderFactory
-import javax.swing.JComponent
-import javax.swing.JLabel
-import javax.swing.JPanel
-import javax.swing.SwingConstants
+import javax.swing.*
 
 /** Grid of every sprite declared by the open `.gfx` file, rendered from its resolved textures. */
 class GfxPreviewPanel(
@@ -84,7 +82,7 @@ class GfxPreviewPanel(
             }
         }
         canvas.isOpaque = false
-        canvas.toolTipText = buildToolTip(entry, snapshot.imagePaths[entry.name])
+        canvas.setToolTipText(HtmlChunk.text(buildToolTip(entry, snapshot.imagePaths[entry.name])))
 
         val nameLabel = JLabel(entry.name, SwingConstants.CENTER)
         nameLabel.font = JBFont.label().deriveFont(11f)

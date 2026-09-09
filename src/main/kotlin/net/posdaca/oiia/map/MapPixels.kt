@@ -33,7 +33,7 @@ internal object MapPixels {
     fun isHorizontalPixelBorder(keys: IntArray, width: Int, height: Int, x: Int, edgeY: Int): Boolean {
         val upperKey = if (edgeY == 0) UNKNOWN_KEY else keys[(edgeY - 1) * width + x]
         val lowerKey = if (edgeY == height) UNKNOWN_KEY else keys[edgeY * width + x]
-        return upperKey != lowerKey && (upperKey != UNKNOWN_KEY || lowerKey != UNKNOWN_KEY)
+        return upperKey != lowerKey
     }
 
     /** Whether the vertical grid edge at ([edgeX], between columns edgeX-1 and edgeX, row y) is a border. */
@@ -41,7 +41,7 @@ internal object MapPixels {
         val rowOffset = y * width
         val leftKey = keys[rowOffset + if (edgeX == 0) width - 1 else edgeX - 1]
         val rightKey = keys[rowOffset + edgeX]
-        return leftKey != rightKey && (leftKey != UNKNOWN_KEY || rightKey != UNKNOWN_KEY)
+        return leftKey != rightKey
     }
 
     /** The zone's uniform colour, or null when any pixel inside differs. */
