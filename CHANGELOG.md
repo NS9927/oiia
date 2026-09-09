@@ -1,11 +1,11 @@
 # Oiia Changelog
 
-## [1.1.5] - 2026-9-9
+## [1.1.5] - 2026-09-09
 
 ### Fixed
 
 - Shadow playset sync now reads and writes `%APPDATA%\Posdaca\Hearts of Iron IV` (Shadow's current HOI4 workspace). The old `Hoi4Workspace` folder is used only when that newer mod index is missing.
-- Depends on Paradox Chronicle 3.0.1 (adapting to its updated APIs).
+- Depends on Paradox Chronicle 3.0.2 (settings types moved to `icu.windea.pls.base.settings`, `ParadoxDefinitionElement` to `icu.windea.pls.lang.psi`, and `searchIcon` to `searchImage`).
 
 ## [1.1.4] - 2026-09-07
 
@@ -82,7 +82,7 @@ Rebuilds all script parsing on Paradox Chronicle's PSI and aligns the technology
 ### Changed
 
 - All Paradox-script structure parsing now goes through PLS (Chronicle) PSI: the hand-written text fallback parsers for focus / technology / GUI / map state / strategic region / country files and the regex `.gfx` sprite scan were removed. `map/definition.csv` (CSV) and localisation yml merging remain custom by design.
-- Depends on Paradox Chronicle 3.0.1 (adapting to its updated APIs).
+- Depends on Paradox Chronicle 3.0.2 (settings types moved to `icu.windea.pls.base.settings`, `ParadoxDefinitionElement` to `icu.windea.pls.lang.psi`, and `searchIcon` to `searchImage`).
 - Consolidates fallback language order and localisation scoring weights into `ParadoxLocalisationPreference` (previously four drifting copies across preview modules) and extracts the pure `.gfx` text parsing into `ParadoxGfxParser`.
 - Removes unused resource-file APIs and the unused game GUI template loader.
 - Updates the `HOI4 via Shadow` run configuration to Shadow's `PDXGameLauncher hoi4 -playset <id>` CLI entry (replacing `--shadow-command hoi4.launch`).
