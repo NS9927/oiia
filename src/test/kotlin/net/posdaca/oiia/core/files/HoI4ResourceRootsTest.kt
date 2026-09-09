@@ -1,7 +1,7 @@
 package net.posdaca.oiia.core.files
 
-import icu.windea.pls.lang.settings.ParadoxModDependencySettingsState
-import icu.windea.pls.lang.settings.ParadoxModSettingsState
+import icu.windea.pls.base.settings.ParadoxModDependencySettingsState
+import icu.windea.pls.base.settings.ParadoxModSettingsState
 import icu.windea.pls.model.ParadoxGameType
 import org.junit.Assert.assertEquals
 import org.junit.Test
