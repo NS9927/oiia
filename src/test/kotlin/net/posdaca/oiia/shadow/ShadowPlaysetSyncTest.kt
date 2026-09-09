@@ -106,4 +106,42 @@ class ShadowPlaysetSyncTest {
         assertTrue(json.contains("\"can_edit\": false"))
         assertTrue(json.contains("\"LOCAL_MOD\""))
     }
+
+    @Test
+    fun `workspace prefers Hearts of Iron IV over legacy Hoi4Workspace`() {
+        val appData = temporaryFolder.newFolder("appdata").toPath()
+        val currentIndex = appData.resolve("Posdaca").resolve("Hearts of Iron IV").resolve("mods").resolve("index.json")
+        val legacyIndex = appData.resolve("Posdaca").resolve("Hoi4Workspace").resolve("mods").resolve("index.json")
+        Files.createDirectories(currentIndex.parent)
+        Files.createDirectories(legacyIndex.parent)
+        Files.writeString(currentIndex, "{}")
+        Files.writeString(legacyIndex, "{}")
+
+        assertEquals(
+            appData.resolve("Posdaca").resolve("Hearts of Iron IV"),
+            ShadowPlaysetSync.resolveWorkspaceDirectory(appData),
+        )
+    }
+
+    @Test
+    fun `workspace falls back to Hoi4Workspace when the new index is missing`() {
+        val appData = temporaryFolder.newFolder("legacy-appdata").toPath()
+        val legacyIndex = appData.resolve("Posdaca").resolve("Hoi4Workspace").resolve("mods").resolve("index.json")
+        Files.createDirectories(legacyIndex.parent)
+        Files.writeString(legacyIndex, "{}")
+
+        assertEquals(
+            appData.resolve("Posdaca").resolve("Hoi4Workspace"),
+            ShadowPlaysetSync.resolveWorkspaceDirectory(appData),
+        )
+    }
+
+    @Test
+    fun `workspace defaults to Hearts of Iron IV when no index exists`() {
+        val appData = temporaryFolder.newFolder("empty-appdata").toPath()
+        assertEquals(
+            appData.resolve("Posdaca").resolve("Hearts of Iron IV"),
+            ShadowPlaysetSync.resolveWorkspaceDirectory(appData),
+        )
+    }
 }

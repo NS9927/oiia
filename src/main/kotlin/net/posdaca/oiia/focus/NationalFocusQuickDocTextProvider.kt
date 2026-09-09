@@ -2,8 +2,8 @@ package net.posdaca.oiia.focus
 
 import com.intellij.psi.PsiElement
 import icu.windea.pls.ep.codeInsight.documentation.ParadoxQuickDocTextProvider
+import icu.windea.pls.lang.psi.ParadoxDefinitionElement
 import icu.windea.pls.lang.util.ParadoxDefinitionManager
-import icu.windea.pls.script.psi.ParadoxDefinitionElement
 
 class NationalFocusQuickDocTextProvider : ParadoxQuickDocTextProvider {
     override fun getQuickDocText(element: PsiElement): String? {

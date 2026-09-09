@@ -21,6 +21,8 @@ import kotlin.io.path.exists
 
 internal object ShadowPlaysetSync {
     private const val NOT_FOUND_MESSAGE = "Refresh Shadow's Mod list once, then sync again."
+    private const val CURRENT_WORKSPACE_FOLDER = "Hearts of Iron IV"
+    private const val LEGACY_WORKSPACE_FOLDER = "Hoi4Workspace"
     private val gson: Gson = GsonBuilder()
         .setPrettyPrinting()
         .disableHtmlEscaping()
@@ -65,10 +67,21 @@ internal object ShadowPlaysetSync {
         )
     }
 
-    fun defaultWorkspaceDirectory(): Path {
-        val appData = System.getenv("APPDATA")?.takeIf { it.isNotBlank() }?.let { Path.of(it) }
+    fun defaultWorkspaceDirectory(): Path = resolveWorkspaceDirectory(appDataDirectory())
+
+    internal fun resolveWorkspaceDirectory(appData: Path): Path {
+        val current = appData.resolve("Posdaca").resolve(CURRENT_WORKSPACE_FOLDER)
+        if (current.resolve("mods").resolve("index.json").exists()) return current
+
+        val legacy = appData.resolve("Posdaca").resolve(LEGACY_WORKSPACE_FOLDER)
+        if (legacy.resolve("mods").resolve("index.json").exists()) return legacy
+
+        return current
+    }
+
+    private fun appDataDirectory(): Path {
+        return System.getenv("APPDATA")?.takeIf { it.isNotBlank() }?.let { Path.of(it) }
             ?: Path.of(System.getProperty("user.home"), "AppData", "Roaming")
-        return appData.resolve("Posdaca").resolve("Hoi4Workspace")
     }
 
     fun readIndex(indexPath: Path): ShadowModIndex {

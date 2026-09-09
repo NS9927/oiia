@@ -1,5 +1,12 @@
 # Oiia Changelog
 
+## [1.1.5] - 2026-9-9
+
+### Fixed
+
+- Shadow playset sync now reads and writes `%APPDATA%\Posdaca\Hearts of Iron IV` (Shadow's current HOI4 workspace). The old `Hoi4Workspace` folder is used only when that newer mod index is missing.
+- Depends on Paradox Chronicle 3.0.1 (adapting to its updated APIs).
+
 ## [1.1.4] - 2026-09-07
 
 National focus preview now follows the game's `prerequisite` grouping and joint style, and dragging a focus no longer corrupts its script coordinates.

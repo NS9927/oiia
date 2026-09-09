@@ -1,10 +1,10 @@
 package net.posdaca.oiia.core.files
 
 import com.intellij.openapi.project.Project
-import icu.windea.pls.lang.settings.ChronicleProfilesSettings
-import icu.windea.pls.lang.settings.ParadoxGameSettingsState
-import icu.windea.pls.lang.settings.ParadoxModDescriptorSettingsState
-import icu.windea.pls.lang.settings.ParadoxModSettingsState
+import icu.windea.pls.base.settings.ChronicleProfilesSettings
+import icu.windea.pls.base.settings.ParadoxGameSettingsState
+import icu.windea.pls.base.settings.ParadoxModDescriptorSettingsState
+import icu.windea.pls.base.settings.ParadoxModSettingsState
 import icu.windea.pls.model.ParadoxGameType
 import java.io.File
 import java.nio.file.InvalidPathException

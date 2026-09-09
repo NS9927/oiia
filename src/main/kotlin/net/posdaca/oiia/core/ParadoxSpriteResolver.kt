@@ -1,20 +1,17 @@
 package net.posdaca.oiia.core
 
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.project.Project
 import com.intellij.openapi.diagnostic.Logger
-import com.intellij.psi.PsiFile
+import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiManager
 import icu.windea.pls.lang.search.ParadoxDefinitionSearch
 import icu.windea.pls.lang.search.ParadoxFilePathSearch
 import icu.windea.pls.lang.util.ParadoxDefinitionManager
 import icu.windea.pls.lang.util.ParadoxImageManager
-import icu.windea.pls.script.psi.ParadoxScriptBlock
 import icu.windea.pls.script.psi.ParadoxScriptFile
 import icu.windea.pls.script.psi.ParadoxScriptProperty
+import net.posdaca.oiia.core.ParadoxSpriteResolver.Companion.STAMP_CHECK_INTERVAL_MS
 import net.posdaca.oiia.core.files.ResourceFiles
-import net.posdaca.oiia.core.PrefixIconLookup
-import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.isRegularFile
 
@@ -446,7 +443,7 @@ class ParadoxSpriteResolver(private val project: Project) {
         return runCatching {
             ApplicationManager.getApplication().runReadAction<String?> {
                 val selector = ParadoxFilePathSearch.selector(project, null).distinct()
-                val file = ParadoxFilePathSearch.searchIcon(cleanPath, selector, ignoreLocale = true).find()
+                val file = ParadoxFilePathSearch.searchModifierIcon(cleanPath, selector).find()
                     ?: ParadoxFilePathSearch.search(cleanPath, selector = selector, ignoreLocale = true).find()
                 file?.let { ParadoxImageManager.resolveUrlByFile(it, project) ?: it.path }
             }
