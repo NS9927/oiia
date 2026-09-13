@@ -1,5 +1,5 @@
 # Oiia
-[![中文文档][badge:doc-zh]](doc/README.zh-CN.md)  
+[![中文文档][badge:doc-zh]](docs/README.zh-CN.md)  
 Oiia is a modding toolkit for **Hearts of Iron IV (HOI4)** built for IntelliJ IDEA.  
 It is based on [Paradox Chronicle](https://plugins.jetbrains.com/plugin/16825-paradox-language-support) (formerly Paradox Language Support) and provides visual previews and navigation features for common HOI4 modding files.
 ## Features
