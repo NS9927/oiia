@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "net.posdaca"
-version = "1.1.5"
+version = "1.1.6"
 
 kotlin {
     jvmToolchain(21)
