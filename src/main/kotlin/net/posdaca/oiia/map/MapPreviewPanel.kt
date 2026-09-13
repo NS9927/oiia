@@ -433,17 +433,12 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
 
     /** Untouched selection defaults to DLCs that are installed and referenced by the map. */
     private fun effectiveEnabledDlcs(): Set<String> {
-        val data = snapshot ?: return emptySet()
-        if (!dlcSelectionTouched) {
-            return data.referencedDlcNames.filterTo(mutableSetOf()) { it in data.installedDlcNames }
-        }
-        return enabledDlcs.toSet()
+        return if (dlcSelectionTouched) enabledDlcs.toSet() else emptySet()
     }
 
     /** IDE-styled dropdown with a checkbox per referenced `has_dlc` condition. */
     private fun showDlcMenu(anchor: java.awt.Component) {
         val data = snapshot ?: return
-        val effective = effectiveEnabledDlcs()
         val panel = JPanel(GridLayout(0, 1, 0, JBUIScale.scale(4))).apply { isOpaque = false }
         val names = data.referencedDlcNames.sorted()
         if (names.isEmpty()) {
@@ -452,16 +447,11 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             panel.add(none)
         }
         for (name in names) {
-            val checkBox = JCheckBox(name, name in effective)
+            val checkBox = JCheckBox(name, name in enabledDlcs)
             checkBox.isOpaque = false
             checkBox.toolTipText = msg("dlc.tooltip")
             checkBox.addActionListener {
-                // First touch seeds the selection with the defaults so untouched DLCs
-                // keep their state instead of silently flipping to disabled.
-                if (!dlcSelectionTouched) {
-                    enabledDlcs.addAll(effectiveEnabledDlcs())
-                    dlcSelectionTouched = true
-                }
+                dlcSelectionTouched = true
                 if (checkBox.isSelected) enabledDlcs.add(name) else enabledDlcs.remove(name)
                 applyTimeline()
             }

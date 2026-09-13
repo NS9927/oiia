@@ -382,9 +382,7 @@ data class LoadedMapData(
     val unknownProvinceColors: Set<Int> = emptySet(),
     val warnings: List<MapWarning> = emptyList(),
     /** `has_dlc` names referenced by the loaded state histories. */
-    val referencedDlcNames: Set<String> = emptySet(),
-    /** DLC display names declared by installed dlc metadata (.dlc) files. */
-    val installedDlcNames: Set<String> = emptySet()
+    val referencedDlcNames: Set<String> = emptySet()
 ) : PreviewSnapshot {
     override val isEmpty: Boolean
         get() = false

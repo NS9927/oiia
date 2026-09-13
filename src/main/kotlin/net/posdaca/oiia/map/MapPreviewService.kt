@@ -96,7 +96,6 @@ class MapPreviewService(private val project: Project) {
                     unknownProvinceColors = renderData.unknownProvinceColors,
                     warnings = warnings,
                     referencedDlcNames = referencedDlcNames(states.flatMap { it.stateChanges }),
-                    installedDlcNames = loadInstalledDlcNames(roots)
                 )
             )
         } catch (e: Exception) {
@@ -1581,18 +1580,6 @@ class MapPreviewService(private val project: Project) {
     /** `has_dlc` names referenced by the given state changes. */
     private fun referencedDlcNames(changes: List<MapStateChange>): Set<String> {
         return changes.mapNotNull { it.requiredDlc }.toSet()
-    }
-
-    /** DLC display names declared by dlc metadata files (launcher format, not Paradox script). */
-    private fun loadInstalledDlcNames(roots: List<Path>): Set<String> {
-        val files = ResourceFiles.listFiles(roots, listOf("dlc"), setOf(".dlc"), maxDepth = 4)
-        val names = mutableSetOf<String>()
-        val nameRegex = Regex("""name\s*=\s*"([^"]+)"\s*$""", RegexOption.MULTILINE)
-        for (path in files) {
-            val text = ResourceFiles.readText(path) ?: continue
-            nameRegex.findAll(text).forEach { names += it.groupValues[1] }
-        }
-        return names
     }
 
     private fun List<ParadoxScriptProperty>.firstColorInt(): Int? {
