@@ -9,6 +9,7 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapi.vfs.newvfs.BulkFileListener
+import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.vfs.newvfs.events.VFileEvent
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBList
@@ -30,6 +31,7 @@ import java.awt.Color
 import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.FlowLayout
+import java.awt.GridLayout
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.Point
@@ -86,7 +88,6 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
     private val issuesList = JBList(issuesModel)
     private var issuesScrollPane: JBScrollPane? = null
     private val timelineSelector = ComboBox<TimelineOption>()
-    private val dlcChecksPanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply { isOpaque = false }
     private var timelineSelectorUpdating = false
     private var timelineDate: Triple<Int, Int, Int>? = null
     private var dlcSelectionTouched = false
@@ -235,8 +236,9 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         actions.add(searchField)
         actions.add(JBLabel(msg("timeline")))
         actions.add(timelineSelector)
-        actions.add(JBLabel(msg("dlc")))
-        actions.add(dlcChecksPanel)
+        val dlcButton = JButton(msg("dlc"))
+        dlcButton.addActionListener { showDlcMenu(dlcButton) }
+        actions.add(dlcButton)
         actions.add(JBLabel(msg("color.mode")))
         actions.add(colorSelector)
         actions.add(JBLabel(msg("border.mode")))
@@ -423,7 +425,6 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         timelineSelectorUpdating = false
         // The combo selection is the source of truth after a reload.
         timelineDate = selected?.date
-        refreshDlcChecks(data)
     }
 
     private fun applyTimeline() {
@@ -439,18 +440,20 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         return enabledDlcs.toSet()
     }
 
-    /** Rebuilds the inline IDE-style DLC checkboxes for the referenced `has_dlc` conditions. */
-    private fun refreshDlcChecks(data: LoadedMapData?) {
-        dlcChecksPanel.removeAll()
+    /** IDE-styled dropdown with a checkbox per referenced `has_dlc` condition. */
+    private fun showDlcMenu(anchor: java.awt.Component) {
+        val data = snapshot ?: return
         val effective = effectiveEnabledDlcs()
-        val names = data?.referencedDlcNames.orEmpty().sorted()
+        val panel = JPanel(GridLayout(0, 1, 0, JBUIScale.scale(4))).apply { isOpaque = false }
+        val names = data.referencedDlcNames.sorted()
         if (names.isEmpty()) {
             val none = JBLabel(msg("dlc.none"))
             none.foreground = JBColor.GRAY
-            dlcChecksPanel.add(none)
+            panel.add(none)
         }
         for (name in names) {
             val checkBox = JCheckBox(name, name in effective)
+            checkBox.isOpaque = false
             checkBox.toolTipText = msg("dlc.tooltip")
             checkBox.addActionListener {
                 // First touch seeds the selection with the defaults so untouched DLCs
@@ -462,10 +465,15 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
                 if (checkBox.isSelected) enabledDlcs.add(name) else enabledDlcs.remove(name)
                 applyTimeline()
             }
-            dlcChecksPanel.add(checkBox)
+            panel.add(checkBox)
         }
-        dlcChecksPanel.revalidate()
-        dlcChecksPanel.repaint()
+        panel.border = BorderFactory.createEmptyBorder(JBUIScale.scale(8), JBUIScale.scale(10), JBUIScale.scale(8), JBUIScale.scale(10))
+        JBPopupFactory.getInstance()
+            .createComponentPopupBuilder(panel, null)
+            .setShowShadow(true)
+            .setShowBorder(true)
+            .createPopup()
+            .show(com.intellij.ui.awt.RelativePoint(anchor, java.awt.Point(0, anchor.height)))
     }
 
     private fun refreshIssues(data: LoadedMapData?) {

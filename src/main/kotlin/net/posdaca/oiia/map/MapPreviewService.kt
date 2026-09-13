@@ -405,23 +405,27 @@ class MapPreviewService(private val project: Project) {
         countryHistories: Map<String, Path>,
         localisations: Map<String, String>
     ): Map<String, CountryInfo> {
-        return states
-            .filter { !it.owner.isNullOrBlank() }
-            .groupBy { it.owner!!.uppercase() }
-            .mapValues { (tag, ownedStates) ->
-                val definition = countryDefinitions[tag]
-                CountryInfo(
-                    tag = tag,
-                    mapKey = mapCountryKey(tag),
-                    localizedName = resolveCountryName(localisations, tag),
-                    color = definition?.color,
-                    definitionPath = definition?.definitionPath,
-                    historyPath = countryHistories[tag],
-                    colorSourcePath = definition?.colorSourcePath,
-                    stateIds = ownedStates.map { it.id }.sorted(),
-                    provinceIds = ownedStates.flatMap { it.provinces }.distinct().sorted()
-                )
-            }
+        // Include tags that only own states behind has_dlc conditions (e.g. HBC/SIC),
+        // so hover hints and highlights resolve them once the timeline enables them.
+        val tags = states.mapNotNullTo(sortedSetOf()) { it.owner?.uppercase() }
+        for (state in states) {
+            for (change in state.stateChanges) change.owner?.uppercase()?.let { tags += it }
+        }
+        return tags.associateWith { tag ->
+            val definition = countryDefinitions[tag]
+            val ownedStates = states.filter { it.owner?.uppercase() == tag }
+            CountryInfo(
+                tag = tag,
+                mapKey = mapCountryKey(tag),
+                localizedName = resolveCountryName(localisations, tag),
+                color = definition?.color,
+                definitionPath = definition?.definitionPath,
+                historyPath = countryHistories[tag],
+                colorSourcePath = definition?.colorSourcePath,
+                stateIds = ownedStates.map { it.id }.sorted(),
+                provinceIds = ownedStates.flatMap { it.provinces }.distinct().sorted()
+            )
+        }
     }
 
     private data class CountryDefinition(
