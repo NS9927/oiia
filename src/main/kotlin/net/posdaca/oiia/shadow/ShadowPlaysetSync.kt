@@ -21,6 +21,7 @@ import kotlin.io.path.exists
 
 internal object ShadowPlaysetSync {
     private const val NOT_FOUND_MESSAGE = "Refresh Shadow's Mod list once, then sync again."
+    private const val SHADOW_ROOT_FOLDER = "Shadow"
     private const val CURRENT_WORKSPACE_FOLDER = "Hearts of Iron IV"
     private const val LEGACY_WORKSPACE_FOLDER = "Hoi4Workspace"
     private val gson: Gson = GsonBuilder()
@@ -70,13 +71,18 @@ internal object ShadowPlaysetSync {
     fun defaultWorkspaceDirectory(): Path = resolveWorkspaceDirectory(appDataDirectory())
 
     internal fun resolveWorkspaceDirectory(appData: Path): Path {
-        val current = appData.resolve("Posdaca").resolve(CURRENT_WORKSPACE_FOLDER)
-        if (current.resolve("mods").resolve("index.json").exists()) return current
-
-        val legacy = appData.resolve("Posdaca").resolve(LEGACY_WORKSPACE_FOLDER)
-        if (legacy.resolve("mods").resolve("index.json").exists()) return legacy
-
-        return current
+        val posdaca = appData.resolve("Posdaca")
+        // Newest Shadow builds nest everything under the Shadow root, older ones put the
+        // game folder (or a legacy workspace) directly under Posdaca.
+        val candidates = listOf(
+            posdaca.resolve(SHADOW_ROOT_FOLDER).resolve(CURRENT_WORKSPACE_FOLDER),
+            posdaca.resolve(CURRENT_WORKSPACE_FOLDER),
+            posdaca.resolve(LEGACY_WORKSPACE_FOLDER),
+        )
+        for (candidate in candidates) {
+            if (candidate.resolve("mods").resolve("index.json").exists()) return candidate
+        }
+        return candidates.first()
     }
 
     private fun appDataDirectory(): Path {

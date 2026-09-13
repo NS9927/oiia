@@ -108,6 +108,22 @@ class ShadowPlaysetSyncTest {
     }
 
     @Test
+    fun `workspace prefers the Shadow root over flat Posdaca layouts`() {
+        val appData = temporaryFolder.newFolder("appdata").toPath()
+        val shadowIndex = appData.resolve("Posdaca").resolve("Shadow").resolve("Hearts of Iron IV").resolve("mods").resolve("index.json")
+        val currentIndex = appData.resolve("Posdaca").resolve("Hearts of Iron IV").resolve("mods").resolve("index.json")
+        Files.createDirectories(shadowIndex.parent)
+        Files.createDirectories(currentIndex.parent)
+        Files.writeString(shadowIndex, "{}")
+        Files.writeString(currentIndex, "{}")
+
+        assertEquals(
+            appData.resolve("Posdaca").resolve("Shadow").resolve("Hearts of Iron IV"),
+            ShadowPlaysetSync.resolveWorkspaceDirectory(appData),
+        )
+    }
+
+    @Test
     fun `workspace prefers Hearts of Iron IV over legacy Hoi4Workspace`() {
         val appData = temporaryFolder.newFolder("appdata").toPath()
         val currentIndex = appData.resolve("Posdaca").resolve("Hearts of Iron IV").resolve("mods").resolve("index.json")
@@ -137,10 +153,10 @@ class ShadowPlaysetSyncTest {
     }
 
     @Test
-    fun `workspace defaults to Hearts of Iron IV when no index exists`() {
+    fun `workspace defaults to the Shadow root when no index exists`() {
         val appData = temporaryFolder.newFolder("empty-appdata").toPath()
         assertEquals(
-            appData.resolve("Posdaca").resolve("Hearts of Iron IV"),
+            appData.resolve("Posdaca").resolve("Shadow").resolve("Hearts of Iron IV"),
             ShadowPlaysetSync.resolveWorkspaceDirectory(appData),
         )
     }
