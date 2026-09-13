@@ -35,7 +35,15 @@ data class PixelBounds(
     val minY: Int,
     val maxX: Int,
     val maxY: Int
-)
+) {
+    /** Smallest rectangle covering both bounds. */
+    fun union(other: PixelBounds): PixelBounds = PixelBounds(
+        minOf(minX, other.minX),
+        minOf(minY, other.minY),
+        maxOf(maxX, other.maxX),
+        maxOf(maxY, other.maxY)
+    )
+}
 
 data class MapLineSegment(
     val x1: Double,

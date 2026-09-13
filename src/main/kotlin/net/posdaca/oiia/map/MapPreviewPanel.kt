@@ -29,6 +29,7 @@ import java.awt.BasicStroke
 import java.awt.Color
 import java.awt.Cursor
 import java.awt.Dimension
+import java.awt.FlowLayout
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.Point
@@ -54,9 +55,6 @@ import javax.swing.JPanel
 import javax.swing.JTextField
 import javax.swing.JViewport
 import javax.swing.Scrollable
-import javax.swing.JCheckBoxMenuItem
-import javax.swing.JMenuItem
-import javax.swing.JPopupMenu
 import javax.swing.DefaultListModel
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
@@ -88,6 +86,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
     private val issuesList = JBList(issuesModel)
     private var issuesScrollPane: JBScrollPane? = null
     private val timelineSelector = ComboBox<TimelineOption>()
+    private val dlcChecksPanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply { isOpaque = false }
     private var timelineSelectorUpdating = false
     private var timelineDate: Triple<Int, Int, Int>? = null
     private var dlcSelectionTouched = false
@@ -233,13 +232,11 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             timelineDate = (timelineSelector.selectedItem as? TimelineOption)?.date
             applyTimeline()
         }
-        val dlcButton = JButton(msg("dlc"))
-        dlcButton.setToolTipText(HtmlChunk.text(msg("dlc.tooltip")))
-        dlcButton.addActionListener { showDlcMenu(dlcButton) }
         actions.add(searchField)
         actions.add(JBLabel(msg("timeline")))
         actions.add(timelineSelector)
-        actions.add(dlcButton)
+        actions.add(JBLabel(msg("dlc")))
+        actions.add(dlcChecksPanel)
         actions.add(JBLabel(msg("color.mode")))
         actions.add(colorSelector)
         actions.add(JBLabel(msg("border.mode")))
@@ -426,6 +423,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         timelineSelectorUpdating = false
         // The combo selection is the source of truth after a reload.
         timelineDate = selected?.date
+        refreshDlcChecks(data)
     }
 
     private fun applyTimeline() {
@@ -441,31 +439,33 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         return enabledDlcs.toSet()
     }
 
-    private fun showDlcMenu(anchor: java.awt.Component) {
-        val data = snapshot ?: return
-        val menu = JPopupMenu()
-        val names = data.referencedDlcNames.sorted()
-        if (names.isEmpty()) {
-            val empty = JMenuItem(msg("dlc.none"))
-            empty.isEnabled = false
-            menu.add(empty)
-        }
+    /** Rebuilds the inline IDE-style DLC checkboxes for the referenced `has_dlc` conditions. */
+    private fun refreshDlcChecks(data: LoadedMapData?) {
+        dlcChecksPanel.removeAll()
         val effective = effectiveEnabledDlcs()
+        val names = data?.referencedDlcNames.orEmpty().sorted()
+        if (names.isEmpty()) {
+            val none = JBLabel(msg("dlc.none"))
+            none.foreground = JBColor.GRAY
+            dlcChecksPanel.add(none)
+        }
         for (name in names) {
-            val item = JCheckBoxMenuItem(name, name in effective)
-            item.addActionListener {
+            val checkBox = JCheckBox(name, name in effective)
+            checkBox.toolTipText = msg("dlc.tooltip")
+            checkBox.addActionListener {
                 // First touch seeds the selection with the defaults so untouched DLCs
                 // keep their state instead of silently flipping to disabled.
                 if (!dlcSelectionTouched) {
                     enabledDlcs.addAll(effectiveEnabledDlcs())
                     dlcSelectionTouched = true
                 }
-                if (item.isSelected) enabledDlcs.add(name) else enabledDlcs.remove(name)
+                if (checkBox.isSelected) enabledDlcs.add(name) else enabledDlcs.remove(name)
                 applyTimeline()
             }
-            menu.add(item)
+            dlcChecksPanel.add(checkBox)
         }
-        menu.show(anchor, 0, anchor.preferredSize.height)
+        dlcChecksPanel.revalidate()
+        dlcChecksPanel.repaint()
     }
 
     private fun refreshIssues(data: LoadedMapData?) {
@@ -532,6 +532,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
         private var timelineOwnerColors: Map<Int, Int> = emptyMap()
         private var timelineSmoothSegments: Map<MapPreviewMode, List<MapLineSegment>> = emptyMap()
         private var timelineCountryKeys: IntArray? = null
+        private var timelineCountryBounds: Map<Int, PixelBounds> = emptyMap()
         private var timelineApplied = false
         private val tileCache = object : LinkedHashMap<MapTileKey, BufferedImage>(64, 0.75f, true) {
             override fun removeEldestEntry(eldest: MutableMap.MutableEntry<MapTileKey, BufferedImage>?): Boolean {
@@ -669,6 +670,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             timelineOwnerColors = emptyMap()
             timelineSmoothSegments = emptyMap()
             timelineCountryKeys = null
+            timelineCountryBounds = emptyMap()
             timelineApplied = false
             bordersVisible = this@MapPreviewPanel.showBorders
             smoothBorders = this@MapPreviewPanel.smoothBorders
@@ -1456,7 +1458,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             repaint()
         }
 
-        /** Swaps the COUNTRY border chunks/smooth segments/pixel keys for timeline-resolved ones. */
+        /** Swaps the COUNTRY border chunks/smooth segments/pixel keys/bounds for timeline-resolved ones. */
         private fun applyCountryBorderOverride(current: LoadedMapData, ownerTagByState: Map<Int, String>) {
             val override = this@MapPreviewPanel.service
                 .buildCountryBordersForOwnerOverride(current, ownerTagByState)
@@ -1464,6 +1466,18 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
                     (MapPreviewMode.COUNTRY to override.chunks.associateBy { MapTileKey(it.x / MAP_TILE_SIZE, it.y / MAP_TILE_SIZE) })
             timelineSmoothSegments = mapOf(MapPreviewMode.COUNTRY to override.smoothSegments)
             timelineCountryKeys = override.countryKeys
+            // Bounds for countries that only exist under the timeline (e.g. HBC/SIC): union
+            // of their member states' bounds, keyed by country mapKey like the base table.
+            val boundsByTag = mutableMapOf<Int, PixelBounds>()
+            for ((tag, stateIds) in ownerTagByState.entries.groupBy({ it.value.uppercase() }, { it.key })) {
+                var bounds: PixelBounds? = null
+                for (stateId in stateIds) {
+                    val b = current.pixelIndex.stateBounds[stateId] ?: continue
+                    bounds = bounds?.union(b) ?: b
+                }
+                bounds?.let { boundsByTag[mapCountryKey(tag)] = it }
+            }
+            timelineCountryBounds = boundsByTag
         }
 
         /** Restores the base COUNTRY border chunks and drops the smooth-segment override. */
@@ -1473,6 +1487,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
                         .associateBy { MapTileKey(it.x / MAP_TILE_SIZE, it.y / MAP_TILE_SIZE) })
             timelineSmoothSegments = emptyMap()
             timelineCountryKeys = null
+            timelineCountryBounds = emptyMap()
         }
 
         /** Enables/disables the red tint over provinces.bmp colours missing from definition.csv. */
@@ -1750,7 +1765,7 @@ class MapPreviewPanel(private val project: Project) : JBPanel<JBPanel<*>>(Border
             return when (selection.mode) {
                 MapPreviewMode.PROVINCE -> index.provinceBounds[selection.key]
                 MapPreviewMode.STATE -> index.stateBounds[selection.key]
-                MapPreviewMode.COUNTRY -> index.countryBounds[selection.key]
+                MapPreviewMode.COUNTRY -> timelineCountryBounds[selection.key] ?: index.countryBounds[selection.key]
                 MapPreviewMode.STRATEGIC_REGION -> index.strategicRegionBounds[selection.key]
             }
         }
