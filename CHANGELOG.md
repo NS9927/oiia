@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.7 - 2026-09-24
+
+### Changed
+
+- Depends on Paradox Chronicle 3.0.3.
+- Build toolchain updated to Kotlin 2.4.0 and IntelliJ Platform Gradle Plugin 2.19.0; Gson 2.14.0 is now declared in the version catalog.
+
 ## 1.1.6 - 2026-09-13
 
 ### Added

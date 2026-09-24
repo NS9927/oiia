@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "net.posdaca"
-version = "1.1.6"
+version = "1.1.7"
 
 kotlin {
     jvmToolchain(21)
@@ -21,16 +21,14 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
 
 dependencies {
     implementation(kotlin("stdlib"))
-    implementation("com.google.code.gson:gson:2.13.2")
+    implementation(libs.gson)
     testImplementation(libs.junit)
 
     // IntelliJ Platform Gradle Plugin Dependencies Extension - read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin-dependencies-extension.html
     intellijPlatform {
         intellijIdea("2026.2.1")
         testFramework(TestFrameworkType.Platform)
-
-        // Add plugin dependencies for compilation here, for example:
         bundledPlugin("com.intellij.java")
-        plugin("icu.windea.pls", "3.0.2")   // Paradox Chronicle
+        plugin("icu.windea.pls", "3.0.3")   // Paradox Chronicle
     }
 }

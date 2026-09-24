@@ -892,7 +892,7 @@ class MapPreviewService(private val project: Project) {
             isSea -> rgb
             state == null -> 0x000080
             else -> {
-                val vp = state.victoryPoints[province?.id] ?: 0
+                val vp = state.victoryPoints[province.id] ?: 0
                 if (vp == 0) 0x008000
                 else {
                     val ratio = MapHeatColors.victoryPointScale(vp) / MapHeatColors.victoryPointScale(maxVictoryPoints)

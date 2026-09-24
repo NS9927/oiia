@@ -1,5 +1,12 @@
 # 变更日志
 
+## 1.1.7 - 2026-09-24
+
+### 变更
+
+- 依赖 Paradox Chronicle 3.0.3。
+- 构建工具链升级到 Kotlin 2.4.0 与 IntelliJ Platform Gradle Plugin 2.19.0；Gson 2.14.0 改由版本目录声明。
+
 ## 1.1.6 - 2026-09-13
 
 ### 新增

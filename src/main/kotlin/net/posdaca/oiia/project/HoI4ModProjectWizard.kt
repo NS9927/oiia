@@ -158,7 +158,7 @@ private class HoI4ModProjectStep(
     }
 
     private fun setupGeneralModule(project: Project) {
-        val moduleType = ModuleTypeManager.getInstance().findByID("GENERAL_MODULE") ?: return
+        val moduleType = ModuleTypeManager.getInstance().findByID("GENERAL_MODULE")
         val moduleBuilder = moduleType.createModuleBuilder()
         setupProjectFromBuilder(project, moduleBuilder)
     }
