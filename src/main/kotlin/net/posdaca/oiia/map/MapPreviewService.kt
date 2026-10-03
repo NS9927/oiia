@@ -12,6 +12,7 @@ import net.posdaca.oiia.core.PreviewImageLoader
 import net.posdaca.oiia.core.files.LocalisationFiles
 import net.posdaca.oiia.core.files.ResourceFiles
 import net.posdaca.oiia.core.parseParadoxBoolean
+import net.posdaca.oiia.core.script.ParadoxScriptColors
 import java.awt.Color
 import java.awt.image.BufferedImage
 import java.nio.file.Path
@@ -250,14 +251,7 @@ class MapPreviewService(private val project: Project) {
                 for (category in categoriesBlock) {
                     val name = category.propertyKey.text.trim().trim('"').takeIf { it.isNotBlank() } ?: continue
                     val block = category.block ?: continue
-                    val colorBlock = block.propertyList
-                        .firstOrNull { it.propertyKey.text.equals("color", ignoreCase = true) }?.block
-                        ?: continue
-                    val channels = colorBlock.valueList.mapNotNull { it.text.trim().toIntOrNull() }
-                    if (channels.size < 3) continue
-                    val rgb = (channels[0].coerceIn(0, 255) shl 16) or
-                            (channels[1].coerceIn(0, 255) shl 8) or
-                            channels[2].coerceIn(0, 255)
+                    val rgb = ParadoxScriptColors.colorOf(block.propertyList) ?: continue
                     result.putIfAbsent(name, rgb)
                 }
                 null
@@ -511,7 +505,7 @@ class MapPreviewService(private val project: Project) {
     }
 
     private fun parseCountryColor(path: Path): Int? {
-        return withScriptProperties(path) { root -> root.firstColorInt() }
+        return withScriptProperties(path) { root -> ParadoxScriptColors.colorOf(root) }
     }
 
     private data class CountryColorOverride(val path: Path, val color: Int)
@@ -532,7 +526,7 @@ class MapPreviewService(private val project: Project) {
             for (prop in root) {
                 val tag = prop.propertyKey.text.uppercase()
                 if (tag.length != 3) continue
-                val color = prop.block?.propertyList?.firstColorInt() ?: continue
+                val color = prop.block?.let { ParadoxScriptColors.colorOf(it.propertyList) } ?: continue
                 result[tag] = color
             }
             result
@@ -1582,21 +1576,6 @@ class MapPreviewService(private val project: Project) {
         return changes.mapNotNull { it.requiredDlc }.toSet()
     }
 
-    private fun List<ParadoxScriptProperty>.firstColorInt(): Int? {
-        for (prop in preOrder()) {
-            if (!prop.propertyKey.text.equals("color", ignoreCase = true)) continue
-            val block = prop.block ?: continue
-            val ints = NUMBER_TOKEN_REGEX.findAll(block.text)
-                .mapNotNull { it.value.toIntOrNull() }
-                .take(3)
-                .toList()
-            if (ints.size == 3) {
-                return (ints[0].coerceIn(0, 255) shl 16) or (ints[1].coerceIn(0, 255) shl 8) or ints[2].coerceIn(0, 255)
-            }
-        }
-        return null
-    }
-
     /** Bare value tokens of a block: value texts plus keys of value-less assignments. */
     private fun ParadoxScriptBlock.bareTokens(): List<String> = buildList {
         for (v in valueList) add(v.text.trim().trim('"'))
@@ -1710,7 +1689,6 @@ class MapPreviewService(private val project: Project) {
         private const val RGB_MASK = 0xFFFFFF
         private const val RENDER_ZONE_BLOCK_SIZE = 256
         private const val SMOOTH_EDGE_SIMPLIFY_TOLERANCE = 0.85
-        private val NUMBER_TOKEN_REGEX = Regex("""-?\d+""")
         private val COUNTRY_COLOR_OVERRIDE_PATHS = listOf(
             "common/countries/color.txt",
             "common/countries/colors.txt"

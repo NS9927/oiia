@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.8 - 2026-10-04
+
+### Fixed
+
+- Map preview reads country colours again: `common/countries/colors.txt` is honoured (it was meant to take priority over the country definition files, but no entry was ever resolved, so a mod that defines its colours only there fell back to a generated colour), and `rgb` / `hsv` / `hsv360` / bare-block values are all converted correctly, including vanilla's uppercase `HSV`. `color_ui` (counter colour) stays ignored and `common/countries/*.txt` remains the fallback. State category colours use the same reader.
+
 ## 1.1.7 - 2026-09-24
 
 ### Changed
