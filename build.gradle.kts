@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "net.posdaca"
-version = "1.1.8"
+version = "1.1.9"
 
 kotlin {
     jvmToolchain(21)
@@ -29,6 +29,6 @@ dependencies {
         intellijIdea("2026.2.1")
         testFramework(TestFrameworkType.Platform)
         bundledPlugin("com.intellij.java")
-        plugin("icu.windea.pls", "3.0.3")   // Paradox Chronicle
+        plugin("icu.windea.pls", "3.0.4")   // Paradox Chronicle
     }
 }

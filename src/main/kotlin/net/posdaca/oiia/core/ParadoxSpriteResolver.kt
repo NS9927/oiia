@@ -95,9 +95,12 @@ class ParadoxSpriteResolver(private val project: Project) {
         return runCatching {
             ApplicationManager.getApplication().runReadAction<String?> {
                 ParadoxImageManager.resolveUrlByDefinition(definition)
-                    ?: ParadoxDefinitionManager.getPrimaryImages(definition).firstOrNull()?.virtualFile?.let { vf ->
-                        ParadoxImageManager.resolveUrlByFile(vf, project) ?: vf.path
-                    }
+                    // Chronicle 3.0.4 replaced getPrimaryImages with the locale/flag aware
+                    // getRelatedImages(element, onlyOne, onlyPrimary).
+                    ?: ParadoxDefinitionManager.getRelatedImages(definition, onlyPrimary = true)
+                        .firstOrNull()?.virtualFile?.let { vf ->
+                            ParadoxImageManager.resolveUrlByFile(vf, project) ?: vf.path
+                        }
             }
         }.getOrNull()
     }

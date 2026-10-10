@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.9 - 2026-10-10
+
+### Changed
+
+- Depends on Paradox Chronicle 3.0.4: focus and technology names, icons and descriptions resolve through its locale-aware definition accessors (`getRelatedImages` / `getRelatedLocalisations`), which replace the singular `getPrimaryImages` / `getPrimaryLocalisations` / `getPresentableName` API that 3.0.4 removed. Paradox Chronicle 3.0.4 is now required.
+- Gradle wrapper updated to 9.8.0.
+
 ## 1.1.8 - 2026-10-04
 
 ### Fixed

@@ -1,5 +1,12 @@
 # 变更日志
 
+## 1.1.9 - 2026-10-10
+
+### 变更
+
+- 依赖 Paradox Chronicle 3.0.4：国策与科技的名称、图标、描述改走它新的本地化感知 definition 访问器（`getRelatedImages` / `getRelatedLocalisations`），替代 3.0.4 中已移除的单数形式 `getPrimaryImages` / `getPrimaryLocalisations` / `getPresentableName`。现在要求 Paradox Chronicle 3.0.4。
+- Gradle wrapper 升级到 9.8.0。
+
 ## 1.1.8 - 2026-10-04
 
 ### 修复

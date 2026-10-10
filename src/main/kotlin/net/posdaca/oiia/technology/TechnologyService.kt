@@ -108,7 +108,8 @@ class TechnologyService(private val project: Project) {
         val doc = vf?.let { PsiManager.getInstance(project).findViewProvider(it)?.document }
         val line = if (doc != null) doc.getLineNumber(prop.textOffset) + 1 else 0
         val localisations = resolvePrimaryLocalisations(prop)
-        val localizedName = ParadoxDefinitionManager.getPresentableName(prop)
+        // Chronicle 3.0.4 dropped the singular getPresentableName; the list is in resolution order.
+        val localizedName = ParadoxDefinitionManager.getPresentableNames(prop).firstOrNull()
         val primaryFolder = folders.values.firstOrNull()
 
         return TechnologyData(
@@ -194,9 +195,12 @@ class TechnologyService(private val project: Project) {
         return spriteResolver.resolveDefinitionImage(prop)
     }
 
+    /** Resolved plain text of the technology's primary localisations, in resolution order. */
     private fun resolvePrimaryLocalisations(prop: ParadoxScriptProperty): List<String> {
         return try {
-            ParadoxDefinitionManager.getPrimaryLocalisations(prop).mapNotNull {
+            // Chronicle 3.0.4 replaced getPrimaryLocalisations with the locale-aware
+            // getRelatedLocalisations(element, preferredLocale, onlyOne, onlyPrimary).
+            ParadoxDefinitionManager.getRelatedLocalisations(prop, onlyPrimary = true).mapNotNull {
                 ParadoxLocalisationService.resolvePresentableText(it)
             }
         } catch (_: Exception) {
